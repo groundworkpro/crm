@@ -38,6 +38,7 @@ from frappe.utils import add_to_date, get_datetime, getdate, now_datetime
 from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.safe_exec import call_with_form_dict
 
+from crm.api.daily_standup import is_business_day
 from crm.api.sequence_status import check_before_step
 
 # dedicated queue so sleeping drainers never block the main background worker
@@ -78,6 +79,22 @@ QUIET_END_HOUR = 20
 QUIET_MIN_WAIT_SECONDS = 3600
 QUIET_STEP_TYPES = ("Text", "Call", "Task")
 
+# Business days. The engine's waits are CALENDAR days, so a lead enrolled on a
+# Wednesday had "day 4 of 10" land on Saturday and "day 5" on Sunday — two days
+# nobody works — and the rep opened Monday to three overdue to-dos on one lead
+# (Exe, 2026-09-14). Measured on prod that morning: 133 of the 224 open sequence
+# tasks were due on a weekend, and 65 of 74 leads carried three or more. A step
+# that lands on a weekend or a US federal holiday is rolled to the next business
+# morning through the SAME `is_business_day` gate as the standup, board
+# generation and the streak (site_config `crm_holidays` included), so they cannot
+# disagree about what a working day is.
+#
+# Applied per STEP, to that step's own due date: nothing is skipped and no day of
+# the cadence is dropped — it simply stretches across the weekend, which is what
+# "1 week = 5 business days" has meant here since the standup was written. The
+# wait-0 / sub-hour intro burst is exempt for the same reason quiet hours exempt
+# it: a lead that arrives on Saturday is answered on Saturday.
+
 _WAIT_SECONDS = {
 	"Seconds": 1,
 	"Minutes": 60,
@@ -108,6 +125,35 @@ def quiet_hold_until(now, step):
 	if now.hour < QUIET_START_HOUR:
 		return open_today
 	return add_to_date(open_today, days=1)
+
+
+def business_hold_until(due, step):
+	"""Pure: `due` rolled forward to the next business morning, or None.
+
+	None means leave it alone — either the step is exempt (not seller/rep-facing,
+	or part of the intro burst) or `due` already lands on a working day. That
+	makes this idempotent, which matters: `drain_due` re-aligns every active
+	enrollment once a minute, and a rule computed from the CURRENT due date (not
+	from `now`) cannot walk a step a day further into the future on each pass."""
+	if not due or not step or step.get("step_type") not in QUIET_STEP_TYPES:
+		return None
+	if _step_wait_seconds(step) < QUIET_MIN_WAIT_SECONDS:
+		return None
+	day = getdate(due)
+	if is_business_day(day):
+		return None
+	while not is_business_day(day):
+		day += timedelta(days=1)
+	return datetime.combine(day, dt_time(QUIET_START_HOUR, 0))
+
+
+def hold_until(now, step):
+	"""Pure: when this step may fire, or None for 'right now'.
+
+	One answer to "is it a decent hour AND a working day", so the drainer and the
+	next_run realignment cannot end up applying one rule without the other."""
+	hold = quiet_hold_until(now, step)
+	return business_hold_until(hold or now, step) or hold
 
 
 def calendar_due(now, step):
@@ -211,9 +257,10 @@ def _drain_locked(enrollment):
 		# before the step would fire — the safety net behind the on_update hook.
 		if not check_before_step(enr):
 			return
-		# Quiet hours: a scheduled Text/Call that comes due at night waits for
-		# the morning. Written to next_run so drain_due picks it up then.
-		hold = quiet_hold_until(now_datetime(), _next_step(enr))
+		# Quiet hours + business days: a scheduled Text/Call/Task that comes due
+		# at night, on a weekend or on a holiday waits for the next working
+		# morning. Written to next_run so drain_due picks it up then.
+		hold = hold_until(now_datetime(), _next_step(enr))
 		if hold:
 			frappe.db.set_value(
 				"CRM Sequence Enrollment", enr.name, "next_run", hold, update_modified=False
@@ -314,19 +361,30 @@ BOARD_STEP_TYPES = ("Task", "Call")
 
 
 def _align_next_run(enr):
-	"""If the engine scheduled a Days wait for the afternoon, snap it to 8am
-	that morning so drain_due (and the Today board) see it before the reps start."""
-	due = calendar_due(now_datetime(), _next_step(enr))
-	if not due or not enr.next_run:
+	"""Move a scheduled step's next_run to when it should actually fire.
+
+	Two corrections, in order: back to 8am of the calendar morning a Days/Weeks
+	wait lands on (the engine adds a flat +24h, which lands mid-afternoon, after
+	the 5am board is already built), then forward off a weekend or holiday. Both
+	are derived from the step and its own due date rather than from `now`, so
+	running this every minute over every active enrollment is a no-op once one is
+	aligned — it can neither drift nor ratchet."""
+	if not enr.next_run:
 		return
+	step = _next_step(enr)
 	current = get_datetime(enr.next_run)
-	if current <= due:
+	target = current
+	morning = calendar_due(now_datetime(), step)
+	if morning and morning < target:
+		target = morning
+	target = business_hold_until(target, step) or target
+	if target == current:
 		return
 	frappe.db.set_value(
-		"CRM Sequence Enrollment", enr.name, "next_run", due, update_modified=False
+		"CRM Sequence Enrollment", enr.name, "next_run", target, update_modified=False
 	)
 	frappe.db.commit()
-	enr.next_run = due
+	enr.next_run = target
 
 
 def materialize_board_steps(day=None):

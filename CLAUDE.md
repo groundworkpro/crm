@@ -2183,14 +2183,44 @@ duplicating. Work substantial features in a worktree of your own.
   lead and cleaned up. A Call step's body tells the rep to log the outcome
   (Connected pauses, Do Not Call stops). Cutover =
   enable it, move `auto_enroll_sources` off `New Lead Ring Alert`, disable
-  that one (both enabled = two intro bursts). **Quiet hours** live in
-  `sequence_drain.py` (`quiet_hold_until`, pure, unit-tested): a Text/Call/Task
-  step whose own wait is ≥ 1 hour that comes due outside 8am–8pm site time
-  has `next_run` pushed to the next 8am, so an 11pm lead's daily texts land
-  at 8am from day 2 on. The wait-0 / seconds intro burst is deliberately
-  exempt — answering a new lead instantly is the point. Waits are calendar
-  days, so weekend texts go out and a weekend triple-dial task waits for
-  Monday; the engine has no business-day unit.
+  that one (both enabled = two intro bursts). **Quiet hours + business days**
+  live in `sequence_drain.py` (`quiet_hold_until` / `business_hold_until` /
+  `hold_until`, all pure and unit-tested, applied both at fire time and to the
+  stored `next_run` via `_align_next_run`): a Text/Call/Task step whose own
+  wait is ≥ 1 hour waits for the next WORKING morning — pushed to 8am if it
+  comes due outside 8am–8pm site time, and rolled forward off a weekend or a
+  US federal holiday. The wait-0 / seconds intro burst is deliberately exempt:
+  a lead that arrives Saturday night is still answered Saturday night.
+  - **The business-day roll reuses `daily_standup.is_business_day`** — the same
+    gate as the standup, board generation and the streak, `crm_holidays`
+    included — so nothing in the CRM can disagree about what a working day is.
+  - **It is computed from the step's own due date, never from `now`.** That is
+    what makes it idempotent: `drain_due` re-aligns every Active enrollment
+    once a minute, and a rule keyed on `now` would walk a held step one more
+    day into the future on every pass. `business_hold_until` returns None when
+    the date already lands on a business day, so re-applying it is a no-op.
+  - **Nothing is skipped and no day is dropped** — the cadence stretches across
+    the weekend, which is what "1 week = 5 business days" has meant here since
+    the standup was written. A wait-0 Call step riding behind a rolled Task
+    needs no rule of its own; it follows whatever the Task did.
+  - **Why (gw…, Exe 2026-09-14, #bugs):** waits were CALENDAR days, so a lead
+    enrolled Wednesday had "day 4 of 10" land on Saturday and "day 5" on
+    Sunday, and the rep opened Monday holding three overdue to-dos on one
+    lead. Measured on prod that morning: **133 of the 224 open cadence tasks
+    were due on a weekend**, 65 of 74 leads carried three or more, and
+    Saturday+Sunday held 175 of the 29% of all cadence tasks that ever landed
+    on a day nobody works. It was not reps ignoring the list — 326 of the 564
+    cadence tasks were Done, and the lead in the screenshot had ticked day 4
+    ON the Saturday.
+  - **The backlog it left is a SEPARATE, opt-in repair**:
+    `task_hygiene.collapse_sequence_pileup(dry_run=1)` cancels superseded
+    `— day N of 10` tasks, keeping each lead's latest day (dry run on prod:
+    150 tasks across 67 leads, open tasks 444 → 294, every lead down to at
+    most one). Deliberately **not** a scheduled job: with the drainer fixed
+    the pile-up stops, and a rep who is genuinely one day behind should still
+    see yesterday's task. `superseded_tasks` / `cadence_day` are pure and
+    unit-tested; the title regex is the only marker a sequence task carries,
+    so a human-typed "Follow up" can never be selected.
 - **Deals in flight surface on the Today board DAILY** (same day): a lead in
   `CLOSER_STATUSES` (Underwriting / Make Offer / Contract Sent) with no task
   due after today is phase **`closer`** in `daily_standup._classify` — due

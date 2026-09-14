@@ -35,6 +35,8 @@ Design notes
   refreshes the open Kanban badge and the Activity to-do block live.
 """
 
+import re
+
 import frappe
 
 #: `CRM Lead Status.type` values that mean "stop working this lead".
@@ -42,6 +44,11 @@ TERMINAL_TYPES = ("Lost",)
 
 #: `CRM Task.status` values that are still outstanding.
 OPEN_TASK_STATUSES = ("Backlog", "Todo", "In Progress")
+
+#: Titles the sequence engine generates for the daily cadence, e.g.
+#: "Text Jere& Robin \u2014 day 4 of 10". The day number is the whole marker: a
+#: task a human typed will not end this way.
+CADENCE_TITLE_RE = re.compile(r"[\u2014\u2013-]\s*day\s+(\d+)\s+of\s+(\d+)\s*$", re.I)
 
 
 def is_terminal_status(status: str) -> bool:
@@ -100,6 +107,105 @@ def on_lead_update(doc, method=None):
 			title="task_hygiene: on_lead_update failed",
 			message=f"lead={getattr(doc, 'name', '?')}\n{frappe.get_traceback()}",
 		)
+
+
+# ── sequence cadence pile-up ──────────────────────────────────────────────────
+#
+# The New Lead 10-Day sequence mints one "Text <name> — day N of 10" task a day.
+# Until the drainer learned business days (crm/api/sequence_drain.py) days 4 and
+# 5 of a Wednesday lead landed on Saturday and Sunday, so a rep who had worked
+# every card they were given still opened Monday holding three open to-dos on
+# one lead. Measured on prod 2026-09-14: 224 open cadence tasks over 74 leads,
+# 133 of them due on a weekend, 65 leads carrying three or more.
+#
+# Only the newest one is today's work — the older ones are the same instruction,
+# repeated, for days that have passed. This retires them. It is a one-off repair
+# for the backlog the calendar-day bug left behind, NOT a scheduled job: with
+# the drainer fixed the pile-up stops happening, and a rep who is genuinely a
+# day behind should still see yesterday's task.
+
+
+def cadence_day(title):
+	"""Pure: the N in "… — day N of 10", or None if this is not a cadence task."""
+	m = CADENCE_TITLE_RE.search(title or "")
+	return int(m.group(1)) if m else None
+
+
+def superseded_tasks(rows):
+	"""Pure: of one lead's open tasks, the cadence ones a later day has replaced.
+
+	Never returns the newest, never returns a task whose title is not a cadence
+	title, and returns nothing at all when there is only one — so a lead that is
+	simply on day 6 with day 6 open is left completely alone.
+	"""
+	dated = [(cadence_day(r.get("title")), r) for r in rows]
+	dated = [(n, r) for n, r in dated if n is not None]
+	if len(dated) < 2:
+		return []
+	newest = max(dated, key=lambda p: (p[0], str(p[1].get("due_date") or "")))
+	return [r for n, r in dated if r is not newest[1]]
+
+
+@frappe.whitelist()
+def collapse_sequence_pileup(dry_run=1):
+	"""Cancel superseded daily-cadence tasks, keeping each lead's latest day.
+
+	Dry-run by default — pass `dry_run=0` to actually write:
+
+	    bench --site <site> execute crm.api.task_hygiene.collapse_sequence_pileup \\
+	        --kwargs '{"dry_run": 1}'
+	"""
+	dry_run = _as_bool(dry_run)
+	rows = frappe.get_all(
+		"CRM Task",
+		filters={"reference_doctype": "CRM Lead", "status": ["in", OPEN_TASK_STATUSES]},
+		fields=["name", "title", "status", "due_date", "reference_docname"],
+		order_by="due_date asc",
+	)
+	by_lead = {}
+	for r in rows:
+		by_lead.setdefault(r.reference_docname, []).append(r)
+
+	detail = []
+	for lead, lead_rows in by_lead.items():
+		for r in superseded_tasks(lead_rows):
+			detail.append(
+				{
+					"task": r["name"],
+					"title": r["title"],
+					"due_date": str(r["due_date"]) if r.get("due_date") else None,
+					"lead": lead,
+				}
+			)
+
+	if not dry_run:
+		for d in detail:
+			try:
+				task = frappe.get_doc("CRM Task", d["task"])
+				task.status = "Canceled"
+				task.save(ignore_permissions=True)
+			except Exception:
+				d["error"] = frappe.get_traceback(with_context=False)[-300:]
+				frappe.log_error(
+					title="task_hygiene: could not cancel superseded task",
+					message=f"task={d['task']}\n{frappe.get_traceback()}",
+				)
+		frappe.db.commit()
+
+	return {
+		"leads": len({d["lead"] for d in detail}),
+		"tasks": len(detail),
+		"dry_run": dry_run,
+		"detail": detail,
+	}
+
+
+def _as_bool(v):
+	if isinstance(v, bool):
+		return v
+	if isinstance(v, str):
+		return v not in ("0", "false", "False", "")
+	return bool(int(v))
 
 
 @frappe.whitelist()
