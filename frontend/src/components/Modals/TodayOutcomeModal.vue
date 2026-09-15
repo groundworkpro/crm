@@ -89,6 +89,7 @@ const SKIP_OUTCOMES = [
   'Check with Dennis',
   'Follow up later',
   'Not selling',
+  "I didn't have time today",
   'Other',
 ]
 
