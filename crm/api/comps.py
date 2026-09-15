@@ -527,7 +527,7 @@ def _subject_facts(doc):
 			val = val.strip()
 			val = val if val and val.lower() not in ("not provided", "none", "n/a") else None
 		facts[key] = val or None
-	# BatchData's assessed value costs $0.10 a pull and is only fetched on demand;
+	# BatchData's assessed value costs $0.22 a pull and is only fetched on demand;
 	# Zillow ships one with the facts we already have, so it fills the gap for free.
 	if not facts.get("assessed_value") and (zillow or {}).get("tax_assessed_value"):
 		facts["assessed_value"] = zillow["tax_assessed_value"]

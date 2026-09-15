@@ -383,7 +383,7 @@
               }}</span>
               <span class="text-ink-gray-5">{{ __('fetched tax info') }}</span>
               <span class="text-ink-gray-4">·</span>
-              <span class="text-ink-gray-5">$0.10</span>
+              <span class="text-ink-gray-5">${{ Number(activity.pull.cost || 0.22).toFixed(2) }}</span>
               <Tooltip :text="formatDate(activity.creation)" class="ml-auto">
                 <div class="whitespace-nowrap text-xs text-ink-gray-5">
                   {{ shortTime(activity.creation) }}

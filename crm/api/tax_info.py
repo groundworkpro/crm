@@ -1,8 +1,8 @@
-"""Property tax / owner / lien info pulled from BatchData (per-lead, $0.03 a pull).
+"""Property tax / owner / lien info pulled from BatchData (per-lead, $0.22 a pull).
 
 A user clicks **Fetch Tax Info** on a lead or the comps page → the `pull-tax-info`
 server script (ops repo, `../frappe-crm-deploy`) hits BatchData's
-`/property/lookup/all-attributes` with the taxliens Infisical key and stores the
+`/property/lookup/all-attributes` with the deed-history Infisical key and stores the
 raw property record on a **CRM Property Tax Pull** doc. The sandbox can't parse
 richly or `publish_realtime`, so the app-code `after_insert` hook:
 

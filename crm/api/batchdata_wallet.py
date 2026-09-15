@@ -20,9 +20,10 @@ Two free endpoints do all the work here (`/wallet/balance` and
 be done as often as we like.
 
 What a dollar buys, so the numbers below mean something: `/property/search` and
-`/property/lookup/all-attributes` bill **$0.03 per RECORD RETURNED** (not per
-call), skip-trace $0.07. The comps fallback takes 10 rows, so it is $0.30 a lead;
-a tax pull is $0.10.
+the comps-only token bill **$0.03 per RECORD RETURNED** (not per call). A tax
+pull uses the deed-history token (Basic + Core tax + mortgage/liens + deed
+history) and is **$0.22** a lead. The comps fallback takes 10 rows, so it is
+$0.30 a lead.
 
 BOTH API keys share ONE wallet
 ------------------------------
@@ -66,12 +67,11 @@ EMPTY_BALANCE_USD = 1.0
 #: alert that repeats every five minutes is an alert that gets muted.
 _ALERT_KEY = "crm:batchdata-wallet-alert"
 
-#: What one app-initiated BatchData call costs. Billing is PER RECORD RETURNED,
-#: not per call, so these are row counts x $0.03: a tax pull reads one property,
-#: the comps fallback takes ten.
-#: `CRM Property Tax Pull` records its own cost per row, so that constant is only
-#: a fallback for a row written before the field existed.
-TAX_PULL_COST = 0.10
+#: What one app-initiated BatchData call costs.
+#: Tax pull = deed-history token, stamped on CRM Property Tax Pull.cost ($0.22).
+#: Comps fallback = 10 rows × $0.03. The tax constant is only a fallback for a
+#: row written before the cost field existed.
+TAX_PULL_COST = 0.22
 COMPS_FALLBACK_COST = 0.30
 
 

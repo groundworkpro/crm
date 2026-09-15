@@ -856,7 +856,7 @@ const moreActions = computed(() => {
     },
   })
   items.push({
-    label: __('Fetch tax / liens ($0.03)'),
+    label: __('Fetch tax / liens ($0.22)'),
     icon: 'dollar-sign',
     onClick: () =>
       d.property_address

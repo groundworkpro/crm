@@ -181,7 +181,7 @@ function sendText() {
   showSendTextModal.value = true
 }
 
-// Fetch Tax Info (BatchData) — opens the $0.03 charge confirmation. Reloads on
+// Fetch Tax Info (BatchData) — opens the $0.22 charge confirmation. Reloads on
 // success are also driven site-wide by the crm_tax_pull realtime event.
 const showFetchTaxInfoModal = ref(false)
 

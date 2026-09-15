@@ -2698,9 +2698,9 @@ duplicating. Work substantial features in a worktree of your own.
     status and drops the fleeting row at write time (bounce reopens the prior
     row). Threshold constant `MIN_STATUS_HELD_SECONDS` / `STATUS_COLLAPSE_SECONDS`
     = 60 in each file. The creation/initial status is never collapsed.
-- **BatchData "Fetch tax / liens"** (Leads + comps page) — a **$0.03**/pull
-  button that hits `/property/lookup/all-attributes` with the **taxliens** token
-  (`__INFISICAL:BATCHDATA_TAXLIENS_API_KEY__`). Confirm dialog names the charge.
+- **BatchData "Fetch tax / liens"** (Leads + comps page) — a **$0.22**/pull
+  button that hits `/property/lookup/all-attributes` with the **deed-history** token
+  (`__INFISICAL:BATCHDATA_DEEDS_API_KEY__`). Confirm dialog names the charge.
   Each pull is a **CRM Property Tax Pull** row; headline fields (apn,
   property_owner, tax_status, annual_tax, assessed_value, last_tax_pull_at/by)
   write back onto the lead (Property Details sidebar). The **Tax / liens** card
