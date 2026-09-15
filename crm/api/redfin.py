@@ -410,6 +410,189 @@ def subject_estimate(rec):
 	return _num(rec.get("estimate"))
 
 
+# ---------------------------------------------------------------------------------
+# ISTL pool overlay: pictures + current MLS status from the Redfin ingest store.
+#
+# `CRM Comp` rows are RentCast last-asks with no imagery and a coarse
+# Active/Inactive. Lead insert already warms the neighbourhood (`geo.warm_lead`
+# → POST /coverage, ingest priority). This projects that stored sweep onto the
+# ingested ISTL pins so the map does not wait on billed Zillow /property calls
+# for a thumbnail and a live listing state.
+# ---------------------------------------------------------------------------------
+
+_FOR_SALE = {"active", "for sale", "coming soon", "new", "back on market"}
+_PENDING = {
+	"pending", "contingent", "active under contract", "under contract",
+	"accepting backup offers",
+}
+_SOLD = {"sold", "recently sold", "closed"}
+_RENT = {"for rent", "rented"}
+_AUCTION = {"auction"}
+_OFF = {"off market", "not for sale", "hold", "withdrawn", "expired", "cancelled", "canceled"}
+COVERAGE_TIMEOUT = 8
+
+
+def mls_listing_state(mls_status):
+	"""Redfin mlsStatus → the listing_state token the comps map already paints."""
+	s = " ".join(str(mls_status or "").lower().replace("-", " ").split())
+	if not s:
+		return None
+	if s in _AUCTION or "auction" in s:
+		return "auction"
+	if s in _RENT or "rent" in s:
+		return "for_rent"
+	if s in _PENDING or "pending" in s or "contingent" in s:
+		return "pending"
+	if s in _FOR_SALE or s.startswith("active"):
+		return "for_sale"
+	if s in _SOLD or "sold" in s or s.startswith("closed"):
+		return "sold"
+	if s in _OFF or "off market" in s:
+		return "off_market"
+	return None
+
+
+def _listing_url(url):
+	if not isinstance(url, str):
+		return None
+	u = url.strip()
+	if u.startswith("http"):
+		return u
+	if u.startswith("/"):
+		return f"https://www.redfin.com{u}"
+	return None
+
+
+def _photos(props):
+	out = []
+	for p in props.get("photos") or []:
+		if isinstance(p, str) and p.startswith("http"):
+			out.append(p)
+	return out
+
+
+def is_istl_pool_row(row):
+	"""Ingested CRM Comp pin — not a Zillow/BatchData extra, not an ADC sale."""
+	name = str((row or {}).get("name") or "")
+	if name.startswith(("zillow", "batchdata")):
+		return False
+	from crm.api.comp_provenance import is_adc
+
+	return not is_adc(row or {})
+
+
+def coverage_index(features):
+	"""Street-key → Redfin store properties. First address wins."""
+	by_key = {}
+	for f in features or []:
+		props = (f or {}).get("properties") or {}
+		key = street_key(props.get("address"))
+		if key and key not in by_key:
+			by_key[key] = props
+	return by_key
+
+
+def apply_istl_comps(rows, features):
+	"""Stamp Redfin ingest photo + listing_state onto ISTL pool rows. Mutates.
+
+	A match with no status string still gets photos — Redfin knowing the house
+	is not the same as having an MLS status. Unmatched rows are left alone so
+	Zillow's overlay remains the fallback.
+	"""
+	index = coverage_index(features)
+	matched = 0
+	photos = 0
+	for row in rows or []:
+		if not is_istl_pool_row(row):
+			continue
+		props = index.get(street_key(row.get("address")))
+		if not props:
+			continue
+		matched += 1
+		shots = _photos(props)
+		if shots:
+			row["photo"] = shots[0]
+			row["photos"] = shots
+			photos += 1
+		state = mls_listing_state(props.get("mls_status"))
+		if state:
+			row["listing_state"] = state
+			row["redfin_status"] = props.get("mls_status") or ""
+			row["current_status_source"] = "redfin"
+			row["status"] = (
+				"Active" if state in ("for_sale", "pending", "auction") else "Inactive"
+			)
+		url = _listing_url(props.get("url"))
+		if url:
+			row["redfin_url"] = url
+	return {"matched": matched, "photos": photos, "homes": len(index)}
+
+
+def _fetch_coverage(base, lat, lng, radius_m, holder):
+	"""THREAD BODY — store read only. Never live-sweeps Redfin."""
+	try:
+		r = requests.get(
+			f"{base}/properties",
+			params={"lat": float(lat), "lng": float(lng), "radius": float(radius_m)},
+			timeout=COVERAGE_TIMEOUT,
+		)
+		r.raise_for_status()
+		body = r.json() or {}
+		holder["features"] = body.get("features") or []
+		holder["meta"] = body.get("meta") or {}
+	except Exception as e:
+		holder["error"] = str(e)[:200]
+
+
+def start_istl_coverage(lat, lng, radius_mi):
+	"""Kick off the stored-neighbourhood read beside the Zillow refresh."""
+	base = _base_url()
+	try:
+		lat, lng, radius_mi = float(lat), float(lng), float(radius_mi)
+	except (TypeError, ValueError):
+		return None
+	if not base or not lat or not lng:
+		return None
+	holder = {}
+	thread = threading.Thread(
+		target=_fetch_coverage,
+		args=(base, lat, lng, radius_mi * 1609.344, holder),
+		daemon=True,
+	)
+	thread.start()
+	return {"thread": thread, "holder": holder, "lat": lat, "lng": lng, "radius_mi": radius_mi}
+
+
+def finish_istl_coverage(job, budget=1.0):
+	"""Collect the store read. Empty features on timeout/error — map still loads."""
+	if not job:
+		return [], {}
+	job["thread"].join(timeout=max(0.05, float(budget)))
+	holder = job["holder"]
+	if job["thread"].is_alive() and "features" not in holder:
+		return [], {"timed_out": True}
+	return holder.get("features") or [], holder.get("meta") or {}
+
+
+def maybe_rewarm(lead, meta):
+	"""If ingest never covered this circle, kick the same warm lead-insert uses."""
+	import frappe
+
+	state = (meta or {}).get("coverage_state")
+	if not state or state == "ready":
+		return
+	try:
+		frappe.enqueue(
+			"crm.api.geo.warm_lead",
+			queue="long",
+			job_name=f"geo-warm-comps-{lead}",
+			enqueue_after_commit=True,
+			lead=lead,
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Redfin: rewarm ISTL coverage failed")
+
+
 def warm_subject_check(lead):
 	"""Background half of finish_subject_check's timeout path: same fetch, same
 	compare, written to the same cache — just with the budget the request could

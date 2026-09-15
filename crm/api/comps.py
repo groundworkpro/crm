@@ -18,9 +18,11 @@ coordinates, so the importer ships them pre-geocoded.
 
 On every map open we then ask Zillow whether anything is more recent: a ZIP-level
 RecentlySold + ForSale search (A), and `/property` on the nearest ISTL pins (B).
-See `crm.api.zillow_comps`. BatchData remains the last resort when the pooled
-index is empty even after that. A ForRent circle is a separate inventory
-(`inventory=rentals`) and never mixed into the sale map.
+See `crm.api.zillow_comps`. Ingested ISTL pins also pick up photos and current
+MLS status from the Redfin neighbourhood store (`crm.api.redfin.apply_istl_comps`)
+that `geo.warm_lead` already queued at purchase. BatchData remains the last
+resort when the pooled index is empty even after that. A ForRent circle is a
+separate inventory (`inventory=rentals`) and never mixed into the sale map.
 
 Two layers, because exact-per-lead coverage is thin:
   * a lead we BOUGHT and whose marketplace record we still hold has its own comps
@@ -1708,12 +1710,15 @@ def get_lead_comps(
 	# with a small join budget, so a slow or absent service costs the map nothing
 	# (a miss lands in Redis via a background job for the next fetch instead).
 	redfin_check_job = None
+	redfin_istl_job = None
 	realtor_job = None
 	if subject is not None:
 		try:
 			from crm.api import redfin
 
 			redfin_check_job = redfin.start_subject_check(doc, subject)
+			if not rental:
+				redfin_istl_job = redfin.start_istl_coverage(lat, lng, radius)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin check start failed")
 		# Third AVM for the subject tile, same thread-beside-the-refresh shape.
@@ -1788,6 +1793,19 @@ def get_lead_comps(
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow refresh failed")
 		base["zillow"] = {"used": False, "reason": "error"}
+
+	# Redfin ingest overlay on ISTL pool pins. After Zillow so extra zillow::
+	# solds stay Zillow's, but ingested CRM Comp rows take photos + MLS status
+	# from the store that purchase already warmed.
+	if redfin_istl_job is not None:
+		try:
+			from crm.api import redfin
+
+			features, meta = redfin.finish_istl_coverage(redfin_istl_job)
+			base["redfin"] = redfin.apply_istl_comps(out, features)
+			redfin.maybe_rewarm(lead, meta)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Redfin ISTL overlay failed")
 
 	# Subject photo, cheapest source first: the facts we already cached, else the
 	# self-match the area search threw away. Both are free; neither is worth a
