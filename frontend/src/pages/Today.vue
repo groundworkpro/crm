@@ -243,13 +243,13 @@
                 {{ __('Address not on Zillow — ask the seller') }}
               </div>
               <div v-if="item.mobile_no" class="mt-0.5 flex items-center gap-1.5">
-                <a
-                  href="#"
+                <button
+                  type="button"
                   class="w-fit text-xs text-ink-blue-3 hover:underline"
-                  @click.prevent.stop="clickToCall(item.mobile_no, { lead: item.lead, name: item.lead_name })"
+                  @click.stop="clickToCall(item.mobile_no, { lead: item.lead, name: item.lead_name })"
                 >
                   {{ formatPhone(item.mobile_no) }}
-                </a>
+                </button>
                 <Tooltip :text="__('Send text')">
                   <button
                     class="flex size-6 items-center justify-center rounded text-ink-blue-3 hover:bg-surface-blue-1"

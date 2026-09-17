@@ -41,6 +41,9 @@ export function useKeyboardShortcuts(options) {
 
   function matchShortcut(def, e) {
     if (def.match) return def.match(e)
+    // Bare keys like `c` must not steal Ctrl/Cmd+C (copy), Ctrl+F, etc.
+    // Combos that need a modifier use `match` instead of `keys`.
+    if (!def.allowModifiers && (e.metaKey || e.ctrlKey || e.altKey)) return false
     let keys = def.keys
     if (!keys) return false
     if (!Array.isArray(keys)) keys = [keys]

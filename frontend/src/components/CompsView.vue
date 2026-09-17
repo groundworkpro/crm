@@ -3143,6 +3143,7 @@ useKeyboardShortcuts({
     // behind the overlay would surprise on the way back out.
     {
       keys: ['c', 'C'],
+      guard: (e) => !e.metaKey && !e.ctrlKey && !e.altKey,
       action: () =>
         props.pageMode &&
         !compsFocusMap.value &&
