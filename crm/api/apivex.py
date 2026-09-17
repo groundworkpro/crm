@@ -61,8 +61,16 @@ def _api_key():
 def realtor_photo_urls(address: str, limit=60):
 	"""Address -> list of Realtor CDN hrefs, or []. Never raises."""
 	addr = (address or "").strip()
+	if not addr:
+		return []
+	from crm.api import vendor_facts
+
+	owned, env = vendor_facts.payload_or_fallback(vendor_facts.realtor_photos(addr))
+	if owned:
+		photos = ((env or {}).get("payload") or {}).get("photos") or []
+		return [p for p in photos if isinstance(p, str) and p.startswith("http")][: int(limit)]
 	key = _api_key()
-	if not addr or not key:
+	if not key:
 		return []
 	params = urllib.parse.urlencode({"address": addr})
 	url = f"{BASE}/realtor/property/photos?{params}"

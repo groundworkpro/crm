@@ -1050,7 +1050,11 @@ def _zillow_detail(row, zpid):
 	remembered for the retry window only, so a timeout does not lock the house
 	out for 30 days. Keyed on the comp name plus zpid so the subject (whose zpid
 	comes from its cached facts) and a `zillow::` pin cannot collide.
+
+	Billed calls go through PropWarehouse when the facts API is up; RapidAPI is
+	the fallback for an old scraper image or a missing key on that box.
 	"""
+	from crm.api import vendor_facts
 	from crm.api import zillow as zillow_api
 
 	name = str(row.get("name") or "")
@@ -1059,24 +1063,38 @@ def _zillow_detail(row, zpid):
 	if isinstance(cached, dict) and "details" in cached:
 		return cached.get("details"), list(cached.get("photos") or [])
 
-	if zpid:
+	raw = photo_raw = None
+	answered = False
+	owned, env = vendor_facts.payload_or_fallback(
+		vendor_facts.zillow_property(address=row.get("address"), zpid=zpid, photos=True)
+	)
+	if owned:
+		raw = (env or {}).get("payload")
+		photo_raw = (env or {}).get("photos")
+		# Warehouse already remembers a miss for 7d. Don't pin an empty gallery
+		# in Redis for a month on top of that.
+	elif zpid:
 		raw = zillow_api._request("/property", {"zpid": zpid}, "Zillow: zpid lookup failed")
+		answered = raw is not None
 	else:
 		raw = zillow_api.property_details(row.get("address"))
-	answered = raw is not None
+		answered = raw is not None
 	details = zillow_api.normalize_detail(raw) if raw else None
 	# Zillow's /property returns an EMPTY SHELL (every field null, even zpid) for
 	# some listings its own /search happily returned — observed on a pending Philly
 	# row, by zpid AND by address. When the zpid path came back hollow and we know
 	# the address, one address retry is worth the spend before giving up on Zillow.
-	if not details and zpid and (row.get("address") or "").strip():
+	if not owned and not details and zpid and (row.get("address") or "").strip():
 		raw = zillow_api.property_details(row.get("address"))
 		answered = answered or raw is not None
 		details = zillow_api.normalize_detail(raw) if raw else None
-	photo_raw = zillow_api.property_photos(details.get("zpid")) if details else None
+	if not owned:
+		photo_raw = zillow_api.property_photos(details.get("zpid")) if details else None
 	photos = zillow_api.photo_urls(photo_raw)
 	if details and details.get("cover_photo") and not photos:
 		photos = [details["cover_photo"]]
+	if owned:
+		answered = bool(details)
 	try:
 		frappe.cache().set_value(
 			key,
