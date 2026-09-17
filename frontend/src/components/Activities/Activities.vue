@@ -1219,10 +1219,11 @@ function isTerminationAgreement(a) {
   return String(a?.template_title || '').startsWith('Unilateral Termination - No EMD')
 }
 
-// Proxy endpoint that streams the fully-signed PDF (the backend holds the
-// Documenso token; the raw Documenso URL is an internal, expiring MinIO link).
 function signedAgreementUrl(a) {
-  return `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  return (
+    a.signed_pdf_url ||
+    `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  )
 }
 
 // underwriting workbooks as timeline entries, anchored at creation

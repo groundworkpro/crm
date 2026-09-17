@@ -48,19 +48,26 @@
           <span v-if="a.last_event" class="truncate">{{ eventLabel(a.last_event) }}</span>
         </div>
 
-        <a
-          v-if="a.is_signed"
-          :href="signedUrl(a)"
-          target="_blank"
-          rel="noopener"
-          class="mt-0.5 block"
-        >
-          <Button class="w-full" size="sm" theme="green" :label="__('Open signed PDF')">
-            <template #prefix>
-              <FeatherIcon name="external-link" class="size-3.5" />
-            </template>
-          </Button>
-        </a>
+        <div v-if="a.is_signed" class="mt-0.5 flex items-center gap-2">
+          <a
+            :href="signedUrl(a)"
+            target="_blank"
+            rel="noopener"
+            class="block min-w-0 flex-1"
+          >
+            <Button class="w-full" size="sm" theme="green" :label="__('Open signed PDF')">
+              <template #prefix>
+                <FeatherIcon name="external-link" class="size-3.5" />
+              </template>
+            </Button>
+          </a>
+          <Button
+            size="sm"
+            icon="copy"
+            :tooltip="__('Copy public PDF link')"
+            @click="copy(signedUrl(a))"
+          />
+        </div>
 
         <div class="mt-0.5 flex items-center gap-2">
           <Button
@@ -164,10 +171,11 @@ function openLink(url) {
   if (url) window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-// Proxy endpoint that streams the fully-signed PDF (the backend holds the
-// e-sign token; the raw provider URL is an internal, expiring MinIO link).
 function signedUrl(a) {
-  return `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  return (
+    a.signed_pdf_url ||
+    `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  )
 }
 
 // crm_esign events are lead-scoped — reload when they hit an engaged property.

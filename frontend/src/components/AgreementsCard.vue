@@ -51,19 +51,26 @@
           <span class="truncate">{{ __('Auto-linked from DocuSeal') }}</span>
         </div>
 
-        <a
-          v-if="a.is_signed"
-          :href="signedUrl(a)"
-          target="_blank"
-          rel="noopener"
-          class="mt-0.5 block"
-        >
-          <Button class="w-full" size="sm" theme="green" :label="__('Open signed PDF')">
-            <template #prefix>
-              <FeatherIcon name="external-link" class="size-3.5" />
-            </template>
-          </Button>
-        </a>
+        <div v-if="a.is_signed" class="mt-0.5 flex items-center gap-2">
+          <a
+            :href="signedUrl(a)"
+            target="_blank"
+            rel="noopener"
+            class="block min-w-0 flex-1"
+          >
+            <Button class="w-full" size="sm" theme="green" :label="__('Open signed PDF')">
+              <template #prefix>
+                <FeatherIcon name="external-link" class="size-3.5" />
+              </template>
+            </Button>
+          </a>
+          <Button
+            size="sm"
+            icon="copy"
+            :tooltip="__('Copy public PDF link')"
+            @click="copy(signedUrl(a))"
+          />
+        </div>
 
         <div class="mt-0.5 flex items-center gap-2">
           <Button
@@ -203,10 +210,13 @@ function openLink(url) {
   if (url) window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-// Proxy endpoint that streams the fully-signed PDF (the backend holds the
-// Documenso token; the raw Documenso URL is an internal, expiring MinIO link).
+// Public HMAC URL — opens without a CRM session, so the tab's address is a
+// link you can send. Session proxy is the fallback if the row predates it.
 function signedUrl(a) {
-  return `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  return (
+    a.signed_pdf_url ||
+    `/api/method/crm.api.agreement.download_signed_agreement?agreement=${encodeURIComponent(a.name)}`
+  )
 }
 
 // A labeled, paste-ready block of every link for an email/text.

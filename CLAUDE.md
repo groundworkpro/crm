@@ -3778,8 +3778,14 @@ duplicating. Work substantial features in a worktree of your own.
     flag (`_is_completed`) the UI gates the link on. **Token is in site_config**
     `documenso_api_token` (set via `bench set-config`, mirrors the underwriting
     `google_sa_json` pattern — app code can't read the server-scripts'
-    `__INFISICAL:…__` placeholder). `frontend/src/components/AgreementsCard.vue` +
-    `Activities/Activities.vue` (both build `/api/method/…download_signed_agreement?agreement=<name>`).
+    `__INFISICAL:…__` placeholder). **Open signed PDF is a public URL**
+    (`crm.api.agreement.public_signed_pdf`, `allow_guest`): HMAC of the agreement
+    name (secret = `agreement_pdf_secret` else site `encryption_key`), so the
+    opened tab is a link anyone can open — title company, listing agent — with
+    no CRM session. `get_agreements` / `get_buyer_agreements` return
+    `signed_pdf_url`; the card has a copy button next to Open. Logged-in
+    `download_signed_agreement` remains as fallback. Tests:
+    `unit_test_agreement_pdf.py`.
   - **Adopting hand-built DocuSeal envelopes** — the team builds one-off templates
     directly in the DocuSeal UI (deal-specific novations / amendments / AIFs) and
     sends them by SMS. Those envelopes had no `CRM Esign Agreement` row, so

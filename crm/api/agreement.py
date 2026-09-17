@@ -18,8 +18,11 @@ The `crm_esign` realtime event (published on the insert/update hooks below) driv
 the live sidebar-card + Activity-timeline refresh for both providers.
 """
 
+import hashlib
+import hmac
 import json
 import re
+from urllib.parse import urlencode
 
 import frappe
 import requests
@@ -760,6 +763,8 @@ def _shape_agreement(r):
 		r["seller_links"] = []
 	r["provider"] = r.get("provider") or "documenso"
 	r["is_signed"] = _is_completed(r)
+	name = r.get("name")
+	r["signed_pdf_url"] = _public_pdf_url(name) if r["is_signed"] and name else None
 	return r
 
 
@@ -817,27 +822,64 @@ def _signed_filename(agr) -> str:
 	return f"{safe}_signed.pdf"
 
 
-@frappe.whitelist()
-def download_signed_agreement(agreement: str):
-	"""Stream the fully-signed PDF (branches on provider)."""
+def _pdf_secret() -> bytes:
+	"""HMAC key for public PDF links. Prefers a dedicated config value so a
+	rotation does not wait on changing the site encryption key."""
+	s = (
+		frappe.conf.get("agreement_pdf_secret")
+		or frappe.conf.get("encryption_key")
+		or ""
+	).strip()
+	if not s:
+		s = getattr(getattr(frappe, "local", None), "site", None) or "crm"
+	return s.encode()
+
+
+def _pdf_token(name: str) -> str:
+	return hmac.new(_pdf_secret(), (name or "").encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _pdf_token_ok(name: str, given) -> bool:
+	expected = _pdf_token(name)
+	got = (given or "").strip()
+	if len(got) != len(expected):
+		return False
+	return hmac.compare_digest(expected, got)
+
+
+def _site_url() -> str:
+	"""Public site URL. Workers often see http:// from get_url(); force https
+	except on localhost (same rule as live_one)."""
+	site = (frappe.utils.get_url() or "").rstrip("/")
+	if site.startswith("http://") and "localhost" not in site and "127.0.0.1" not in site:
+		site = "https://" + site[len("http://"):]
+	return site
+
+
+def _public_pdf_url(name: str) -> str:
+	q = urlencode({"agreement": name, "token": _pdf_token(name)})
+	return f"{_site_url()}/api/method/crm.api.agreement.public_signed_pdf?{q}"
+
+
+def _load_signed_agreement(agreement: str):
 	if not frappe.db.exists(AGREEMENT_DOCTYPE, agreement):
 		frappe.throw(_("Agreement not found"), frappe.DoesNotExistError)
-
 	wanted = ["lead", "document_id", "agreement_status", "signed_count", "total_signers", "template_title"]
 	if frappe.db.has_column(AGREEMENT_DOCTYPE, "provider"):
 		wanted.append("provider")
 	agr = frappe.db.get_value(AGREEMENT_DOCTYPE, agreement, wanted, as_dict=True)
-
-	if not agr.lead or not frappe.has_permission("CRM Lead", "read", agr.lead):
-		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	if not agr:
+		frappe.throw(_("Agreement not found"), frappe.DoesNotExistError)
 	if not _is_completed(agr):
 		frappe.throw(_("This agreement is not fully signed yet."))
 	if not agr.document_id:
 		frappe.throw(_("This agreement has no document on file."))
+	return agr
 
+
+def _stream_signed_pdf(agr):
 	provider = (agr.get("provider") or "documenso").lower()
 	content = _docuseal_signed_pdf(agr) if provider == "docuseal" else _documenso_signed_pdf(agr)
-
 	frappe.local.response.filename = _signed_filename(agr)
 	frappe.local.response.filecontent = content
 	frappe.local.response.type = "download"
@@ -845,6 +887,28 @@ def download_signed_agreement(agreement: str):
 	# this URL with target=_blank); right-click → Save still downloads it
 	frappe.local.response.display_content_as = "inline"
 	frappe.local.response.content_type = "application/pdf"
+
+
+@frappe.whitelist()
+def download_signed_agreement(agreement: str):
+	"""Stream the fully-signed PDF for a logged-in CRM user (lead read perm)."""
+	agr = _load_signed_agreement(agreement)
+	if not agr.lead or not frappe.has_permission("CRM Lead", "read", agr.lead):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	_stream_signed_pdf(agr)
+
+
+@frappe.whitelist(allow_guest=True)
+def public_signed_pdf(agreement: str, token: str = None):
+	"""Unauthenticated stream of a fully-signed PDF.
+
+	The Open signed PDF button's href is this URL, so the address bar is a
+	link anyone can open (title company, listing agent, buyer) without a CRM
+	session. Token is HMAC of the agreement name; the name alone is not enough.
+	"""
+	if not agreement or not _pdf_token_ok(agreement, token):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	_stream_signed_pdf(_load_signed_agreement(agreement))
 
 
 def _docuseal_signed_pdf(agr) -> bytes:
