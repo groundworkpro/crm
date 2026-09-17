@@ -1721,6 +1721,22 @@ duplicating. Work substantial features in a worktree of your own.
     geocode + BatchData caches and force-refetches. Auto-refetching a miss would
     re-bill it. `ZillowAddressMatch.vue` + `zillow.refresh_lead_facts` +
     `comps.zillow_match` + `today_board.zillow_unresolved`.
+    - **GOTCHA (2026-09-16/17) — a Zillow OUTAGE used to read as an address
+      miss.** The RapidAPI subscription lapsed (429 from 10:11 on 9/16, then
+      403 "You are not subscribed to this API"); `facts_for_lead` cached every
+      failed lookup as `{}` = "Zillow doesn't recognize this address" for 30
+      days, so 28 leads told reps to ask the seller to confirm a fine address
+      (Dennis, #bugs). A genuine miss is an HTTP 200 with no zpid (16 historic
+      negatives vs 7 lookup failures ever), so a `None` body is NEVER a miss:
+      it is no longer stored, `_zillow_match` / `refresh_lead_facts` carry
+      `unavailable` (`not_subscribed` / `throttled` / `quota` / `error` /
+      `not_configured`, per-request via `frappe.flags`), and the banner says
+      "Zillow isn't answering" instead. A 403 also opens a **10-minute hold**
+      (`zillow_outage`, same no-TTL storage rule as the quota key) so the
+      prewarm stops logging ~275 failures an hour. Repair after such an
+      outage: `bench execute crm.api.zillow.clear_failed_negatives --kwargs
+      '{"since": "2026-09-16 10:00:00", "dry_run": 0}'`. Tests:
+      `unit_test_zillow_unavailable.py`.
   - **The Today lead modal is now a qualify + comp + work surface**, without
     replacing the real Activity feed it already mounted. The left rail reuses
     `FirstCallReadCard` (Motivation × Price 2×2, saved onto the CRM Lead), and the

@@ -1596,11 +1596,18 @@ def _zillow_match(doc, subject=None):
 		if isinstance(blob, dict):
 			queried = blob.get("_queried_address") or ""
 	tried = bool(zpid) or bool(doc.get("zillow_fetched_at"))
+	# Zillow gave no answer in THIS request (subscription lapsed, quota floor,
+	# outage hold). Not a verdict on the address, and the UI must not read it as
+	# one: `tried` stays False because nothing was stamped on the lead.
+	from crm.api import zillow as zillow_api
+
+	unavailable = None if zpid else zillow_api.unavailable_reason()
 	return {
 		"matched": bool(zpid),
 		"tried": tried,
 		"zpid": zpid,
 		"queried_address": queried,
+		"unavailable": unavailable,
 	}
 
 

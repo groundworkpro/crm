@@ -197,6 +197,83 @@ def _store_quota(n):
 		pass
 
 
+#: A 403 from RapidAPI is "You are not subscribed to this API" — a dead
+#: subscription or a rotated key, and nothing about it is transient. Once seen,
+#: every Zillow call for the next `_OUTAGE_HOLD` seconds is skipped WITHOUT a
+#: request. Measured 2026-09-16/17, when the subscription lapsed: ~275 failed
+#: calls an hour overnight from the Today-board prewarm alone, 5,000 Error Log
+#: rows a day, and every rep's comps open waited on 30 calls that were all going
+#: to fail. Same no-TTL storage rule as `_QUOTA_KEY` (see the GOTCHA there).
+_OUTAGE_KEY = "zillow_outage"
+_OUTAGE_HOLD = 600
+
+
+def outage_reason():
+	"""Why Zillow is being skipped right now, or None. Redis only — never HTTP."""
+	try:
+		rec = frappe.cache().get_value(_OUTAGE_KEY)
+		if not isinstance(rec, dict):
+			return None
+		if time.time() - float(rec.get("t") or 0) > _OUTAGE_HOLD:
+			return None
+		return rec.get("reason") or "outage"
+	except Exception:
+		return None
+
+
+def _mark_unavailable(reason):
+	"""Remember, for THIS request, that Zillow gave no answer.
+
+	`frappe.flags` is per-request, so the comps response can say "Zillow is down"
+	out loud instead of letting a failed lookup read as "Zillow does not know
+	this address" — which is what sent a rep asking the seller to re-confirm a
+	perfectly good address during the 2026-09-16 outage.
+	"""
+	try:
+		if not getattr(frappe.flags, "zillow_unavailable", None):
+			frappe.flags.zillow_unavailable = reason
+	except Exception:
+		pass
+
+
+def unavailable_reason():
+	"""Did Zillow fail to answer in this request (or is it held off)? -> reason|None."""
+	try:
+		return getattr(frappe.flags, "zillow_unavailable", None) or outage_reason()
+	except Exception:
+		return None
+
+
+def _note_failures(errors):
+	"""Inspect the tracebacks `_raw_get` handed back. Request thread only.
+
+	Only a 403 opens the hold: it is unambiguous. A 429 is left alone because one
+	throttled page in a batch is ordinary (the key is shared with the ZIP job)
+	and `_raw_get` already retried it once.
+	"""
+	errors = [e for e in (errors or []) if e]
+	if not errors:
+		return
+	if any("HTTP Error 403" in e for e in errors):
+		reason = "not_subscribed"
+		try:
+			if outage_reason() is None:
+				frappe.log_error(
+					"RapidAPI answered 403 (not subscribed / bad key). Skipping every "
+					f"Zillow call for {_OUTAGE_HOLD // 60} minutes. Check the RapidAPI "
+					"subscription for us-property-market1.",
+					"Zillow: subscription unavailable",
+				)
+			frappe.cache().set_value(_OUTAGE_KEY, {"reason": reason, "t": time.time()})
+		except Exception:
+			pass
+	elif all("HTTP Error 429" in e for e in errors):
+		reason = "throttled"
+	else:
+		reason = "error"
+	_mark_unavailable(reason)
+
+
 #: A throttled call is a TRANSIENT refusal, not an answer, and dropping one is
 #: expensive twice over: the page's ~40 comps vanish from the map, and the circle
 #: is then marked incomplete so the week-long cache is never written and the next
@@ -247,9 +324,16 @@ def _raw_get(key: str, path: str, params: dict, retries: int = 1):
 
 def _quota_blocked(path: str):
 	"""True when the SHARED plan is too close to empty to spend anything here."""
+	held = outage_reason()
+	if held:
+		# Deliberately no log line: the hold exists to STOP the flood, and the one
+		# entry that matters was written when the 403 was first seen.
+		_mark_unavailable(held)
+		return True
 	left = quota_remaining()
 	if left is None or left > QUOTA_RESERVE:
 		return False
+	_mark_unavailable("quota")
 	frappe.log_error(
 		f"Zillow quota reserve reached ({left} left <= {QUOTA_RESERVE}); skipping "
 		f"{path}. Key is shared with istl-buyer's ZIP-market job.",
@@ -261,7 +345,10 @@ def _quota_blocked(path: str):
 def _request(path: str, params: dict, error_title: str):
 	"""One guarded RapidAPI GET, or None. Every caller degrades softly."""
 	key = _api_key()
-	if not key or not params:
+	if not key:
+		_mark_unavailable("not_configured")
+		return None
+	if not params:
 		return None
 
 	# Yield the last of a shared budget rather than spend it: both subject facts and
@@ -274,6 +361,7 @@ def _request(path: str, params: dict, error_title: str):
 	body, remaining, error = _raw_get(key, path, params)
 	_store_quota(remaining)
 	if error:
+		_note_failures([error])
 		frappe.log_error(error, error_title)
 		return None
 	return body
@@ -318,7 +406,10 @@ def fetch_many(specs, error_title="Zillow: batch request failed", workers=FETCH_
 	if not specs:
 		return []
 	key = _api_key()
-	if not key or _quota_blocked(specs[0][0]):
+	if not key:
+		_mark_unavailable("not_configured")
+		return [None] * len(specs)
+	if _quota_blocked(specs[0][0]):
 		return [None] * len(specs)
 
 	with ThreadPoolExecutor(max_workers=max(1, min(int(workers), len(specs)))) as pool:
@@ -332,6 +423,7 @@ def fetch_many(specs, error_title="Zillow: batch request failed", workers=FETCH_
 		_store_quota(min(remaining))
 	errors = [e for _, _, e in results if e]
 	if errors:
+		_note_failures(errors)
 		# One log line for the batch, not one per call: a Zillow outage would
 		# otherwise write 30 identical tracebacks per page load.
 		frappe.log_error(
@@ -603,24 +695,74 @@ def facts_for_lead(doc, force=False):
 
 	`doc` is a CRM Lead document. Safe to call on every comps-map open: past the
 	first fetch this is a JSON parse off a column. A miss is `{}` (plus the
-	address we asked about), never None, once we have tried — so the UI can tell
-	"Zillow does not know this house" from "we have not asked yet".
+	address we asked about), never None, once Zillow has ANSWERED — so the UI can
+	tell "Zillow does not know this house" from "we have not asked yet".
+
+	None means Zillow gave no answer at all (no key, quota floor, outage hold, an
+	HTTP error). That is deliberately NOT cached: a genuine miss is an HTTP 200
+	with no zpid (measured — 16 historic negatives, 7 lookup failures ever), so a
+	None body is never "no such house". Caching it as one stamped 28 leads with
+	"Zillow doesn't recognize this address" for 30 days during the 2026-09-16
+	subscription outage, and sent a rep asking the seller to re-confirm an
+	address that was fine.
 	"""
 	if not force:
 		hit = _cached(doc)
 		if hit is not None:
 			return hit
 	if not _api_key():
+		_mark_unavailable("not_configured")
 		return None
 
 	from crm.api.comps import _full_address
 
 	raw = _fetch(_full_address(doc))
-	facts = _normalize(raw) if raw else {}
-	# Cache negatives too, so an address Zillow cannot resolve is not re-fetched
-	# (and re-billed) on every single modal open.
+	if raw is None:
+		_mark_unavailable(unavailable_reason() or "error")
+		return None
+	# Zillow answered. No zpid in the answer is a genuine miss: `{}`, cached, so
+	# an address Zillow cannot resolve is not re-fetched (and re-billed) on every
+	# single modal open.
+	facts = _normalize(raw) or {}
 	_store(doc, facts)
 	return facts
+
+
+def clear_failed_negatives(since, dry_run=1):
+	"""Repair: drop the negatives an outage wrote as "address not found".
+
+	Bench-executable. Clears the facts cache on every lead whose stamp is at/after
+	`since` and carries no zpid, so the next comps open asks Zillow again (one
+	billed call each). A genuine miss caught in the window is re-asked once too —
+	that is the whole cost, and it is a fraction of one rep's wrong phone call.
+
+	    bench execute crm.api.zillow.clear_failed_negatives \\
+	      --kwargs '{"since": "2026-09-16 10:00:00", "dry_run": 0}'
+	"""
+	if not _has_cache():
+		return {"cleared": 0, "dry_run": bool(int(dry_run)), "leads": []}
+	rows = frappe.get_all(
+		"CRM Lead",
+		filters=[
+			["zillow_fetched_at", ">=", since],
+			["zillow_zpid", "in", ["", None]],
+		],
+		fields=["name", "property_address", "zillow_fetched_at"],
+		order_by="zillow_fetched_at asc",
+	)
+	if not int(dry_run):
+		for r in rows:
+			frappe.db.set_value(
+				"CRM Lead", r["name"],
+				{"zillow_facts": "", "zillow_fetched_at": None, "zillow_zpid": ""},
+				update_modified=False,
+			)
+		frappe.db.commit()
+	return {
+		"cleared": len(rows),
+		"dry_run": bool(int(dry_run)),
+		"leads": [f"{r['name']} · {r['property_address']}" for r in rows],
+	}
 
 
 def _clear_location_caches(lead):
@@ -653,11 +795,15 @@ def refresh_lead_facts(lead):
 	doc = _load_subject(lead)
 	_clear_location_caches(lead)
 	doc.reload()
-	facts = facts_for_lead(doc, force=True) or {}
+	facts = facts_for_lead(doc, force=True)
+	unavailable = unavailable_reason() if facts is None else None
+	facts = facts or {}
 	return {
 		"ok": True,
 		"matched": bool(facts.get("zpid")),
 		"zpid": str(facts.get("zpid") or ""),
 		"address": _full_address(doc),
 		"queried_address": facts.get("_queried_address") or _full_address(doc),
+		# Zillow gave no answer (outage / quota / key) — the address was NOT judged.
+		"unavailable": unavailable,
 	}

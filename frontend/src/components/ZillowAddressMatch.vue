@@ -1,6 +1,13 @@
 <template>
   <div
-    v-if="visible"
+    v-if="unavailable && !visible"
+    class="rounded-md border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-7"
+  >
+    <span class="font-medium">{{ __('Zillow isn’t answering right now.') }}</span>
+    {{ unavailableDetail }}
+  </div>
+  <div
+    v-else-if="visible"
     class="flex flex-col gap-2 rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-2 text-xs text-ink-amber-3"
   >
     <div>
@@ -74,6 +81,20 @@ function norm(s) {
 }
 
 const queried = computed(() => props.match?.queried_address || '')
+// Zillow gave no answer at all (subscription lapsed, quota floor, outage). Not a
+// verdict on the address — saying "doesn't recognize this address" here sent a
+// rep asking the seller to re-confirm a perfectly good one (2026-09-16).
+const unavailable = computed(() => props.match?.unavailable || '')
+const unavailableDetail = computed(() => {
+  const why = unavailable.value
+  if (why === 'not_subscribed') {
+    return __('The RapidAPI subscription is inactive — the address was not checked and Zillow sales/listings are missing. Our own comp index and BatchData still load.')
+  }
+  if (why === 'quota') {
+    return __('The shared Zillow quota is at its floor — the address was not checked and Zillow sales/listings are missing until it renews.')
+  }
+  return __('The address was not checked and Zillow sales/listings are missing. Our own comp index and BatchData still load; try again in a few minutes.')
+})
 const miss = computed(() => Boolean(props.match?.tried && !props.match?.matched))
 const dirty = computed(() => {
   if (savedSinceFetch.value) return true
@@ -116,6 +137,7 @@ async function rerun() {
     savedSinceFetch.value = false
     emit('reran', res || {})
     if (res?.matched) toast.success(__('Zillow found this address.'))
+    else if (res?.unavailable) toast.warning(__('Zillow isn’t answering right now — the address was not checked.'))
     else toast.warning(__('Zillow still doesn’t recognize this address.'))
   } catch (e) {
     toast.error(e.messages?.[0] || __('Could not rerun comps'))
