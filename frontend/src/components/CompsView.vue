@@ -371,12 +371,14 @@
         </div>
 
         <ZillowAddressMatch
-          v-if="!hideAddressMatch && lead && zillowMatch"
+          v-if="!hideAddressMatch && lead && (zillowMatch || addressResolution?.suggestion_state === 'pending')"
           :lead="lead"
           :address="data?.address || address"
           :match="zillowMatch"
+          :address-resolution="addressResolution"
           @saved="onAddressSaved"
           @reran="onAddressReran"
+          @address-resolved="loadAddressStatus"
         />
         <!-- The preset had to loosen, or nothing matched at all. Either way the
              user is told outright rather than left to wonder why a "similar"
@@ -866,6 +868,9 @@ const showStreet = ref(localStorage.getItem('compsShowStreet') === '1')
 watch(showStreet, (v) => localStorage.setItem('compsShowStreet', v ? '1' : '0'))
 const streetViewSrc = ref('')
 const streetViewMsg = ref('')
+const subjectStreetView = ref(null)
+const subjectStreetViewLoading = ref(false)
+const subjectStreetViewAttempted = ref(false)
 let streetViewTimer = null
 let parcelLayer = null
 let parcelMoveHandler = null
@@ -1439,6 +1444,23 @@ const streetViewPoint = computed(() => {
       return { lat: c.lat, lng: c.lng, heading: 0, label: c.address || '' }
     }
   }
+  if (subjectStreetViewLoading.value) return null
+  const resolved = subjectStreetView.value
+  if (
+    resolved?.ok && resolved?.available && resolved?.exact &&
+    resolved.lat != null && resolved.lng != null
+  ) {
+    return {
+      lat: resolved.lat,
+      lng: resolved.lng,
+      heading: Number.isFinite(Number(resolved.heading)) ? Number(resolved.heading) : 0,
+      label: resolved.address || data.value?.address || props.address || '',
+    }
+  }
+  // Once the exact-point endpoint answered, do not quietly fall back to a
+  // Census/interpolated point. That is how Street View showed the neighbour's
+  // house before parcel resolution existed.
+  if (subjectStreetViewAttempted.value) return null
   const s = data.value?.subject
   if (s?.lat == null || s?.lng == null) return null
   const zlat = s.zillow_lat
@@ -1471,6 +1493,34 @@ const streetViewTitle = computed(() => {
   return __('Street View of the subject, or the last pin you clicked') + ' (S)'
 })
 
+async function loadSubjectStreetView() {
+  if (!props.lead || focusedComp.value || subjectStreetViewLoading.value) return
+  if (subjectStreetViewAttempted.value && !subjectStreetView.value?.retryable) return
+  subjectStreetViewLoading.value = true
+  streetViewMsg.value = __('Locating the exact parcel…')
+  try {
+    subjectStreetView.value = await call('crm.api.address_resolve.get_street_view', {
+      subject: props.lead,
+    })
+  } catch (_) {
+    subjectStreetView.value = { ok: false, available: false, retryable: true }
+  } finally {
+    subjectStreetViewAttempted.value = true
+    subjectStreetViewLoading.value = false
+  }
+}
+
+watch(
+  () => props.lead,
+  () => {
+    subjectStreetView.value = null
+    subjectStreetViewAttempted.value = false
+  },
+)
+watch([showStreet, focusedComp], ([open, focused]) => {
+  if (open && !focused) loadSubjectStreetView()
+})
+
 function onStreetViewLoad() {
   if (streetViewTimer) {
     clearTimeout(streetViewTimer)
@@ -1489,11 +1539,18 @@ function syncStreetView() {
     streetViewMsg.value = ''
     return
   }
+  if (subjectStreetViewLoading.value && !focusedComp.value) {
+    streetViewSrc.value = ''
+    streetViewMsg.value = __('Locating the exact parcel…')
+    return
+  }
   const pt = streetViewPoint.value
   const src = pt ? streetViewEmbedUrl(pt.lat, pt.lng, pt.heading) : ''
   if (!src) {
     streetViewSrc.value = ''
-    streetViewMsg.value = __('No coordinates for Street View yet.')
+    streetViewMsg.value = subjectStreetViewAttempted.value && !focusedComp.value
+      ? __('No Street View is available at this parcel.')
+      : __('No coordinates for Street View yet.')
     return
   }
   if (streetViewSrc.value === src) return
@@ -1596,9 +1653,32 @@ const emptyMessage = computed(() => {
   return __('No comps found nearby.')
 })
 const zillowMatch = computed(() => data.value?.zillow_match || null)
+const addressResolution = ref(null)
+let addressStatusToken = 0
+
+async function loadAddressStatus() {
+  if (!props.lead || (props.practiceAttempt && props.practiceProperty)) return
+  const token = ++addressStatusToken
+  try {
+    const next = await call('crm.api.address_resolve.get_address_status', {
+      subject: props.lead,
+    })
+    if (token === addressStatusToken) addressResolution.value = next || null
+  } catch (_) {
+    // Schema ships before app code, but mixed deploy windows are expected. An
+    // absent optional notice must never take the comp board down.
+    if (token === addressStatusToken) addressResolution.value = null
+  }
+}
+
+watch(() => props.lead, loadAddressStatus, { immediate: true })
 
 function onAddressSaved(address) {
   if (data.value) data.value.address = address
+  // Same record, different house string: the prior parcel/panorama belongs to
+  // the old address and must not survive merely because the route id did.
+  subjectStreetView.value = null
+  subjectStreetViewAttempted.value = false
 }
 
 async function onAddressReran() {

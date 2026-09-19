@@ -415,6 +415,19 @@ def update_property(
 		doc.zillow_zpid = ""
 		doc.batchdata_comps = ""
 		doc.batchdata_comps_fetched_at = None
+		# Parcel resolution and a suggestion decision belong to the exact source
+		# address they were made against. A later edit must not keep the old house's
+		# point or suppress a new correction. Guarded so app code can deploy before
+		# setup_geocode.py adds the custom fields.
+		parcel_reset = {
+			"parcel_lat": None, "parcel_lng": None, "parcel_source": "",
+			"parcel_address_key": "", "parcel_checked_at": None,
+			"address_suggested": "", "address_suggestion_key": "",
+			"address_suggestion_state": "",
+		}
+		for field, value in parcel_reset.items():
+			if doc.meta.has_field(field):
+				doc.set(field, value)
 	doc.save()
 	return _shape(doc, with_offers=True)
 

@@ -64,9 +64,32 @@ def warm_lead(lead, radius_m=None):
 
 	Best-effort by construction: every failure path returns rather than raises,
 	because a geo outage must never be able to fail a lead insert.
+
+	ALSO RESOLVES THE PROPERTY'S EXACT POINT FIRST, and the ordering is the
+	reason it lives here instead of in a job of its own. This job already runs
+	after commit on the `long` queue, and `address_resolve` writes the accurate
+	coordinate into `property_lat/lng` at ingest -- which is the comps circle
+	centre. Buy the circle first and the centre moves under a warm cache; resolve
+	first and the sweep below, the Zillow circle and everything downstream all
+	start from the right point at no extra cost.
 	"""
+	from crm.api.address_resolve import resolve_at_ingest
+
+	# Resolution is the gate, not decoration. Buying the circle from the old
+	# Census/interpolated point and moving the centre afterwards strands the warm
+	# cache and can show the neighbouring house. Transient failures deliberately
+	# leave the lead retryable rather than warming a point we know is not exact.
+	resolved = resolve_at_ingest(lead)
+	if not resolved.get("ok") or not resolved.get("exact"):
+		return {
+			"ok": False,
+			"reason": resolved.get("reason") or "no exact parcel point",
+			"retryable": bool(resolved.get("retryable")),
+			"resolved": resolved,
+		}
+
 	if not _enabled():
-		return {"ok": False, "reason": "redfin_scraper_url not configured"}
+		return {"ok": False, "reason": "redfin_scraper_url not configured", "resolved": resolved}
 
 	lat, lng = _lead_point(lead)
 	if lat is None:

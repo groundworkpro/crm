@@ -1,4 +1,29 @@
 <template>
+  <!-- One address-warning surface. Parcel standardisation and Zillow's lookup
+       verdict live together so a rep never has to reconcile competing banners. -->
+  <div
+    v-if="pendingSuggestion"
+    class="mb-2 flex flex-col gap-2 rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-2 text-xs text-ink-amber-3"
+  >
+    <div>
+      <span class="font-medium">{{ __('Possible address correction:') }}</span>
+      {{ suggestionAddress }}
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <Button
+        :label="accepting ? __('Saving…') : __('Use this address')"
+        variant="solid"
+        :disabled="accepting || dismissing"
+        @click="acceptSuggestion"
+      />
+      <Button
+        :label="dismissing ? __('Saving…') : __('Keep current address')"
+        variant="subtle"
+        :disabled="accepting || dismissing"
+        @click="dismissSuggestion"
+      />
+    </div>
+  </div>
   <div
     v-if="unavailable && !visible"
     class="rounded-md border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-7"
@@ -54,14 +79,28 @@ const props = defineProps({
   lead: { type: String, required: true },
   address: { type: String, default: '' },
   match: { type: Object, default: null },
+  addressResolution: { type: Object, default: null },
 })
-const emit = defineEmits(['saved', 'reran'])
+const emit = defineEmits(['saved', 'reran', 'addressResolved'])
 
 const draft = ref(props.address || '')
 const savedAddress = ref(props.address || '')
 const savedSinceFetch = ref(false)
 const saving = ref(false)
 const rerunning = ref(false)
+const accepting = ref(false)
+const dismissing = ref(false)
+const suggestionHandled = ref(false)
+
+const suggestionAddress = computed(() => props.addressResolution?.suggested_address || '')
+const pendingSuggestion = computed(
+  () => !suggestionHandled.value && props.addressResolution?.suggestion_state === 'pending' && !!suggestionAddress.value,
+)
+
+watch(
+  () => [props.addressResolution?.suggestion_key, props.addressResolution?.suggestion_state],
+  () => { suggestionHandled.value = false },
+)
 
 watch(
   () => props.address,
@@ -126,6 +165,40 @@ async function save() {
     toast.error(e.messages?.[0] || __('Could not save the address'))
   } finally {
     saving.value = false
+  }
+}
+
+async function acceptSuggestion() {
+  if (!props.lead || !pendingSuggestion.value) return
+  accepting.value = true
+  try {
+    const res = await call('crm.api.address_resolve.accept_address_suggestion', {
+      subject: props.lead,
+    })
+    suggestionHandled.value = true
+    if (res?.address) emit('saved', res.address)
+    emit('addressResolved', res || {})
+    toast.success(__('Address updated and parcel location rechecked.'))
+  } catch (e) {
+    toast.error(e.messages?.[0] || __('Could not update the address'))
+  } finally {
+    accepting.value = false
+  }
+}
+
+async function dismissSuggestion() {
+  if (!props.lead || !pendingSuggestion.value) return
+  dismissing.value = true
+  try {
+    const res = await call('crm.api.address_resolve.dismiss_address_suggestion', {
+      subject: props.lead,
+    })
+    suggestionHandled.value = true
+    emit('addressResolved', res || {})
+  } catch (e) {
+    toast.error(e.messages?.[0] || __('Could not save the address decision'))
+  } finally {
+    dismissing.value = false
   }
 }
 
