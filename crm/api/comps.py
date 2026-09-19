@@ -130,6 +130,13 @@ DETAIL_MIGRATIONS = {
 HIDDEN_FIELD = "comps_hidden"
 SELECTED_FIELD = "comps_selected"
 
+#: When a rep last saved a price determination, written by
+#: `crm.api.price_determination.save_price_determination`. Spelled here rather
+#: than imported: that module needs `frappe.utils.flt`, which the unit shim does
+#: not carry, so importing it would drag every comps test into a dependency the
+#: comps map does not otherwise have. Read-only from here.
+PRICED_AT_FIELD = "price_determination_at"
+
 #: A rep-entered subject square footage. Zillow is sometimes simply wrong about
 #: the house being priced ("the square footage is off from what it actually is"),
 #: and every downstream number — the preset ladder, the tray deltas, the repair
@@ -409,44 +416,92 @@ def _self_listing(doc):
 
 
 def redfin_first_subject_enabled() -> bool:
-	"""May the subject-facts cascade read Redfin before Zillow?
+	"""MASTER SWITCH: may the subject-facts cascade read Redfin at all?
 
-	DEFAULT FALSE — this is OPT-IN, the opposite default to
-	`lead_round_robin_enabled`'s break-glass switch, and the reason is that
-	turning it on MOVES COMPS ON A REP'S BOARD.
+	DEFAULT TRUE. This is the estate-wide kill switch, not the per-lead rule —
+	set it to 0 in site_config and NOBODY gets Redfin-first, whatever their lead
+	looks like:
 
-	The chain, which is not obvious from `_subject_facts` alone: the subject's
-	beds/baths/sqft/year become `*_band` values, `_preset_tiers` turns those
-	bands into filter windows, and `_matches` excludes any comp whose known
-	value falls outside them. So a Redfin sqft of 1,800 where Zillow said 1,500
-	moves a ±25% window from 1,125–1,875 to 1,350–2,250, and comps at either
-	edge appear or disappear. A tier that yielded 5 comps may now yield 4,
-	which flips `relaxed` and drops the board to a looser preset.
+	    "redfin_first_subject_enabled": 0
 
-	Worse while it was ungated: `redfin.cached_subject_record` is a pure cache
-	read, so a cold lead was Zillow-first for exactly one request and
-	Redfin-first afterwards — the SAME lead could show different comps on a
-	first and second open with no user action. Off by default, that
-	non-determinism cannot occur; on, it is a deliberate choice applied going
-	forward rather than a silent migration of leads already worked.
+	Which leads actually get it is decided underneath, per lead, by
+	`_comp_set_frozen`. Read `_redfin_first_for` for the combined rule; this
+	function on its own does not decide anything about a given lead.
 
-	Flip it in site_config when the comp set is allowed to move:
-
-	    "redfin_first_subject_enabled": 1
+	Why a default of TRUE is safe here when the comp set moving is the whole
+	hazard: the freeze below means the only leads that move are ones no human
+	has worked, so nobody's picks, hides or saved price can be invalidated by
+	the switch being on. An opt-in default would instead have left the
+	improvement waiting on somebody remembering to flip it.
 
 	What this does NOT gate is as important as what it does — see the callers
 	in `_subject_facts` and the ladder note in `_shape_detail`.
 	"""
-	return bool(frappe.conf.get("redfin_first_subject_enabled", False))
+	return bool(frappe.conf.get("redfin_first_subject_enabled", True))
+
+
+def _priced_supported(dt="CRM Lead") -> bool:
+	"""False until the ops script adds `price_determination_at`.
+
+	Mirrors `price_determination._enabled()` and the `_state_supported` /
+	`_types_supported` guards in this module: these are CUSTOM FIELDS installed
+	by the ops repo, so a site can legitimately not have them yet. Absent is
+	"nothing recorded", never an error.
+	"""
+	return frappe.db.has_column(dt, PRICED_AT_FIELD)
+
+
+def _comp_set_frozen(doc) -> bool:
+	"""Has a human already recorded a judgement about THIS subject's comp set?
+
+	True means the lead keeps the Zillow-first subject facts it was worked with,
+	permanently. Three markers, any one of which is enough:
+
+	* `price_determination_at` — a rep priced this deal.
+	* `comps_selected` — a rep hand-picked comps.
+	* `comps_hidden` — a rep threw comps off the board.
+
+	WHY THE PICKS COUNT, not just the saved price. A saved determination
+	snapshots its own comps (`CompOfferCalc.vue` persists `comps:` into the
+	snapshot, and `price_determination._clean_comps` copies them rather than
+	referencing `CRM Comp` rows), so saved NUMBERS cannot move retroactively.
+	But `comps_selected` / `comps_hidden` store comp docnames, and the band
+	windows from `_preset_tiers` decide which comps are on the board at all.
+	Shift a band and a rep's hand-picked comp silently disappears while the
+	saved calc still cites it. That is the failure this prevents, and it is why
+	picking a comp freezes a lead even if nobody ever saved a price.
+
+	DETERMINISM. Every input here is a PERSISTED FIELD on the subject doc.
+	Nothing consults a cache, the Redfin record, or anything else whose warmth
+	varies between two requests for the same lead — so this answers the same way
+	every time, which is the property that makes the freeze trustworthy.
+	"""
+	if _priced_supported(doc.doctype) and doc.get(PRICED_AT_FIELD):
+		return True
+	hidden, selected = _comp_state(doc)
+	return bool(hidden or selected)
+
+
+def _redfin_first_for(doc) -> bool:
+	"""The whole rule, in one place: may THIS subject read Redfin first?
+
+	    master flag off  -> never, for anybody (full kill switch)
+	    master flag on   -> yes, EXCEPT leads carrying recorded human judgement
+
+	The improvement therefore applies to new work automatically, and a lead a
+	human has already worked keeps exactly the comp set they worked with.
+	"""
+	return redfin_first_subject_enabled() and not _comp_set_frozen(doc)
 
 
 def _subject_facts(doc, redfin_rec=None):
 	"""Everything we can honestly say about the subject, best source first.
 
 	1. REDFIN (`redfin_rec`, the cached /facts record) — beds/baths/sqft/year/type,
-	   ONLY when `redfin_first_subject_enabled()` says so. Off (the default) this
-	   rung is skipped entirely and the cascade is exactly the Zillow-first one
-	   that shipped before it, because reordering the subject moves the comp set.
+	   ONLY when `_redfin_first_for(doc)` says so: on by default, but skipped for
+	   any lead carrying recorded human judgement about its comp set. Skipped,
+	   this rung leaves exactly the Zillow-first cascade that shipped before it,
+	   because reordering the subject moves the comp set.
 	2. ZILLOW (`crm.api.zillow`) — the same numbers where Redfin has none, plus
 	   everything Redfin structurally cannot answer (see below)
 	3. its own listing in the comp inventory (real numbers, but a last ASK, and
@@ -510,12 +565,12 @@ def _subject_facts(doc, redfin_rec=None):
 	# Only a MATCHED record may answer for the subject. An unmatched or errored
 	# record is "Redfin does not know this house", not "the house has no beds".
 	redfin_matched = redfin_rec if (redfin_rec or {}).get("matched") else None
-	# THE FLAG APPLIES HERE AND NOWHERE ELSE IN THIS FUNCTION. Nulling the record
-	# at the single point every fact rung reads is what makes "off" provably
-	# identical to the pre-cascade behaviour: `take`, `property_type` and
+	# THE GATE APPLIES HERE AND NOWHERE ELSE IN THIS FUNCTION. Nulling the record
+	# at the single point every fact rung reads is what makes a gated-off subject
+	# provably identical to the pre-cascade behaviour: `take`, `property_type` and
 	# `last_sale` all consult `redfin_facts`, so one assignment closes all three
 	# and no future rung can miss the gate by forgetting to check it.
-	redfin_facts = redfin_matched if redfin_first_subject_enabled() else None
+	redfin_facts = redfin_matched if _redfin_first_for(doc) else None
 	facts = {"source": {}}
 
 	def take(key, lead_field, listing_field=None, zillow_key=None, unit="", group=False,
@@ -1315,11 +1370,14 @@ def _shape_detail(row, zpid=None):
 	# `_zillow_detail` into separate facts and photo halves (they share one cache
 	# entry today); worth doing, not done here.
 	#
-	# NOT GATED by `redfin_first_subject_enabled`, on purpose: this ladder changes
-	# which PICTURES appear on a comp, never which comps exist. Only the subject
-	# cascade feeds the bands that `_preset_tiers` and `_matches` select on, so
-	# only that is behind the flag. Do not "consistently" gate this too — it would
-	# withhold a strictly better gallery for no safety gain.
+	# NOT GATED by `_redfin_first_for` (nor the `redfin_first_subject_enabled`
+	# master switch), on purpose: this ladder changes which PICTURES appear on a
+	# comp, never which comps exist. Only the subject cascade feeds the bands that
+	# `_preset_tiers` and `_matches` select on, so only that is gated — and in
+	# particular a lead frozen by `_comp_set_frozen` still gets the better gallery,
+	# because a photo cannot invalidate a saved determination. Do not
+	# "consistently" gate this too; it would withhold a strictly better gallery for
+	# no safety gain.
 	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
 	photos = rf.get("photos") or []
 	# /photos carries the matched row's observed listing path, so on the happy

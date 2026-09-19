@@ -1,5 +1,5 @@
-"""`redfin_first_subject_enabled` decides whether the subject cascade reads
-Redfin, and therefore whether the COMP SET can move.
+"""Who gets the Redfin-first subject cascade, and therefore whose COMP SET may
+move.
 
 WHY THIS FILE EXISTS. The Redfin-first cascade is more accurate per field
 (Redfin is the odd one out on sqft 9% of the time against Zillow's 52%), but
@@ -9,21 +9,33 @@ excludes comps outside them. Redfin sqft 1,800 where Zillow said 1,500 moves a
 ±25% window from 1,125–1,875 to 1,350–2,250, so comps at the edges appear and
 disappear on a rep's board.
 
-That is why the cascade is opt-in rather than on. And because
-`redfin.cached_subject_record` is a pure cache read, an ungated cascade was
-also NON-DETERMINISTIC: a cold lead was Zillow-first for exactly one request
-and Redfin-first after, so the same lead could show different comps on a first
-and second open with nobody touching anything.
+THE RULE IS TWO-LEVEL, and both levels are pinned below.
 
-The tests below are the proof in both directions:
+    `redfin_first_subject_enabled`  master switch, DEFAULT TRUE. Off, nobody
+                                    gets Redfin-first — a full kill switch.
+    `_comp_set_frozen(doc)`         per lead. A lead carrying recorded human
+                                    judgement keeps its Zillow-first facts
+                                    permanently.
 
-* OFF (the default) — a Redfin record that disagrees with Zillow on every
-  field changes NOTHING: not a fact, not a band, not a source label, not a
-  filter window, not which comps pass. Any leak fails here.
-* ON — the cascade applies, and the comp set is allowed to move. The moving is
-  the point; it is a choice, made deliberately, applied going forward.
+The per-lead half is what makes a default of TRUE safe. The improvement lands
+on new work automatically, with no flag to remember, while a lead somebody has
+already priced or hand-picked comps on cannot have those comps move underneath
+them. Recorded judgement is `price_determination_at`, `comps_selected` or
+`comps_hidden` — any one is enough, and each is tested independently here
+because a rep who picks comps without saving a price is just as exposed.
 
-Two things are deliberately OUTSIDE the flag and are pinned here so a later
+The saved NUMBERS were never the exposure: a determination snapshots its own
+comps. The exposure is that picks and hides store comp DOCNAMES, so a shifted
+band removes a hand-picked comp from the board while the saved calc still
+cites it.
+
+DETERMINISM. `redfin.cached_subject_record` is a pure cache read, so anything
+deciding the cascade from cache warmth is non-deterministic by construction —
+the same lead would answer differently on a first and second open with nobody
+touching it. The freeze decision reads PERSISTED FIELDS ONLY, and
+`FreezeIsDeterministic` pins that.
+
+Two things are deliberately OUTSIDE this gate and are pinned here so a later
 "consistency" pass does not sweep them in:
 
 * `has_redfin` — a PRESENCE flag for `redfin.subject_has_vendor_facts` (the
@@ -76,24 +88,73 @@ REDFIN = {
 
 
 def facts(enabled, redfin_rec=REDFIN, zillow=ZILLOW, doc=None):
-	with patch.object(comps, "redfin_first_subject_enabled", return_value=enabled), \
-		 patch.object(comps, "_self_listing", return_value=None), \
+	"""Subject facts with the GATE FORCED, for testing what the cascade does
+	once a decision has been made. `ungated_facts` exercises the real decision."""
+	with patch.object(comps, "_redfin_first_for", return_value=enabled):
+		return ungated_facts(doc or lead(), redfin_rec=redfin_rec, zillow=zillow)
+
+
+def ungated_facts(doc, redfin_rec=REDFIN, zillow=ZILLOW):
+	"""Subject facts with the REAL gate: master flag plus per-lead freeze."""
+	with patch.object(comps, "_self_listing", return_value=None), \
 		 patch.object(comps, "_sqft_override", return_value=0), \
 		 patch.object(comps, "_sqft_override_supported", return_value=True):
 		import crm.api.zillow as zillow_api
 		with patch.object(zillow_api, "facts_for_lead", return_value=zillow):
-			return comps._subject_facts(doc or lead(), redfin_rec)
+			return comps._subject_facts(doc, redfin_rec)
 
 
-class DefaultIsOff(unittest.TestCase):
-	"""The flag is opt-in. A fresh site must not move anybody's comps."""
+def took_redfin(out) -> bool:
+	"""Did the subject actually read Redfin? Asserted on the BAND, not a label:
+	the band is what `_preset_tiers` turns into a comp filter window."""
+	return out["sqft_band"] == [1800, 1800]
 
-	def test_absent_config_means_off(self):
+
+class _ColumnsMixin:
+	"""The three judgement markers are CUSTOM FIELDS. Which ones a site has is
+	part of what is under test, so every test states it rather than inheriting
+	it.
+
+	`has_column` is assigned rather than driven through `shim.db.columns`
+	because other suites REPLACE that method outright on the shared shim and do
+	not restore it (see the same note at unit_test_zillow_unavailable.py:47), so
+	populating `columns` here would be silently ignored depending on test order.
+	The previous callable is put back in tearDown so this file is not the next
+	one to leak.
+	"""
+
+	def setUp(self):
 		import frappe
 		frappe.conf.pop("redfin_first_subject_enabled", None)
-		self.assertFalse(comps.redfin_first_subject_enabled())
+		self._has_column = frappe.db.has_column
+		self.install_fields()
 
-	def test_explicit_truthy_config_turns_it_on(self):
+	def tearDown(self):
+		import frappe
+		frappe.conf.pop("redfin_first_subject_enabled", None)
+		frappe.db.has_column = self._has_column
+
+	def install_fields(self, *names):
+		"""Pretend the ops repo has added exactly these columns to CRM Lead."""
+		import frappe
+		installed = set(names)
+		frappe.db.has_column = lambda dt, col: col in installed
+
+	def all_fields(self):
+		self.install_fields(comps.PRICED_AT_FIELD, comps.SELECTED_FIELD, comps.HIDDEN_FIELD)
+
+
+class MasterSwitchDefaultsOn(unittest.TestCase):
+	"""DEFAULT TRUE, deliberately: an opt-in default leaves the improvement
+	waiting on somebody remembering to flip it. Safe because the per-lead freeze
+	below is what protects worked leads, not the flag."""
+
+	def test_absent_config_means_on(self):
+		import frappe
+		frappe.conf.pop("redfin_first_subject_enabled", None)
+		self.assertTrue(comps.redfin_first_subject_enabled())
+
+	def test_explicit_truthy_config_keeps_it_on(self):
 		import frappe
 		try:
 			frappe.conf["redfin_first_subject_enabled"] = 1
@@ -101,13 +162,169 @@ class DefaultIsOff(unittest.TestCase):
 		finally:
 			frappe.conf.pop("redfin_first_subject_enabled", None)
 
-	def test_explicit_falsey_config_stays_off(self):
+	def test_explicit_falsey_config_turns_it_off(self):
+		"""The kill switch still kills."""
 		import frappe
 		try:
 			frappe.conf["redfin_first_subject_enabled"] = 0
 			self.assertFalse(comps.redfin_first_subject_enabled())
 		finally:
 			frappe.conf.pop("redfin_first_subject_enabled", None)
+
+
+class VirginLeadGetsTheCascade(_ColumnsMixin, unittest.TestCase):
+	"""The point of the whole change: no flag to flip, no lead to migrate."""
+
+	def test_a_lead_nobody_has_worked_reads_redfin(self):
+		self.all_fields()
+		self.assertTrue(took_redfin(ungated_facts(lead())))
+
+	def test_and_says_so_in_the_source_labels(self):
+		self.all_fields()
+		out = ungated_facts(lead())
+		self.assertEqual(out["source"]["sqft"], "redfin")
+		self.assertEqual(out["sqft"], 1800)
+
+
+class RecordedJudgementFreezesTheLead(_ColumnsMixin, unittest.TestCase):
+	"""Each marker INDEPENDENTLY. A rep who picks comps without ever saving a
+	price is exactly as exposed as one who priced the deal, so testing only the
+	saved price would miss the commoner case."""
+
+	def test_a_saved_price_determination_freezes_it(self):
+		self.all_fields()
+		worked = lead(price_determination_at="2026-09-01 10:00:00")
+		self.assertTrue(comps._comp_set_frozen(worked))
+		self.assertFalse(took_redfin(ungated_facts(worked)))
+
+	def test_a_hand_picked_comp_freezes_it(self):
+		self.all_fields()
+		worked = lead(comps_selected='["CRM-COMP-1"]')
+		self.assertTrue(comps._comp_set_frozen(worked))
+		self.assertFalse(took_redfin(ungated_facts(worked)))
+
+	def test_a_hidden_comp_freezes_it(self):
+		self.all_fields()
+		worked = lead(comps_hidden='["CRM-COMP-2"]')
+		self.assertTrue(comps._comp_set_frozen(worked))
+		self.assertFalse(took_redfin(ungated_facts(worked)))
+
+	def test_a_frozen_lead_is_byte_identical_to_the_old_behaviour(self):
+		"""The strongest form of the promise: a worked lead's facts are the same
+		dict it would have had with no Redfin record at all."""
+		self.all_fields()
+		worked = lead(comps_selected='["CRM-COMP-1"]')
+		frozen = ungated_facts(worked, redfin_rec=REDFIN)
+		never_had_one = ungated_facts(worked, redfin_rec=None)
+		frozen.pop("has_redfin")
+		never_had_one.pop("has_redfin")
+		self.assertEqual(frozen, never_had_one)
+
+	def test_an_empty_pick_list_is_not_a_judgement(self):
+		"""`set_comp_state` rewrites BOTH fields on every call, so a rep who picked
+		and then unpicked leaves "[]" behind. An empty list records no surviving
+		judgement, so it must not freeze — otherwise one stray click would pin a
+		lead to the worse provider forever."""
+		self.all_fields()
+		self.assertFalse(comps._comp_set_frozen(lead(comps_selected="[]", comps_hidden="[]")))
+
+	def test_garbage_in_the_field_does_not_freeze_or_raise(self):
+		"""`_load_list` already swallows bad JSON; pinned so the freeze inherits
+		that rather than taking the comps map down on one corrupt row."""
+		self.all_fields()
+		self.assertFalse(comps._comp_set_frozen(lead(comps_selected="not json")))
+
+
+class MissingCustomFieldsAreNotAJudgement(_ColumnsMixin, unittest.TestCase):
+	"""All three markers are installed by the ops repo, so a site can genuinely
+	not have them. Absent must read as "nobody has worked this lead" — never as
+	an error, and never as a freeze that would quietly disable the cascade
+	estate-wide on a site that is simply behind on migrations."""
+
+	def test_no_columns_at_all_does_not_raise(self):
+		self.install_fields()
+		self.assertFalse(comps._comp_set_frozen(lead()))
+
+	def test_no_columns_still_gets_the_cascade(self):
+		self.install_fields()
+		self.assertTrue(took_redfin(ungated_facts(lead())))
+
+	def test_a_value_in_an_uninstalled_column_is_ignored(self):
+		"""The guard is the COLUMN, not the value: a doc carrying a stale attribute
+		for a field this site has never installed must not freeze anything."""
+		self.install_fields()
+		stale = lead(price_determination_at="2026-09-01 10:00:00",
+		             comps_selected='["CRM-COMP-1"]')
+		self.assertFalse(comps._comp_set_frozen(stale))
+
+	def test_the_price_field_alone_is_enough_to_freeze(self):
+		"""Partial installs are real. The pick fields being absent must not stop a
+		saved determination from freezing the lead."""
+		self.install_fields(comps.PRICED_AT_FIELD)
+		self.assertTrue(comps._comp_set_frozen(lead(price_determination_at="2026-09-01 10:00:00")))
+
+	def test_the_pick_fields_alone_are_enough_to_freeze(self):
+		self.install_fields(comps.SELECTED_FIELD, comps.HIDDEN_FIELD)
+		self.assertTrue(comps._comp_set_frozen(lead(comps_selected='["CRM-COMP-1"]')))
+
+
+class MasterSwitchOverridesEverything(_ColumnsMixin, unittest.TestCase):
+	"""Off means off. The per-lead freeze can only ever take the cascade AWAY,
+	never grant it — otherwise the kill switch would not be one."""
+
+	def test_off_denies_a_virgin_lead(self):
+		import frappe
+		self.all_fields()
+		frappe.conf["redfin_first_subject_enabled"] = 0
+		self.assertFalse(comps._redfin_first_for(lead()))
+		self.assertFalse(took_redfin(ungated_facts(lead())))
+
+	def test_off_also_denies_a_worked_lead(self):
+		import frappe
+		self.all_fields()
+		frappe.conf["redfin_first_subject_enabled"] = 0
+		self.assertFalse(comps._redfin_first_for(lead(comps_hidden='["CRM-COMP-2"]')))
+
+	def test_on_is_the_only_state_that_can_grant_it(self):
+		import frappe
+		self.all_fields()
+		frappe.conf["redfin_first_subject_enabled"] = 1
+		self.assertTrue(comps._redfin_first_for(lead()))
+		self.assertFalse(comps._redfin_first_for(lead(comps_selected='["CRM-COMP-1"]')))
+
+
+class FreezeIsDeterministic(_ColumnsMixin, unittest.TestCase):
+	"""THE NON-DETERMINISM PIN.
+
+	`redfin.cached_subject_record` is a pure cache read: it returns None until
+	something warms it. Any gate that consulted it would answer differently on a
+	first and second open of the SAME lead, moving comps on a rep's board with
+	nobody touching anything. The freeze therefore reads persisted fields only,
+	and these tests fail if a future edit reaches for the record.
+	"""
+
+	def test_the_decision_ignores_whether_a_record_is_cached(self):
+		"""`_comp_set_frozen` cannot even see the record — pinned by signature, so
+		the only way to break it is a change this test will catch."""
+		self.all_fields()
+		import inspect
+		self.assertEqual(list(inspect.signature(comps._comp_set_frozen).parameters), ["doc"])
+
+	def test_a_worked_lead_answers_the_same_cold_and_warm(self):
+		self.all_fields()
+		worked = lead(price_determination_at="2026-09-01 10:00:00")
+		cold = ungated_facts(worked, redfin_rec=None)
+		warm = ungated_facts(worked, redfin_rec=REDFIN)
+		cold.pop("has_redfin")
+		warm.pop("has_redfin")
+		self.assertEqual(cold, warm, "a frozen lead moved when the cache warmed")
+
+	def test_repeated_calls_agree(self):
+		"""No memoisation, no first-call special case, in either direction."""
+		self.all_fields()
+		for doc in (lead(), lead(comps_selected='["CRM-COMP-1"]')):
+			answers = {comps._comp_set_frozen(doc) for _ in range(3)}
+			self.assertEqual(len(answers), 1, doc.get("comps_selected"))
 
 
 class OffLeaksNothing(unittest.TestCase):
