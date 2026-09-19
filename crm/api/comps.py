@@ -53,6 +53,7 @@ a usable set wins, and the response says which tier was used and whether it had 
 loosen, so the UI can tell the user plainly rather than pretending.
 """
 
+import datetime
 import hashlib
 import json
 import math
@@ -129,13 +130,6 @@ DETAIL_MIGRATIONS = {
 #: the next person to open the lead needs to see.
 HIDDEN_FIELD = "comps_hidden"
 SELECTED_FIELD = "comps_selected"
-
-#: When a rep last saved a price determination, written by
-#: `crm.api.price_determination.save_price_determination`. Spelled here rather
-#: than imported: that module needs `frappe.utils.flt`, which the unit shim does
-#: not carry, so importing it would drag every comps test into a dependency the
-#: comps map does not otherwise have. Read-only from here.
-PRICED_AT_FIELD = "price_determination_at"
 
 #: A rep-entered subject square footage. Zillow is sometimes simply wrong about
 #: the house being priced ("the square footage is off from what it actually is"),
@@ -415,93 +409,118 @@ def _self_listing(doc):
 	return None
 
 
-def redfin_first_subject_enabled() -> bool:
-	"""MASTER SWITCH: may the subject-facts cascade read Redfin at all?
+def redfin_first_cutover():
+	"""THE ONLY KNOB: the moment from which leads read Redfin before Zillow.
 
-	DEFAULT TRUE. This is the estate-wide kill switch, not the per-lead rule —
-	set it to 0 in site_config and NOBODY gets Redfin-first, whatever their lead
-	looks like:
+	Returns a `datetime`, or None meaning OFF for everybody.
 
-	    "redfin_first_subject_enabled": 0
+	    unset / empty   -> None. Nobody gets Redfin-first. THE DEFAULT, which is
+	                       what makes shipping the code a no-op until somebody
+	                       decides otherwise.
+	    a datetime      -> leads created at or after it are Redfin-first; leads
+	                       created before it stay Zillow-first. Both forever.
 
-	Which leads actually get it is decided underneath, per lead, by
-	`_comp_set_frozen`. Read `_redfin_first_for` for the combined rule; this
-	function on its own does not decide anything about a given lead.
+	    "redfin_first_cutover": "2026-09-19 00:00:00"
 
-	Why a default of TRUE is safe here when the comp set moving is the whole
-	hazard: the freeze below means the only leads that move are ones no human
-	has worked, so nobody's picks, hides or saved price can be invalidated by
-	the switch being on. An opt-in default would instead have left the
-	improvement waiting on somebody remembering to flip it.
+	Setting a PAST date opts in everything created since then; setting today opts
+	in new work only; removing the key is a full instant rollback with no
+	migration, because nothing is written anywhere as a result of this decision.
 
-	What this does NOT gate is as important as what it does — see the callers
-	in `_subject_facts` and the ladder note in `_shape_detail`.
+	WHY A DATE AND NOT A BOOLEAN. The subject's numbers are not display-only —
+	beds/baths/sqft/year become `*_band`, `_preset_tiers` turns bands into filter
+	windows, and `_matches` drops comps outside them — so which provider answers
+	decides WHICH COMPS EXIST on a rep's board. A boolean moves every lead at
+	once, including ones a rep has already worked. `creation` is immutable, so
+	this instead splits the estate permanently at one instant: a given lead
+	answers the same way on every request for the rest of its life, whatever the
+	cache is doing and whoever has touched it since.
+
+	FAIL SAFE, LOUDLY. An unparseable value means OFF plus an error log, never an
+	exception and never "on": a desk that cannot price a lead because somebody
+	fat-fingered site_config is a worse outcome than the cascade staying off.
+	The log is written on every call rather than once, deliberately — a typo that
+	silently disables an improvement is how it stays broken for a month.
+
+	What this does NOT gate is as important as what it does — see the callers in
+	`_subject_facts` and the ladder note in `_shape_detail`.
 	"""
-	return bool(frappe.conf.get("redfin_first_subject_enabled", True))
-
-
-def _priced_supported(dt="CRM Lead") -> bool:
-	"""False until the ops script adds `price_determination_at`.
-
-	Mirrors `price_determination._enabled()` and the `_state_supported` /
-	`_types_supported` guards in this module: these are CUSTOM FIELDS installed
-	by the ops repo, so a site can legitimately not have them yet. Absent is
-	"nothing recorded", never an error.
-	"""
-	return frappe.db.has_column(dt, PRICED_AT_FIELD)
-
-
-def _comp_set_frozen(doc) -> bool:
-	"""Has a human already recorded a judgement about THIS subject's comp set?
-
-	True means the lead keeps the Zillow-first subject facts it was worked with,
-	permanently. Three markers, any one of which is enough:
-
-	* `price_determination_at` — a rep priced this deal.
-	* `comps_selected` — a rep hand-picked comps.
-	* `comps_hidden` — a rep threw comps off the board.
-
-	WHY THE PICKS COUNT, not just the saved price. A saved determination
-	snapshots its own comps (`CompOfferCalc.vue` persists `comps:` into the
-	snapshot, and `price_determination._clean_comps` copies them rather than
-	referencing `CRM Comp` rows), so saved NUMBERS cannot move retroactively.
-	But `comps_selected` / `comps_hidden` store comp docnames, and the band
-	windows from `_preset_tiers` decide which comps are on the board at all.
-	Shift a band and a rep's hand-picked comp silently disappears while the
-	saved calc still cites it. That is the failure this prevents, and it is why
-	picking a comp freezes a lead even if nobody ever saved a price.
-
-	DETERMINISM. Every input here is a PERSISTED FIELD on the subject doc.
-	Nothing consults a cache, the Redfin record, or anything else whose warmth
-	varies between two requests for the same lead — so this answers the same way
-	every time, which is the property that makes the freeze trustworthy.
-	"""
-	if _priced_supported(doc.doctype) and doc.get(PRICED_AT_FIELD):
-		return True
-	hidden, selected = _comp_state(doc)
-	return bool(hidden or selected)
+	raw = frappe.conf.get("redfin_first_cutover")
+	# Emptiness is checked BEFORE parsing because `frappe.utils.get_datetime(None)`
+	# returns NOW. Handing it a missing key would read as "the cutover is this
+	# instant", i.e. silently ON for all new work — the exact failure the default
+	# is supposed to prevent.
+	if raw is None or (isinstance(raw, str) and not raw.strip()):
+		return None
+	try:
+		parsed = frappe.utils.get_datetime(raw)
+	except Exception:
+		parsed = None
+	# Not just the exception path: some frappe versions RETURN None for a value
+	# they cannot parse rather than raising, and a non-datetime would blow up at
+	# the comparison in `_redfin_first_for` instead of here.
+	if not isinstance(parsed, datetime.datetime):
+		frappe.log_error(
+			f"redfin_first_cutover={raw!r} is not a datetime; "
+			"Redfin-first subject facts are OFF for every lead until it is fixed.",
+			"Comps: bad redfin_first_cutover",
+		)
+		return None
+	return parsed
 
 
 def _redfin_first_for(doc) -> bool:
 	"""The whole rule, in one place: may THIS subject read Redfin first?
 
-	    master flag off  -> never, for anybody (full kill switch)
-	    master flag on   -> yes, EXCEPT leads carrying recorded human judgement
+	    no cutover configured      -> no, for anybody
+	    doc.creation >= cutover    -> yes, forever
+	    doc.creation <  cutover    -> no, forever
 
-	The improvement therefore applies to new work automatically, and a lead a
-	human has already worked keeps exactly the comp set they worked with.
+	The boundary is INCLUSIVE at the cutover instant: a lead created exactly then
+	is post-cutover.
+
+	DETERMINISM, which is the whole point of keying on `creation`. The only
+	inputs are a site_config constant and an immutable field written once at
+	insert. Nothing here consults the cached Redfin record (a pure cache read, so
+	a gate touching it would answer differently on a lead's first and second open
+	with nobody touching anything), nothing consults rep activity (a gate keyed
+	on picks or a saved price would flip a lead's bands AFTER the rep had already
+	chosen comps against the old ones), and nothing consults deploy order.
+
+	`creation` arrives as a string from the database and as a datetime from a doc
+	in memory, so both are normalised. A doc with NO creation has never been
+	inserted, which makes it newer than any configured cutover — treat it as now.
 	"""
-	return redfin_first_subject_enabled() and not _comp_set_frozen(doc)
+	cutover = redfin_first_cutover()
+	if cutover is None:
+		return False
+	created = doc.get("creation")
+	if not created:
+		return True
+	try:
+		created = frappe.utils.get_datetime(created)
+	except Exception:
+		created = None
+	if not isinstance(created, datetime.datetime):
+		# Practically unreachable — `creation` is written by the framework — so this
+		# is a bad row rather than bad config, and the safe read of a bad row is the
+		# behaviour that shipped before the cascade existed.
+		frappe.log_error(
+			f"{doc.doctype} {doc.name} has an unreadable `creation`; "
+			"treating it as pre-cutover (Zillow-first).",
+			"Comps: bad lead creation",
+		)
+		return False
+	return created >= cutover
 
 
 def _subject_facts(doc, redfin_rec=None):
 	"""Everything we can honestly say about the subject, best source first.
 
 	1. REDFIN (`redfin_rec`, the cached /facts record) — beds/baths/sqft/year/type,
-	   ONLY when `_redfin_first_for(doc)` says so: on by default, but skipped for
-	   any lead carrying recorded human judgement about its comp set. Skipped,
-	   this rung leaves exactly the Zillow-first cascade that shipped before it,
-	   because reordering the subject moves the comp set.
+	   ONLY when `_redfin_first_for(doc)` says so: leads created at or after
+	   `redfin_first_cutover`, which is unset and therefore nobody until somebody
+	   sets it. Skipped, this rung leaves exactly the Zillow-first cascade that
+	   shipped before it, because reordering the subject moves the comp set.
 	2. ZILLOW (`crm.api.zillow`) — the same numbers where Redfin has none, plus
 	   everything Redfin structurally cannot answer (see below)
 	3. its own listing in the comp inventory (real numbers, but a last ASK, and
@@ -1370,14 +1389,13 @@ def _shape_detail(row, zpid=None):
 	# `_zillow_detail` into separate facts and photo halves (they share one cache
 	# entry today); worth doing, not done here.
 	#
-	# NOT GATED by `_redfin_first_for` (nor the `redfin_first_subject_enabled`
-	# master switch), on purpose: this ladder changes which PICTURES appear on a
-	# comp, never which comps exist. Only the subject cascade feeds the bands that
-	# `_preset_tiers` and `_matches` select on, so only that is gated — and in
-	# particular a lead frozen by `_comp_set_frozen` still gets the better gallery,
-	# because a photo cannot invalidate a saved determination. Do not
-	# "consistently" gate this too; it would withhold a strictly better gallery for
-	# no safety gain.
+	# NOT GATED by `_redfin_first_for` (nor by `redfin_first_cutover`), on purpose:
+	# this ladder changes which PICTURES appear on a comp, never which comps exist.
+	# Only the subject cascade feeds the bands that `_preset_tiers` and `_matches`
+	# select on, so only that is gated — and in particular a PRE-CUTOVER lead still
+	# gets the better gallery, because a photo cannot invalidate a saved
+	# determination or move a comp off the board. Do not "consistently" gate this
+	# too; it would withhold a strictly better gallery for no safety gain.
 	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
 	photos = rf.get("photos") or []
 	# /photos carries the matched row's observed listing path, so on the happy
