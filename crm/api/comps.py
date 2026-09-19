@@ -408,19 +408,60 @@ def _self_listing(doc):
 	return None
 
 
-def _subject_facts(doc):
+def _subject_facts(doc, redfin_rec=None):
 	"""Everything we can honestly say about the subject, best source first.
 
-	1. ZILLOW (`crm.api.zillow`) — real numbers for beds/baths/sqft/year/type, and a
-	   genuine last SALE out of priceHistory's Public Record rows
-	2. its own listing in the comp inventory (real numbers, but a last ASK, and
+	1. REDFIN (`redfin_rec`, the cached /facts record) — beds/baths/sqft/year/type
+	2. ZILLOW (`crm.api.zillow`) — the same numbers where Redfin has none, plus
+	   everything Redfin structurally cannot answer (see below)
+	3. its own listing in the comp inventory (real numbers, but a last ASK, and
 	   present for only ~5% of leads)
-	3. the iSpeedToLead pick-list fields on the lead (bands, not numbers)
-	4. the BatchData tax pull (assessed value / annual tax), already on the lead
+	4. the iSpeedToLead pick-list fields on the lead (bands, not numbers)
+	5. the BatchData tax pull (assessed value / annual tax), already on the lead
 
-	Every fact carries the source it came from, because "3 bd" from Zillow, from a
-	listing record, and typed into a web form by a motivated seller are not the same
-	claim — and the preset filters widen according to which one it is.
+	Every fact carries the source it came from, because "3 bd" from Redfin, from
+	Zillow, from a listing record, and typed into a web form by a motivated seller
+	are not the same claim — and the preset filters widen according to which one
+	it is.
+
+	WHY REDFIN LEADS, and what the evidence actually is. The benchmark
+	(`redfin-scraper-api/bench/README.md`) measures two DIFFERENT things and only
+	one of them is an argument for this ordering:
+
+	* ACCURACY, which is. Where all three providers carry a value and disagree,
+	  Redfin is the odd one out least often — 12% on sold price against Zillow's
+	  42%, and 9% on sqft against Zillow's 52%. So when both have a number, the
+	  Redfin one is likelier to be right, and that is what `take` encodes.
+	* COVERAGE, which is NOT, for the subject. Zillow reaches the subject more
+	  often than Redfin does (67% vs 77% resolved), because the subject is
+	  usually an off-market house. The "year built 93.8% vs 0%" figure people
+	  quote is about Zillow's COMP SEARCH rows, which carry no year; the
+	  subject's Zillow facts come from `/property`, which does. Do not reuse that
+	  number here.
+
+	Those two together are why this is a per-field fallthrough and not a
+	provider switch: Redfin's value wins when it HAS one, Zillow still answers
+	for every field Redfin missed, so the subject gets Redfin's accuracy without
+	losing Zillow's reach.
+
+	WHAT STAYS ZILLOW, and why each one is structural rather than a preference:
+
+	* `assessed_value` / taxes — Redfin publishes none (0% vs 90%). Nothing we
+	  scrape carries a tax record.
+	* `zestimate` / `rent_zestimate` — a different AVM, not a better one. The
+	  Redfin Estimate is surfaced separately as `subject.redfin_estimate`;
+	  `CompSubjectCard.vue` prints them side by side on purpose.
+	* `lot_size` — the service's /facts does NOT return it (only /listings rows
+	  do). Taking it from Redfin would replace a populated display string with
+	  None, so it stays Zillow's and this is the note saying that is deliberate.
+	* `cover_photo` — the SUBJECT photo is the one place Zillow genuinely wins
+	  (94% vs Redfin 27%), the opposite of the comp-photo rule in `_shape_detail`.
+	* `zpid` / `zillow_lat` / `zillow_lng` / `zillow_queried_address` — identity
+	  and the rooftop point the frontend aims Street View with.
+
+	`redfin_rec` is a pure cache read supplied by the caller
+	(`redfin.cached_subject_record`). None means "nothing cached yet", which on a
+	cold lead is one Zillow-first request — see that function's docstring.
 	"""
 	listing = _self_listing(doc)
 	zillow = None
@@ -431,12 +472,22 @@ def _subject_facts(doc):
 	except Exception:
 		# A third-party lookup must never take the comps map down with it.
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow facts failed")
+	# Only a MATCHED record may answer for the subject. An unmatched or errored
+	# record is "Redfin does not know this house", not "the house has no beds".
+	redfin_facts = redfin_rec if (redfin_rec or {}).get("matched") else None
 	facts = {"source": {}}
 
-	def take(key, lead_field, listing_field=None, zillow_key=None, unit="", group=False):
+	def take(key, lead_field, listing_field=None, zillow_key=None, unit="", group=False,
+	         redfin_key=None):
+		r = (redfin_facts or {}).get(redfin_key or key)
 		z = (zillow or {}).get(zillow_key or key)
 		listing_val = (listing or {}).get(listing_field or lead_field)
-		if z:
+		# Each fact falls through INDEPENDENTLY, so a provider that knows the beds
+		# but not the year does not drag the year down with it.
+		if r:
+			band = (float(r), float(r), True)
+			facts["source"][key] = "redfin"
+		elif z:
 			band = (float(z), float(z), True)
 			facts["source"][key] = "zillow"
 		elif listing_val:  # importer coerces missing numerics to 0, so 0 == unknown
@@ -475,22 +526,48 @@ def _subject_facts(doc):
 	facts["sqft_override"] = override or None
 	facts["sqft_override_supported"] = _sqft_override_supported(doc.doctype)
 
+	r_type = (redfin_facts or {}).get("property_type")
 	z_type = (zillow or {}).get("property_type")
-	ptype = z_type or (listing or {}).get("property_type") or None
+	ptype = r_type or z_type or (listing or {}).get("property_type") or None
 	facts["property_type"] = ptype
 	if ptype:
-		facts["source"]["property_type"] = "zillow" if z_type else "listing"
+		facts["source"]["property_type"] = (
+			"redfin" if r_type else "zillow" if z_type else "listing"
+		)
 
 	# The headline: what it actually SOLD for, and when. A Public Record transaction
 	# out of Zillow's priceHistory is a far stronger claim than the comp inventory's
 	# last ask, so it is kept separate and labelled a sale rather than folded in.
-	facts["last_sale"] = (zillow or {}).get("last_sale") or None
+	#
+	# Redfin leads here on coverage (96.5% vs 81%) but ONLY WHEN IT CARRIES A
+	# SOLD DATE. `price` on a /facts row is the last recorded sale for an
+	# off-market house and the ASKING price for a live listing, and the two are
+	# indistinguishable without `sold_date`. Taking it unguarded would print a
+	# current ask under a "sold for" label — the precise confusion the comment
+	# above exists to prevent.
+	r_sale = None
+	if redfin_facts and redfin_facts.get("sold_date") and _num(redfin_facts.get("price")):
+		r_sale = {
+			"price": _num(redfin_facts.get("price")),
+			"date": str(redfin_facts.get("sold_date")),
+		}
+	facts["last_sale"] = r_sale or (zillow or {}).get("last_sale") or None
+	if r_sale:
+		facts["source"]["last_sale"] = "redfin"
+	elif facts["last_sale"]:
+		facts["source"]["last_sale"] = "zillow"
+	# Zillow-only by construction — see the docstring. `lot_size` in particular is
+	# NOT a preference: /facts does not return it, so Redfin has nothing to offer.
 	facts["zestimate"] = (zillow or {}).get("zestimate") or None
 	facts["rent_zestimate"] = (zillow or {}).get("rent_zestimate") or None
 	facts["lot_size"] = (zillow or {}).get("lot_size") or None
 	facts["zpid"] = (zillow or {}).get("zpid") or None
 	# A cached miss is `{}` (plus `_queried_address`) and must not read as a hit.
 	facts["has_zillow"] = bool(facts["zpid"])
+	# Sibling flag for `redfin.subject_has_vendor_facts`, so a subject Redfin
+	# resolved but Zillow did not still gets its record fetched — and with it the
+	# Redfin Estimate and the listing URL, which ride the same fetch.
+	facts["has_redfin"] = bool(redfin_facts and redfin_facts.get("property_id"))
 	facts["zillow_queried_address"] = (zillow or {}).get("_queried_address") or ""
 	# May be "" here: leads cached before `cover_photo` was carried have no key.
 	# `get_lead_comps` fills the gap from the area search's self-match afterwards,
@@ -1151,16 +1228,16 @@ def _shape_detail(row, zpid=None):
 	# answer is written into the cached entry by a background job, so the second
 	# open has the link and the first one has its photos.
 	url_job = _start_redfin_url(_detail_address(row), row.get("lat"), row.get("lng"))
-	details, photos = _zillow_detail(row, zpid)
+	# The FACTS blob stays Zillow-first and is fetched unconditionally: Redfin's
+	# /facts carries `listing_remarks` but no HOA, parking, heating, cooling or
+	# price history, and `CompDetailModal.vue` reads all of those. Photos and
+	# facts therefore cascade INDEPENDENTLY — this call is the facts half, and
+	# its photos are merely the last rung of the ladder below.
+	details, zillow_photos = _zillow_detail(row, zpid)
 	# Dedupe BEFORE the thin-gallery check: a photo-less home whose "gallery" is
 	# two sizes of the same synthesized Street View frame is really ONE photo, and
-	# counting it as two suppressed the Realtor fallback that could do better.
-	photos = _dedupe_streetview(photos)
-	# Off-market Zillow galleries often have a single leftover frame. The photo
-	# ladder is Zillow -> Realtor (apivex) -> Redfin: each rung fires only while
-	# the gallery is still ≤1 image, on an explicit open, never for the tray, and
-	# the winner rides the 30-day detail cache. Absent its key, a rung no-ops.
-	photo_source = "zillow" if photos else ""
+	# counting it as two suppressed the fallbacks that could do better.
+	zillow_photos = _dedupe_streetview(zillow_photos)
 	from crm.api import redfin
 
 	# Coordinates come from the row (CRM Comp / BatchData / client-passed for
@@ -1168,9 +1245,26 @@ def _shape_detail(row, zpid=None):
 	addr = _detail_address(row, details)
 	lat = row.get("lat") or (details or {}).get("lat")
 	lng = row.get("lng") or (details or {}).get("lng")
-	# Listing URL is independent of the photo ladder: a 45-photo Zillow gallery
-	# still needs a Redfin link. Thin galleries reuse /photos (url + CDN).
-	redfin_url, url_pending = None, False
+
+	# PHOTO LADDER: Redfin -> Realtor -> Zillow. Each rung fires only while the
+	# gallery is still ≤1 image, on an explicit open, never for the tray, and the
+	# winner rides the 30-day detail cache. Absent its key, a rung no-ops.
+	#
+	# This order is measured, and it is the reverse of what it was. Of 214 comps
+	# where Redfin returned the row but no picture, Realtor supplied one 36% of
+	# the time against Zillow's 29%, and was the SOLE source on 19% against 12%
+	# — better or tied in all six sale-age buckets. Redfin leads outright because
+	# it returns a full gallery (median ~22 images) where both vendors return a
+	# single frame, and because its /photos is our own store rather than a billed
+	# call. Zillow last also means a Redfin-covered comp never spends a vendor
+	# photo request.
+	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
+	photos = rf.get("photos") or []
+	# /photos carries the matched row's observed listing path, so on the happy
+	# path the link arrives with the gallery and the /url thread is never joined.
+	redfin_url, url_pending = rf.get("url"), False
+	photo_source = "redfin" if photos else ""
+
 	if len(photos) <= 1:
 		from crm.api import apivex
 
@@ -1178,13 +1272,13 @@ def _shape_detail(row, zpid=None):
 		if len(realtor) > len(photos):
 			photos = realtor
 			photo_source = "realtor"
-	if len(photos) <= 1:
-		rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
-		redfin_url = rf.get("url")
-		if len(rf["photos"]) > len(photos):
-			photos = rf["photos"]
-			photo_source = "redfin"
-	else:
+	if len(photos) <= 1 and len(zillow_photos) > len(photos):
+		photos = zillow_photos
+		photo_source = "zillow"
+
+	# Only wait on the /url thread when Redfin's gallery did not already answer
+	# with the link — an unmatched house has no observed path to carry.
+	if not redfin_url:
 		redfin_url, url_pending = _finish_redfin_url(url_job, addr, lat, lng)
 
 	comp = dict(row)
@@ -1671,9 +1765,21 @@ def get_lead_comps(
 	lat, lng, cached = _subject_point(doc)
 	subject = {"lat": lat, "lng": lng} if lat is not None else None
 	if subject:
+		# Redfin leads the subject's facts, so its record has to be in hand BEFORE
+		# they are derived. `start_subject_check` cannot move earlier (it takes the
+		# derived `subject` as an argument), so this is a pure Redis read of what a
+		# previous load already fetched — no call, no thread. A cold lead reads None
+		# and is Zillow-first for exactly one request; the fetch started below fills
+		# the cache for the next one.
+		try:
+			from crm.api import redfin as redfin_api
+
+			redfin_rec = redfin_api.cached_subject_record(doc.name)
+		except Exception:
+			redfin_rec = None
 		# The facts the subject pin shows when clicked. Merged onto the same dict the
 		# map already reads for lat/lng, so no caller has to learn a second shape.
-		subject.update(_subject_facts(doc))
+		subject.update(_subject_facts(doc, redfin_rec))
 	base = {
 		"lead": lead,
 		"address": _full_address(doc),

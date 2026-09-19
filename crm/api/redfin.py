@@ -22,6 +22,7 @@ fallback `geo_service_url`); absent both, every call is a silent no-op and
 the ladder degrades exactly as before.
 """
 
+import math
 import re
 import threading
 
@@ -47,7 +48,12 @@ FACTS_RADIUS_M = 150
 #: subject-sqft override applied AFTER the first fetch drops the flag on the
 #: very next load instead of serving a stale verdict for 14 days. v3: the
 #: record carries `estimate` (the Redfin Estimate) for the subject tile.
-CHECK_CACHE_VERSION = 3
+#: v4: the record now FEEDS the subject's facts rather than only disputing
+#: them (`comps._subject_facts`), so the /properties fallback branch had to
+#: widen to the same field set /facts returns — a v3 record cached from that
+#: branch has no price/property_type/sold_date and would silently read as
+#: "Redfin does not know" for 14 days.
+CHECK_CACHE_VERSION = 4
 
 #: A record (matched or no-match) holds for days — beds and square
 #: footage do not move. An ERROR is cached briefly so a service outage costs one
@@ -63,6 +69,12 @@ CHECK_TTL_ERROR = 15 * 60
 SQFT_REL_TOLERANCE = 0.05
 BATHS_TOLERANCE = 0.25
 YEAR_TOLERANCE = 1
+
+#: Fields a subject fact may be taken from on a matched Redfin record. Kept as
+#: a named set because `_subject_facts` and the comparison must agree on what
+#: the record is entitled to answer for; a field here that the record does not
+#: carry simply falls through to the next provider.
+RECORD_FACT_FIELDS = ("beds", "baths", "sqft", "year_built", "property_type")
 
 #: Fact sources that represent an INDEPENDENT VENDOR CLAIM about a house, and
 #: are therefore the only ones worth disputing.
@@ -274,6 +286,12 @@ def _fetch_subject_record(base, address, lat, lng, holder):
 		for f in feats:
 			p = f.get("properties") or {}
 			if street_key(p.get("address")) == key:
+				# Same field set /facts returns, so a subject's facts do not depend
+				# on WHICH of the two routes answered. The store feature carries
+				# everything /facts does except `estimate` (the Redfin Estimate is
+				# computed on the avm row, not persisted on the GeoJSON), so the
+				# subject tile simply has no Redfin Estimate on this path rather
+				# than a wrong one.
 				holder["result"] = {
 					"matched": True,
 					"source": "store",
@@ -284,6 +302,12 @@ def _fetch_subject_record(base, address, lat, lng, holder):
 					"baths": p.get("baths"),
 					"sqft": p.get("sqft"),
 					"year_built": p.get("year_built"),
+					"price": p.get("price"),
+					"mls_status": p.get("mls_status"),
+					"property_type": p.get("property_type"),
+					"sold_date": p.get("sold_date"),
+					"listing_date": p.get("listing_date"),
+					"listing_remarks": p.get("listing_remarks"),
 				}
 				return
 		holder["result"] = {"matched": False}
@@ -297,6 +321,64 @@ def _num(v):
 	except (TypeError, ValueError):
 		return None
 	return n if n > 0 else None
+
+
+def cached_subject_record(lead):
+	"""The Redfin record Redis already holds for this lead, or None.
+
+	A PURE CACHE READ — never fetches, never starts a thread. This is what lets
+	`comps._subject_facts` be Redfin-first without moving the fetch earlier than
+	`start_subject_check`, which cannot move because it takes the derived
+	`subject` as an argument.
+
+	The consequence, stated plainly: a COLD lead derives its facts Zillow-first
+	for exactly one request, because nothing is cached yet. The fetch that same
+	request starts then fills Redis, so every subsequent load is Redfin-first.
+	That is the same "first open is thinner, second is complete" shape the
+	discrepancy flag already has, rather than a new one.
+
+	Returns None on a cached ERROR entry too: `{"rec": None}` means the service
+	failed, not that Redfin has no answer, and a caller must not read that as a
+	miss.
+	"""
+	import frappe
+
+	if not lead:
+		return None
+	try:
+		cached = frappe.cache().get_value(_check_cache_key(lead))
+	except Exception:
+		return None
+	if not isinstance(cached, dict):
+		return None
+	rec = cached.get("rec")
+	return rec if isinstance(rec, dict) else None
+
+
+def baths_agree(vendor_val, record_val, tolerance=BATHS_TOLERANCE):
+	"""Do two bath counts agree once the half-bath CONVENTION is normalised?
+
+	Zillow rounds a half-bath up to a whole one where Redfin reports the half.
+	Measured over the 100-subject benchmark's matched houses (3,030 pairs where
+	both carried a bath count): 2,338 agreed exactly, **586 had Zillow exactly
+	0.5 HIGHER**, and only 14 had Zillow 0.5 lower — 42:1, which is a convention
+	and not a data-quality spread. Redfin 2.5 / Zillow 3.0 and Redfin 1.5 /
+	Zillow 2.0 are the two shapes it takes.
+
+	So: compare the CEILINGS. `2.5 vs 3.0` and `1.5 vs 2.0` agree; a real
+	whole-bath gap (`2.0 vs 3.0`) still differs, and so does the rare reverse
+	case (`2.5 vs 2.0` — ceilings 3 and 2). The exact tolerance is tried first so
+	ordinary rounding is unaffected.
+
+	This deliberately hides those 14 reverse cases to stop 586 false flags. A
+	bath discrepancy a rep cannot act on is noise, and 20% of subjects carrying
+	one would teach them to ignore the flag entirely.
+	"""
+	if vendor_val is None or record_val is None:
+		return True
+	if abs(vendor_val - record_val) <= tolerance:
+		return True
+	return math.ceil(vendor_val - tolerance) == math.ceil(record_val - tolerance)
 
 
 def comparable_sources(record_provider=RECORD_PROVIDER):
@@ -369,7 +451,8 @@ def compare_subject_facts(subject, rec, record_provider=RECORD_PROVIDER):
 			})
 
 	check("beds", "bd", lambda z, r: int(z) != int(r))
-	check("baths", "ba", lambda z, r: abs(z - r) > BATHS_TOLERANCE)
+	# Half-baths are a convention difference, not a disagreement — see `baths_agree`.
+	check("baths", "ba", lambda z, r: not baths_agree(z, r))
 	check("sqft", "sqft", lambda z, r: abs(z - r) / max(z, r) > SQFT_REL_TOLERANCE)
 	check("year_built", "built", lambda z, r: abs(z - r) > YEAR_TOLERANCE)
 
@@ -679,7 +762,9 @@ def warm_subject_check(lead):
 		if lat is None:
 			return
 		subject = {"lat": lat, "lng": lng}
-		subject.update(_subject_facts(doc))
+		# Same derivation the request does, cached record included. No recursion
+		# risk: `cached_subject_record` only READS Redis, it never fetches.
+		subject.update(_subject_facts(doc, cached_subject_record(lead)))
 		job = start_subject_check(doc, subject)
 		if job:
 			finish_subject_check(job, subject, budget=FACTS_TIMEOUT + 2)

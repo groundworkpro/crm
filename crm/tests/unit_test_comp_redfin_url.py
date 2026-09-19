@@ -1,10 +1,31 @@
-"""The Redfin listing link must never hold a gallery open hostage.
+"""The comp gallery: which provider's photos win, and how the link is got.
 
-Measured on prod 2026-09-10: Zillow facts + photos 0.39s, then the Redfin
-`/url` lookup 6.3s run serially after them -- a rep waited ~7s for photos
-that were ready, to get a link. The lookup now runs on a thread started
-before Zillow and is joined with a short budget; a late answer is filled in
-by a background job that patches the cached entry.
+TWO separate contracts live in `_shape_detail`, and they used to be tangled:
+
+* **The photo ladder is Redfin -> Realtor -> Zillow.** Measured over the
+  100-subject benchmark (`redfin-scraper-api/bench/README.md`): of 214 comps
+  where Redfin returned the row but no picture, Realtor supplied one 36% of the
+  time against Zillow's 29%, and was the SOLE source on 19% against 12% --
+  better or tied in all six sale-age buckets. Redfin leads outright because it
+  returns a full gallery (median ~22 images) where both vendors return one
+  frame, and because its /photos is our own store rather than a billed call.
+
+* **The Redfin listing LINK must never hold the gallery hostage.** Measured on
+  prod 2026-09-10: Zillow facts + photos 0.39s, then `/url` 6.3s run serially
+  after them -- a rep waited ~7s for photos that were ready, to get a link. The
+  lookup runs on a thread started before the vendor calls and is joined with a
+  short budget; a late answer is filled in by a background job that patches the
+  cached entry.
+
+The two now interact: Redfin's `/photos` carries the matched row's observed
+listing path, so on the happy path the link arrives WITH the gallery and the
+`/url` thread is never joined at all. The thread is only waited on when Redfin
+did not match the house -- which is exactly when there is no observed path to
+carry.
+
+The FACTS blob stays Zillow-first and is fetched unconditionally: Redfin's
+/facts has `listing_remarks` but no HOA, parking, heating, cooling or price
+history, and `CompDetailModal.vue` reads all of those.
 """
 import threading
 import time
@@ -21,7 +42,13 @@ def row():
 	return {"name": "zillow::1", "address": "5 Main St, Minneapolis, MN 55401", "lat": 45.0, "lng": -93.0}
 
 
+def gallery(photos=(), url=None):
+	return {"photos": list(photos), "url": url}
+
+
 class RedfinUrlBudget(unittest.TestCase):
+	"""The /url thread itself, independent of the ladder."""
+
 	def test_no_service_falls_back_to_inline_lookup(self):
 		with patch.object(redfin, "_base_url", return_value=None), \
 			 patch.object(redfin, "redfin_listing_url", return_value="https://redfin/x") as inline:
@@ -62,20 +89,108 @@ class RedfinUrlBudget(unittest.TestCase):
 			url, pending = comps._finish_redfin_url(job, "5 Main St", 45, -93, budget=1.0)
 		self.assertEqual((url, pending), (None, False))
 
-	def test_shape_detail_reports_pending_point_for_the_fill_job(self):
+
+class PhotoLadder(unittest.TestCase):
+	"""Redfin -> Realtor -> Zillow, and each rung only while the gallery is thin.
+
+	Every provider is stubbed in all four tests: an unstubbed rung would make a
+	real HTTP attempt, which is both flaky and a silent pass for the wrong
+	reason.
+	"""
+
+	def _shape(self, redfin_photos=(), redfin_url=None, realtor=(), zillow_photos=(),
+	           details=None):
+		from crm.api import apivex
+
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
+			 patch.object(redfin, "redfin_gallery",
+			              return_value=gallery(redfin_photos, redfin_url)), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=list(realtor)), \
+			 patch.object(comps, "_zillow_detail",
+			              return_value=(details if details is not None else {"address": "5 Main St"},
+			                            list(zillow_photos))):
+			return comps._shape_detail(row())
+
+	def test_redfin_wins_when_it_has_a_gallery(self):
+		"""The measured default: Redfin returns ~22 images, vendors return one."""
+		out = self._shape(redfin_photos=["r1", "r2", "r3"], realtor=["x1", "x2"],
+		                  zillow_photos=["z1", "z2"])
+		self.assertEqual(out["photos"], ["r1", "r2", "r3"])
+		self.assertEqual(out["photo_source"], "redfin")
+
+	def test_realtor_is_second_when_redfin_is_thin(self):
+		"""Realtor beat Zillow 36% to 29% on exactly this population."""
+		out = self._shape(redfin_photos=["r1"], realtor=["x1", "x2"], zillow_photos=["z1", "z2"])
+		self.assertEqual(out["photos"], ["x1", "x2"])
+		self.assertEqual(out["photo_source"], "realtor")
+
+	def test_zillow_is_the_last_rung(self):
+		out = self._shape(redfin_photos=[], realtor=[], zillow_photos=["z1", "z2"])
+		self.assertEqual(out["photos"], ["z1", "z2"])
+		self.assertEqual(out["photo_source"], "zillow")
+
+	def test_no_provider_has_photos(self):
+		out = self._shape()
+		self.assertEqual(out["photos"], [])
+		self.assertEqual(out["photo_source"], "")
+		self.assertFalse(out["photos_available"])
+
+	def test_a_thin_rung_never_replaces_a_thicker_one(self):
+		"""Each rung must IMPROVE on the gallery, not merely be non-empty."""
+		out = self._shape(redfin_photos=["r1"], realtor=["x1"], zillow_photos=["z1"])
+		self.assertEqual(out["photos"], ["r1"])
+		self.assertEqual(out["photo_source"], "redfin")
+
+	def test_facts_stay_zillow_even_when_redfin_supplies_the_photos(self):
+		"""CompDetailModal reads HOA/parking/heating off this blob; Redfin's
+		/facts carries none of them, so the Zillow call is unconditional."""
+		out = self._shape(redfin_photos=["r1", "r2"], details={"hoa_fee": 250, "address": "5 Main St"})
+		self.assertEqual(out["photo_source"], "redfin")
+		self.assertEqual(out["details"], {"hoa_fee": 250, "address": "5 Main St"})
+		self.assertTrue(out["available"])
+
+
+class RedfinUrlFromTheGallery(unittest.TestCase):
+	"""Where the listing link comes from, now that two paths can supply it."""
+
+	def test_gallery_url_short_circuits_the_thread(self):
+		"""Redfin matched, so /photos already carried the observed path."""
+		from crm.api import apivex
+
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "redfin_gallery",
+			              return_value=gallery(["r1", "r2"], "https://redfin/from-gallery")), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
+			 patch.object(comps, "_finish_redfin_url") as finish, \
+			 patch.object(comps, "_zillow_detail", return_value=({"address": "5 Main St"}, [])):
+			out = comps._shape_detail(row())
+		finish.assert_not_called()
+		self.assertEqual(out["redfin_url"], "https://redfin/from-gallery")
+		self.assertFalse(out["redfin_url_pending"])
+
+	def test_unmatched_house_still_waits_on_the_thread(self):
+		"""No gallery url means Redfin did not match, so the /url thread is the
+		only route to a link -- and a slow one must report pending, not block."""
 		release = threading.Event()
 
 		def slow(*a):
 			release.wait(5)
 			return "https://redfin/slow"
 
+		from crm.api import apivex
+
 		with patch.object(redfin, "_base_url", return_value="http://svc"), \
 			 patch.object(redfin, "_fetch_listing_url", side_effect=slow), \
+			 patch.object(redfin, "redfin_gallery", return_value=gallery([], None)), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
 			 patch.object(comps, "REDFIN_URL_BUDGET", 0.1), \
-			 patch.object(comps, "_zillow_detail", return_value=({"address": "5 Main St"}, ["p1", "p2"])):
+			 patch.object(comps, "_zillow_detail",
+			              return_value=({"address": "5 Main St"}, ["p1", "p2"])):
 			result = comps._shape_detail(row())
 		release.set()
 		self.assertEqual(result["photos"], ["p1", "p2"])
+		self.assertEqual(result["photo_source"], "zillow")
 		self.assertIsNone(result["redfin_url"])
 		self.assertTrue(result["redfin_url_pending"])
 		self.assertEqual(result["redfin_url_point"][1:], [45.0, -93.0])
