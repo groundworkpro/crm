@@ -64,6 +64,34 @@ SQFT_REL_TOLERANCE = 0.05
 BATHS_TOLERANCE = 0.25
 YEAR_TOLERANCE = 1
 
+#: Fact sources that represent an INDEPENDENT VENDOR CLAIM about a house, and
+#: are therefore the only ones worth disputing.
+#:
+#: `listing`, `lead` and `manual` are deliberately absent: a fact a human or a
+#: signed listing record already settled is a closed question, and re-opening
+#: it is noise rather than a finding. That exclusion is also what keeps the
+#: editable-sqft override correct — an overridden sqft stops being labelled
+#: with a vendor and simply drops out of the comparison.
+#:
+#: Today `_subject_facts` only ever writes "zillow" (`comps.py:441`), so only
+#: Zillow rows take part. The set is named rather than inlined so that when
+#: the subject cascade becomes Redfin-first the other providers join without
+#: another edit here.
+VENDOR_SOURCES = frozenset({"zillow", "redfin", "realtor"})
+
+#: Which provider the comparison RECORD comes from. A record cannot disagree
+#: with itself, so any fact already sourced from it drops out of the compare —
+#: this is the line that stops a Redfin-first subject silently flagging
+#: Redfin-vs-Redfin on every load.
+RECORD_PROVIDER = "redfin"
+
+#: Per-provider "the subject resolved against this vendor" flags, written by
+#: `comps._subject_facts`. Only `has_zillow` exists today (`comps.py:493`);
+#: the others are read defensively so a Redfin-first subject keeps its record
+#: — and with it the Redfin Estimate and the listing URL, which ride the same
+#: fetch and have nothing to do with the discrepancy flag.
+VENDOR_PRESENCE_FLAGS = ("has_zillow", "has_redfin", "has_realtor")
+
 
 def _base_url():
 	from crm.api.geo import _base_url as geo_base
@@ -271,35 +299,74 @@ def _num(v):
 	return n if n > 0 else None
 
 
-def compare_subject_facts(subject, rec):
-	"""Zillow-sourced subject facts vs a matched Redfin record -> discrepancy
+def comparable_sources(record_provider=RECORD_PROVIDER):
+	"""Vendor sources whose facts this record is entitled to argue with.
+
+	Everything in `VENDOR_SOURCES` except the record's own provider.
+	"""
+	return VENDOR_SOURCES - {record_provider}
+
+
+def subject_has_vendor_facts(subject):
+	"""Did ANY vendor resolve this subject? Gate for starting the fetch.
+
+	Deliberately not "is there something to disagree with". The fetched record
+	feeds three things — the discrepancy flag, the Redfin Estimate
+	(`subject_estimate`) and the listing URL — and only the first of those
+	needs a second opinion. Gating the fetch on the comparison starves the
+	other two, which is exactly what a Redfin-first cascade would have done
+	while `has_zillow` was the only flag consulted.
+	"""
+	if not subject:
+		return False
+	return any(bool(subject.get(flag)) for flag in VENDOR_PRESENCE_FLAGS)
+
+
+def compare_subject_facts(subject, rec, record_provider=RECORD_PROVIDER):
+	"""Vendor-sourced subject facts vs a matched Redfin record -> discrepancy
 	block, or None when they agree (or there is nothing to honestly compare).
 
-	Only facts the subject holds as EXACT numbers SOURCED FROM ZILLOW take part:
-	a seller pick-list band ("1000 - 2000") has no midpoint worth disputing, and
-	a fact some other source (a human override, a listing record) outranked
-	Zillow on is a fact a person has already settled — flagging it again would
-	re-open a closed question. That source test is also what keeps this correct
-	next to the editable-sqft override: an overridden sqft stops being labelled
-	"zillow" and simply drops out of the comparison.
+	Only facts the subject holds as EXACT numbers SOURCED FROM A VENDOR OTHER
+	THAN THE RECORD'S OWN take part. Three separate exclusions, each load-bearing:
+
+	* a seller pick-list band ("1000 - 2000") has no midpoint worth disputing,
+	  so the fact must be `_exact`;
+	* a fact a human override or a listing record outranked a vendor on is a
+	  fact a person has already settled, so `manual` / `listing` / `lead` are
+	  not in `VENDOR_SOURCES` — that is what keeps this correct next to the
+	  editable-sqft override;
+	* a fact sourced from the record's OWN provider cannot disagree with it, so
+	  it drops out. Today no subject fact is ever Redfin-sourced and this is a
+	  no-op; under a Redfin-first subject it is the whole ballgame.
+
+	Row shape keeps the literal `zillow` / `redfin` keys the frontend reads
+	(`CompDiscrepancyFlag.vue:36`) and adds `source`, so a realtor-vs-redfin row
+	can be labelled honestly later without a backend change.
 	"""
 	if not rec or not rec.get("matched"):
 		return None
 	src = (subject or {}).get("source") or {}
+	allowed = comparable_sources(record_provider)
 
-	def zval(field):
-		if src.get(field) != "zillow" or not (subject or {}).get(f"{field}_exact"):
-			return None
-		return _num((subject or {}).get(field))
+	def claimed(field):
+		"""(value, provider) the subject is showing, or (None, None)."""
+		provider = src.get(field)
+		if provider not in allowed or not (subject or {}).get(f"{field}_exact"):
+			return None, None
+		return _num((subject or {}).get(field)), provider
 
 	rows = []
 
 	def check(field, label, differs):
-		z, r = zval(field), _num(rec.get(field))
+		z, provider = claimed(field)
+		r = _num(rec.get(field))
 		if z is None or r is None:
 			return
 		if differs(z, r):
-			rows.append({"field": field, "label": label, "zillow": z, "redfin": r})
+			rows.append({
+				"field": field, "label": label,
+				"zillow": z, "redfin": r, "source": provider,
+			})
 
 	check("beds", "bd", lambda z, r: int(z) != int(r))
 	check("baths", "ba", lambda z, r: abs(z - r) > BATHS_TOLERANCE)
@@ -325,8 +392,9 @@ def start_subject_check(doc, subject):
 	import frappe
 
 	base = _base_url()
-	if not base or not subject or not subject.get("has_zillow"):
-		# Without Zillow numbers there is nothing to disagree with.
+	if not base or not subject_has_vendor_facts(subject):
+		# No vendor resolved this subject, so there is nothing to hang a record
+		# on. NOT "nothing to disagree with" — see `subject_has_vendor_facts`.
 		return None
 	lat, lng = subject.get("lat"), subject.get("lng")
 	address = str((doc.get("property_address") or "")).strip()

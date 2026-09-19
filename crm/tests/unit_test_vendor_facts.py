@@ -1,4 +1,5 @@
 """Gallery Zillow/Realtor calls go through PropWarehouse when it answers."""
+import os
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,50 @@ from crm.tests.frappe_shim import install
 install()
 
 from crm.api import apivex, comps, vendor_facts
+
+
+class BaseUrlResolution(unittest.TestCase):
+	"""The vendor read-through can be pointed at propwarehouse-api by config.
+
+	Defaulting to the scraper is what makes the split deployable in two steps:
+	stand the new service up, flip one key, and unset it to roll back.
+	"""
+
+	def setUp(self):
+		self.env = patch.dict(os.environ, {}, clear=False)
+		self.env.start()
+		os.environ.pop("PROPWAREHOUSE_URL", None)
+
+	def tearDown(self):
+		self.env.stop()
+
+	def test_unset_falls_back_to_the_scraper(self):
+		# Today's behaviour, and the thing that must not change on deploy.
+		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			self.assertEqual(vendor_facts._base_url(), "http://scraper:8110")
+
+	def test_site_config_wins(self):
+		import frappe
+
+		with patch.dict(frappe.conf, {"propwarehouse_url": "http://warehouse:8120"}), \
+			 patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			self.assertEqual(vendor_facts._base_url(), "http://warehouse:8120")
+
+	def test_env_var_is_used_when_site_config_is_silent(self):
+		os.environ["PROPWAREHOUSE_URL"] = "http://warehouse-env:8120"
+		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			self.assertEqual(vendor_facts._base_url(), "http://warehouse-env:8120")
+
+	def test_trailing_slash_is_stripped(self):
+		# `_get` builds f"{base}{path}", so a trailing slash would double it.
+		os.environ["PROPWAREHOUSE_URL"] = "http://warehouse:8120/"
+		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			self.assertEqual(vendor_facts._base_url(), "http://warehouse:8120")
+
+	def test_blank_config_is_not_a_base_url(self):
+		os.environ["PROPWAREHOUSE_URL"] = "   "
+		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			self.assertEqual(vendor_facts._base_url(), "http://scraper:8110")
 
 
 class PayloadOrFallback(unittest.TestCase):

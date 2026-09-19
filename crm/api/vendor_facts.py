@@ -14,9 +14,39 @@ TIMEOUT = 25
 
 
 def _base_url():
+	"""Where the vendor read-through lives.
+
+	The Zillow/Realtor endpoints are moving out of redfin-scraper-api into a
+	dedicated propwarehouse-api (see `propwarehouse/EGRESS.md`): the scraper is
+	named, unit-named and database-named for Redfin, and it should not keep
+	growing vendor surface. Only the LOOKUP path moves — `crm.api.geo` keeps
+	pointing at the scraper for /properties, /parcels, /facts, /photos, /url.
+
+	Resolution order, first non-empty wins:
+
+	  1. site_config `propwarehouse_url`
+	  2. env `PROPWAREHOUSE_URL`
+	  3. the scraper's own base — today's behaviour
+
+	So this is inert until the config is set, and setting it is the whole
+	cutover. Unsetting it is the whole rollback.
+	"""
 	from crm.api.geo import _base_url as geo_base
 
-	return geo_base()
+	try:
+		import frappe
+
+		configured = frappe.conf.get("propwarehouse_url") or ""
+	except Exception:
+		# No frappe (bench-free unit tests) or no site context: fall through to
+		# the env var, then to the scraper. Never raise from a URL lookup.
+		configured = ""
+	if not configured:
+		import os
+
+		configured = os.environ.get("PROPWAREHOUSE_URL") or ""
+	configured = str(configured).strip().rstrip("/")
+	return configured or geo_base()
 
 
 def _get(path, params):
