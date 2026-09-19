@@ -59,7 +59,7 @@ def _lead_point(lead):
 	return float(lat), float(lng)
 
 
-def warm_lead(lead, radius_m=None):
+def warm_lead(lead, radius_m=None, ingest_creation=None):
 	"""Ask the service to sweep this lead's neighbourhood. Returns a status dict.
 
 	Best-effort by construction: every failure path returns rather than raises,
@@ -73,13 +73,15 @@ def warm_lead(lead, radius_m=None):
 	first and the sweep below, the Zillow circle and everything downstream all
 	start from the right point at no extra cost.
 	"""
-	from crm.api.address_resolve import resolve_at_ingest
+	from crm.api.address_resolve import resolve, resolve_at_ingest
 
-	# Resolution is the gate, not decoration. Buying the circle from the old
-	# Census/interpolated point and moving the centre afterwards strands the warm
-	# cache and can show the neighbouring house. Transient failures deliberately
-	# leave the lead retryable rather than warming a point we know is not exact.
-	resolved = resolve_at_ingest(lead)
+	# Only the after-insert job carries the creation token that authorizes moving
+	# property_lat/lng. Every other caller (manual warm, Redfin refresh, backfill)
+	# may populate parcel_* but must keep the existing circle centre untouched.
+	resolved = (
+		resolve_at_ingest(lead, ingest_creation)
+		if ingest_creation else resolve(lead)
+	)
 	if not resolved.get("ok") or not resolved.get("exact"):
 		return {
 			"ok": False,
@@ -127,6 +129,7 @@ def on_lead_insert(doc, method=None):
 			job_name=f"geo-warm-{doc.name}",
 			enqueue_after_commit=True,
 			lead=doc.name,
+			ingest_creation=str(doc.get("creation") or ""),
 		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "geo: enqueue warm failed")

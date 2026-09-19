@@ -221,13 +221,23 @@ def _exact_point(data):
 
 
 def _cached_zillow_point(doc):
-	"""Read Zillow's existing facts only; never spend a lookup here."""
+	"""Read Zillow's existing facts only when they belong to THIS address.
+
+	The facts cache survives ordinary document edits. Without the address-key
+	check, correcting a lead from house A to house B would let A's rooftop win the
+	free rung, skip Redfin normalization and Google, and persist A as B's parcel.
+	Legacy cache entries without `_queried_address` are therefore untrusted here.
+	"""
 	try:
 		from crm.api import zillow as zillow_api
 		facts = zillow_api._cached(doc)
+		current = _full_address(doc)
 	except Exception:
 		return None
-	if not facts:
+	if not facts or not current:
+		return None
+	queried = str(facts.get("_queried_address") or "").strip()
+	if not queried or _address_key(queried) != _address_key(current):
 		return None
 	return _exact_point(facts)
 
@@ -245,10 +255,12 @@ def _redfin_facts(address, lat, lng, *, normalize):
 	point = None
 	# Strict `is True`: 1/string truthiness from an old or malformed server is
 	# not provenance. Absent is false by design for backwards compatibility.
-	if body.get("point_exact") is True:
-		point = _exact_point(body)
 	point_source = str(body.get("point_source") or "").strip()
-	if not point_source:
+	if body.get("point_exact") is True and point_source == "redfin":
+		point = _exact_point(body)
+	else:
+		# `seed` and `unknown` are intentionally not parcels, even when coordinates
+		# are present for map compatibility. Old servers omit the contract entirely.
 		point = None
 
 	normalized = str(body.get("normalized_address") or "").strip()
@@ -470,9 +482,23 @@ def resolve(subject):
 	return _resolve(subject, move_centre=False)
 
 
-def resolve_at_ingest(lead):
-	"""Best-effort after-insert entry point; the only circle-moving path."""
+def resolve_at_ingest(lead, expected_creation):
+	"""After-insert-only entry point; the only circle-moving path.
+
+	The queue job carries the creation stamp captured by `on_lead_insert`. A
+	manual/backfill caller has no token; a stale/replayed job whose name now points
+	at a different row cannot move its circle. This is an internal Python method,
+	not a whitelisted API.
+	"""
 	try:
+		doc = _load_subject(lead)
+		actual = str(doc.get("creation") or "")
+		expected = str(expected_creation or "")
+		if doc.doctype != "CRM Lead" or not expected or actual != expected:
+			return {
+				"ok": False, "exact": False, "subject": lead,
+				"reason": "not an after-insert resolution", "retryable": False,
+			}
 		return _resolve(lead, move_centre=True)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "address_resolve: ingest resolve failed")
@@ -545,6 +571,42 @@ def get_street_view(subject: str) -> dict:
 	}
 
 
+def _fresh_pending_suggestion(doc):
+	"""Reload and validate a pending suggestion against the CURRENT address.
+
+	Returns ``(suggested, pair, reason)``. The pair is recomputed rather than
+	trusted: a concurrent address edit after the banner loaded must produce a
+	clean stale response and zero mutation, not apply yesterday's correction to
+	today's house.
+	"""
+	doc.reload()
+	doc.check_permission("write")
+	suggested = str(doc.get("address_suggested") or "").strip()
+	pair = str(doc.get("address_suggestion_key") or "")
+	if doc.get("address_suggestion_state") != "pending" or not suggested or not pair:
+		return None, None, "nothing suggested"
+	current = _full_address(doc)
+	current_key = _address_key(current) if current else ""
+	if (
+		not current_key
+		or str(doc.get("parcel_address_key") or "") != current_key
+		or pair != _suggestion_key(current, suggested)
+	):
+		return None, None, "stale suggestion"
+	return suggested, pair, None
+
+
+def _save_human_decision(doc):
+	"""Save with optimistic timestamp protection; name stale races cleanly."""
+	try:
+		doc.save()
+		return None
+	except Exception as exc:
+		if type(exc).__name__ == "TimestampMismatchError":
+			return "stale suggestion"
+		raise
+
+
 @frappe.whitelist()
 def accept_address_suggestion(subject: str) -> dict:
 	"""Accept the pending address with audit, then resolve without moving centre."""
@@ -553,13 +615,14 @@ def accept_address_suggestion(subject: str) -> dict:
 	doc.check_permission("write")
 	if not _supported(doc.doctype):
 		frappe.throw(_("Address suggestions are not installed on this site."))
-	suggested = str(doc.get("address_suggested") or "").strip()
-	pair = str(doc.get("address_suggestion_key") or "")
-	if not suggested or doc.get("address_suggestion_state") != "pending" or not pair:
-		return {"ok": False, "reason": "nothing suggested"}
+	suggested, pair, stale = _fresh_pending_suggestion(doc)
+	if stale:
+		return {"ok": False, "reason": stale}
 
 	doc.property_address = suggested
-	doc.save()
+	stale = _save_human_decision(doc)
+	if stale:
+		return {"ok": False, "reason": stale}
 	_clear_resolution(doc.doctype, doc.name, keep_suggestion=True)
 	frappe.db.set_value(
 		doc.doctype, doc.name,
@@ -578,16 +641,14 @@ def dismiss_address_suggestion(subject: str) -> dict:
 	doc.check_permission("write")
 	if not _supported(doc.doctype):
 		return {"ok": False, "reason": "fields not installed"}
-	pair = str(doc.get("address_suggestion_key") or "")
-	if not pair or doc.get("address_suggestion_state") != "pending":
-		return {"ok": False, "reason": "nothing suggested"}
-	frappe.db.set_value(
-		doc.doctype, doc.name,
-		{"address_suggested": "", "address_suggestion_key": pair,
-		 "address_suggestion_state": "dismissed"},
-		update_modified=False,
-	)
-	return {"ok": True}
+	_suggested, pair, stale = _fresh_pending_suggestion(doc)
+	if stale:
+		return {"ok": False, "reason": stale}
+	doc.address_suggested = ""
+	doc.address_suggestion_key = pair
+	doc.address_suggestion_state = "dismissed"
+	stale = _save_human_decision(doc)
+	return {"ok": not stale, "reason": stale} if stale else {"ok": True}
 
 
 @frappe.whitelist()

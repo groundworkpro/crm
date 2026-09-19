@@ -264,6 +264,13 @@ class ServiceContracts(unittest.TestCase):
 			out = ar._redfin_facts("1 Main St", 1, 2, normalize=False)
 		self.assertEqual(out["point"], (1.0, 2.0))
 
+	def test_seed_point_is_never_promoted_even_if_exact_flag_is_malformed(self):
+		body = {"ok": True, "matched": True, "lat": 1.0, "lng": 2.0,
+		        "point_exact": True, "point_source": "seed"}
+		with patch.object(ar, "_json_request", return_value=(body, None)):
+			out = ar._redfin_facts("1 Main St", 1, 2, normalize=True)
+		self.assertIsNone(out["point"])
+
 	def test_cached_zillow_opts_out_of_redfin_paid_normalization(self):
 		body = {"ok": True, "matched": False}
 		with patch.object(ar, "_json_request", return_value=(body, None)) as req:
@@ -316,6 +323,222 @@ class SuggestionKeys(unittest.TestCase):
 		)
 
 
+class CachedZillowOwnership(unittest.TestCase):
+	class Doc:
+		def get(self, key, default=None):
+			return default
+
+	def test_matching_queried_address_is_usable(self):
+		facts = {"lat": 1, "lng": 2, "_queried_address": "10 Main St, Town, PA"}
+		with patch("crm.api.zillow._cached", return_value=facts), \
+		     patch.object(ar, "_full_address", return_value="10 Main St, Town, PA"):
+			self.assertEqual(ar._cached_zillow_point(self.Doc()), (1.0, 2.0))
+
+	def test_address_edit_rejects_the_old_house_rooftop(self):
+		facts = {"lat": 1, "lng": 2, "_queried_address": "10 Main St, Town, PA"}
+		with patch("crm.api.zillow._cached", return_value=facts), \
+		     patch.object(ar, "_full_address", return_value="20 Oak St, Town, PA"):
+			self.assertIsNone(ar._cached_zillow_point(self.Doc()))
+
+	def test_legacy_cache_without_queried_address_is_untrusted(self):
+		with patch("crm.api.zillow._cached", return_value={"lat": 1, "lng": 2}), \
+		     patch.object(ar, "_full_address", return_value="10 Main St"):
+			self.assertIsNone(ar._cached_zillow_point(self.Doc()))
+
+
+class ResolutionOrdering(unittest.TestCase):
+	class Doc:
+		doctype = "CRM Lead"
+		name = "LEAD-1"
+
+		def __init__(self):
+			self.values = {"address_suggested": ""}
+
+		def get(self, key, default=None):
+			return self.values.get(key, default)
+
+	def _patches(self, doc, zillow, redfin, google):
+		return (
+			patch.object(ar, "_load_subject", return_value=doc),
+			patch.object(ar, "_supported", return_value=True),
+			patch.object(ar, "_full_address", return_value="10 Main St, Town, PA"),
+			patch("crm.api.comps._subject_point", return_value=(1.1, 2.1, True)),
+			patch.object(ar, "_cached_zillow_point", return_value=zillow),
+			patch.object(ar, "_redfin_facts", return_value=redfin),
+			patch.object(ar, "_google_exact", return_value=google),
+			patch.object(ar, "_suggestion_fields", return_value={}),
+			patch.object(ar, "_persist", return_value=True),
+		)
+
+	def test_redfin_exact_beats_matching_cached_zillow_without_google(self):
+		doc = self.Doc()
+		redfin = {"transient": False, "point": (3.0, 4.0), "normalized": ""}
+		google = {"status": "exact", "exact": True, "lat": 5, "lng": 6,
+		          "location_type": "ROOFTOP", "partial_match": False}
+		patches = self._patches(doc, (1.0, 2.0), redfin, google)
+		with patches[0], patches[1], patches[2], patches[3], patches[4], \
+		     patches[5] as rf, patches[6] as gx, patches[7], patches[8]:
+			out = ar._resolve("LEAD-1")
+		self.assertEqual((out["lat"], out["lng"], out["source"]), (3.0, 4.0, "redfin"))
+		self.assertEqual(rf.call_args.kwargs["normalize"], False)
+		gx.assert_not_called()
+
+	def test_matching_cached_zillow_wins_a_redfin_miss_without_google(self):
+		doc = self.Doc()
+		redfin = {"transient": False, "point": None, "normalized": ""}
+		google = {"status": "exact", "exact": True, "lat": 5, "lng": 6,
+		          "location_type": "ROOFTOP", "partial_match": False}
+		patches = self._patches(doc, (1.0, 2.0), redfin, google)
+		with patches[0], patches[1], patches[2], patches[3], patches[4], \
+		     patches[5] as rf, patches[6] as gx, patches[7], patches[8]:
+			out = ar._resolve("LEAD-1")
+		self.assertEqual((out["lat"], out["lng"], out["source"]), (1.0, 2.0, "zillow"))
+		self.assertEqual(rf.call_args.kwargs["normalize"], False)
+		gx.assert_not_called()
+
+
+class IngestAuthorization(unittest.TestCase):
+	class Doc:
+		doctype = "CRM Lead"
+		name = "LEAD-1"
+
+		def __init__(self, creation="2026-09-19 12:00:00"):
+			self.creation = creation
+
+		def get(self, key, default=None):
+			return getattr(self, key, default)
+
+	def test_matching_after_insert_token_is_the_only_circle_moving_path(self):
+		doc = self.Doc()
+		with patch.object(ar, "_load_subject", return_value=doc), \
+		     patch.object(ar, "_resolve", return_value={"ok": True}) as resolve:
+			ar.resolve_at_ingest(doc.name, doc.creation)
+		resolve.assert_called_once_with(doc.name, move_centre=True)
+
+	def test_missing_or_stale_creation_token_cannot_move_a_circle(self):
+		doc = self.Doc()
+		for token in (None, "2026-09-18 12:00:00"):
+			with self.subTest(token=token), \
+			     patch.object(ar, "_load_subject", return_value=doc), \
+			     patch.object(ar, "_resolve") as resolve:
+				out = ar.resolve_at_ingest(doc.name, token)
+				self.assertEqual(out["reason"], "not an after-insert resolution")
+				resolve.assert_not_called()
+
+
+class ConcurrentSuggestionEdits(unittest.TestCase):
+	class Doc:
+		doctype = "CRM Lead"
+		name = "LEAD-1"
+
+		def __init__(self):
+			self.values = {
+				"property_address": "10 Main St", "parcel_address_key": ar._address_key("10 Main St"),
+				"address_suggested": "12 Main St",
+				"address_suggestion_key": ar._suggestion_key("10 Main St", "12 Main St"),
+				"address_suggestion_state": "pending",
+			}
+			self.saved = 0
+			self.permissions = []
+
+		def get(self, key, default=None):
+			return self.values.get(key, getattr(self, key, default))
+
+		def check_permission(self, permission):
+			self.permissions.append(permission)
+
+		def reload(self):
+			# Simulate another tab correcting the address after the banner rendered.
+			self.values["property_address"] = "20 Oak St"
+			return self
+
+		def save(self):
+			self.saved += 1
+
+	def _run(self, fn):
+		doc = self.Doc()
+		with patch.object(ar, "_guard"), \
+		     patch.object(ar, "_load_subject", return_value=doc), \
+		     patch.object(ar, "_supported", return_value=True), \
+		     patch.object(ar, "_full_address", side_effect=lambda d: d.get("property_address")), \
+		     patch.object(ar.frappe.db, "set_value") as set_value:
+			out = fn(doc.name)
+		return doc, out, set_value
+
+	def test_accept_rejects_a_concurrent_address_edit_with_zero_mutation(self):
+		doc, out, set_value = self._run(ar.accept_address_suggestion)
+		self.assertEqual(out, {"ok": False, "reason": "stale suggestion"})
+		self.assertEqual(doc.saved, 0)
+		set_value.assert_not_called()
+		self.assertIn("write", doc.permissions)
+
+	def test_dismiss_rejects_a_concurrent_address_edit_with_zero_mutation(self):
+		doc, out, set_value = self._run(ar.dismiss_address_suggestion)
+		self.assertEqual(out, {"ok": False, "reason": "stale suggestion"})
+		self.assertEqual(doc.saved, 0)
+		set_value.assert_not_called()
+		self.assertIn("write", doc.permissions)
+
+
+class WarmBehavior(unittest.TestCase):
+	def test_existing_lead_warm_uses_nonmoving_resolve(self):
+		from crm.api import geo
+
+		class Response:
+			def raise_for_status(self): pass
+			def json(self): return {"queued": True}
+
+		with patch.object(ar, "resolve", return_value={"ok": True, "exact": True}) as normal, \
+		     patch.object(ar, "resolve_at_ingest") as ingest, \
+		     patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo, "_lead_point", return_value=(1.0, 2.0)), \
+		     patch.object(geo.requests, "post", return_value=Response()):
+			out = geo.warm_lead("LEAD-1")
+		self.assertTrue(out["ok"])
+		normal.assert_called_once_with("LEAD-1")
+		ingest.assert_not_called()
+
+	def test_after_insert_token_is_forwarded_to_ingest_resolver(self):
+		from crm.api import geo
+
+		class Response:
+			def raise_for_status(self): pass
+			def json(self): return {}
+
+		with patch.object(ar, "resolve") as normal, \
+		     patch.object(ar, "resolve_at_ingest", return_value={"ok": True, "exact": True}) as ingest, \
+		     patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo, "_lead_point", return_value=(1.0, 2.0)), \
+		     patch.object(geo.requests, "post", return_value=Response()):
+			geo.warm_lead("LEAD-1", ingest_creation="stamp")
+		ingest.assert_called_once_with("LEAD-1", "stamp")
+		normal.assert_not_called()
+
+	def test_failed_resolution_stops_before_warm_request(self):
+		from crm.api import geo
+
+		with patch.object(ar, "resolve", return_value={
+			"ok": False, "exact": False, "reason": "not_exact", "retryable": False,
+		}), patch.object(geo.requests, "post") as post:
+			out = geo.warm_lead("LEAD-1")
+		self.assertFalse(out["ok"])
+		self.assertEqual(out["reason"], "not_exact")
+		post.assert_not_called()
+
+	def test_after_insert_hook_is_the_source_of_the_creation_token(self):
+		from crm.api import geo
+
+		class Doc:
+			name = "LEAD-1"
+			def get(self, key, default=None):
+				return "2026-09-19 12:00:00" if key == "creation" else default
+
+		with patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo.frappe, "enqueue") as enqueue:
+			geo.on_lead_insert(Doc())
+		self.assertEqual(enqueue.call_args.kwargs["ingest_creation"], "2026-09-19 12:00:00")
+
+
 class SafetyShape(unittest.TestCase):
 	def test_manual_api_has_no_circle_moving_argument(self):
 		self.assertEqual(list(inspect.signature(ar.resolve_now).parameters), ["subject"])
@@ -323,7 +546,7 @@ class SafetyShape(unittest.TestCase):
 	def test_warm_lead_gates_on_exact_resolution_before_posting(self):
 		root = Path(__file__).resolve().parents[2]
 		source = (root / "crm" / "api" / "geo.py").read_text()
-		resolve_at = source.index("resolved = resolve_at_ingest(lead)")
+		resolve_at = source.index("resolved = (")
 		gate = source.index('if not resolved.get("ok") or not resolved.get("exact")')
 		post = source.index('requests.post(')
 		self.assertLess(resolve_at, gate)
