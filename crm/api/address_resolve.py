@@ -458,7 +458,8 @@ def _resolve(subject, *, move_centre=False):
 		"parcel_address_key": address_key, "parcel_checked_at": now_datetime(),
 		**suggestion,
 	}
-	# Only the internal after-insert path can move the circle, and only for a Lead.
+	# Only two paths may move the circle, both Lead-only: the after-insert token
+	# path and the human address-accept path (see resolve_after_address_correction).
 	if move_centre and doc.doctype == "CRM Lead":
 		values.update(property_lat=lat, property_lng=lng)
 	try:
@@ -503,6 +504,21 @@ def resolve_at_ingest(lead, expected_creation):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "address_resolve: ingest resolve failed")
 		return {"ok": False, "exact": False, "subject": lead, "reason": "exception", "retryable": True}
+
+
+def resolve_after_address_correction(subject):
+	"""The suggestion-accept path's resolve: MAY re-centre an existing circle.
+
+	The only circle-moving path besides the after-insert token, and it needs no
+	token: reaching it requires a valid pending suggestion for exactly this
+	address, which only the resolver itself could have written -- that stored
+	state IS the proof that a human compared the two addresses and chose the
+	correction. A human deciding the address is the strongest signal the circle
+	is wrong, and the longer it sits at the old centre the less true it is.
+
+	A scratch property has no circle; `_resolve` already no-ops the move there.
+	"""
+	return _resolve(subject, move_centre=True)
 
 
 # ---------------------------------------------------------------------------------
@@ -609,7 +625,12 @@ def _save_human_decision(doc):
 
 @frappe.whitelist()
 def accept_address_suggestion(subject: str) -> dict:
-	"""Accept the pending address with audit, then resolve without moving centre."""
+	"""Accept the pending address with audit, then re-centre and re-warm.
+
+	This is the one sanctioned place an existing lead's comp circle may move:
+	a human has just asserted the old address was wrong. Every other path
+	(manual warm, refresh, backfill) keeps the centre it was bought at.
+	"""
 	_guard()
 	doc = _load_subject(subject)
 	doc.check_permission("write")
@@ -630,7 +651,39 @@ def accept_address_suggestion(subject: str) -> dict:
 		 "address_suggestion_state": "accepted"},
 		update_modified=False,
 	)
-	return {"ok": True, "address": suggested, "resolved": resolve(subject)}
+
+	# The accept has landed. The address the circle was bought around was wrong,
+	# so re-centre and re-warm -- the ONLY time an existing lead's circle moves.
+	# Ordering is the ingest ordering: move the centre FIRST, then enqueue the
+	# warm, so the sweep never lands at the old point.
+	resolved = resolve_after_address_correction(subject)
+	out = {
+		"ok": True,
+		"address": suggested,
+		"resolved": resolved,
+		"circle_recentred": bool(resolved.get("centre_moved")),
+		"warm_enqueued": False,
+	}
+	if not (resolved.get("ok") and resolved.get("exact")):
+		# No exact point for the corrected address: keep the old centre rather
+		# than move to a guess, and do not warm at a centre we know is stale.
+		return out
+	if resolved.get("centre_moved"):
+		try:
+			frappe.enqueue(
+				"crm.api.geo.warm_lead",
+				queue="long",
+				job_name=f"geo-warm-accept-{subject}",
+				enqueue_after_commit=True,
+				lead=subject,
+			)
+			out["warm_enqueued"] = True
+		except Exception:
+			# The accept stands; the warm is recoverable via warm_backfill.
+			frappe.log_error(
+				frappe.get_traceback(), "address_resolve: re-warm enqueue failed"
+			)
+	return out
 
 
 @frappe.whitelist()

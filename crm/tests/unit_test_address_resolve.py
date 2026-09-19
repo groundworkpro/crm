@@ -564,3 +564,220 @@ class SafetyShape(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class AcceptRecentresAndWarms(unittest.TestCase):
+	"""FIX 1: accepting a corrected address is the one sanctioned circle move.
+
+	A human comparing two addresses and choosing the correction is a stronger
+	signal than any heuristic. The accept must therefore move the circle to the
+	corrected house AND re-warm it -- but only when an exact point actually
+	resolves, and never on a dismissal.
+	"""
+
+	class Doc:
+		doctype = "CRM Lead"
+		name = "LEAD-1"
+
+		def __init__(self):
+			self.values = {
+				"property_address": "10 Main St",
+				"parcel_address_key": ar._address_key("10 Main St"),
+				"address_suggested": "12 Main St",
+				"address_suggestion_key": ar._suggestion_key("10 Main St", "12 Main St"),
+				"address_suggestion_state": "pending",
+			}
+			self.saved = 0
+
+		def get(self, key, default=None):
+			return self.values.get(key, getattr(self, key, default))
+
+		def check_permission(self, permission):
+			pass
+
+		def reload(self):
+			return self
+
+		def save(self):
+			self.saved += 1
+
+	def setUp(self):
+		ar.frappe.db.columns["CRM Lead"] = set(ar.REQUIRED_FIELDS) | {
+			"property_lat", "property_lng",
+		}
+
+	def _run_accept(self, resolved):
+		doc = self.Doc()
+		with patch.object(ar, "_guard"), \
+		     patch.object(ar, "_load_subject", return_value=doc), \
+		     patch.object(ar, "_supported", return_value=True), \
+		     patch.object(ar, "_full_address", side_effect=lambda d: d.get("property_address")), \
+		     patch.object(ar, "_resolve", return_value=resolved) as resolve, \
+		     patch.object(ar.frappe, "enqueue") as enqueue:
+			out = ar.accept_address_suggestion(doc.name)
+		return doc, out, resolve, enqueue
+
+	def test_accept_recentres_then_enqueues_the_warm(self):
+		resolved = {"ok": True, "exact": True, "centre_moved": True}
+		doc, out, resolve, enqueue = self._run_accept(resolved)
+		resolve.assert_called_once_with(doc.name, move_centre=True)
+		enqueue.assert_called_once()
+		kwargs = enqueue.call_args.kwargs
+		self.assertEqual(enqueue.call_args.args[0], "crm.api.geo.warm_lead")
+		self.assertEqual(kwargs["lead"], doc.name)
+		self.assertTrue(kwargs["enqueue_after_commit"])
+		self.assertEqual(doc.saved, 1)
+		self.assertTrue(out["ok"])
+		self.assertTrue(out["circle_recentred"])
+		self.assertTrue(out["warm_enqueued"])
+		self.assertEqual(out["resolved"], resolved)
+
+	def test_accept_without_an_exact_point_moves_and_warms_nothing(self):
+		resolved = {"ok": False, "exact": False, "reason": "no exact point"}
+		doc, out, resolve, enqueue = self._run_accept(resolved)
+		enqueue.assert_not_called()
+		self.assertTrue(out["ok"])  # the accept itself stands
+		self.assertFalse(out["circle_recentred"])
+		self.assertFalse(out["warm_enqueued"])
+		self.assertEqual(out["resolved"]["reason"], "no exact point")
+
+	def test_accept_reports_an_unenqueued_warm_when_enqueue_fails(self):
+		resolved = {"ok": True, "exact": True, "centre_moved": True}
+		doc, out, resolve, enqueue = self._run_accept(resolved)
+		# The exception path is exercised separately below; here assert the shape.
+		self.assertTrue(out["ok"])
+		doc2 = self.Doc()
+		with patch.object(ar, "_guard"), \
+		     patch.object(ar, "_load_subject", return_value=doc2), \
+		     patch.object(ar, "_supported", return_value=True), \
+		     patch.object(ar, "_full_address", side_effect=lambda d: d.get("property_address")), \
+		     patch.object(ar, "_resolve", return_value=resolved), \
+		     patch.object(ar.frappe, "enqueue", side_effect=RuntimeError("redis down")):
+			out2 = ar.accept_address_suggestion(doc2.name)
+		self.assertTrue(out2["ok"])
+		self.assertTrue(out2["circle_recentred"])
+		self.assertFalse(out2["warm_enqueued"])
+
+	def test_dismiss_never_recentres_and_never_warms(self):
+		doc = self.Doc()
+		with patch.object(ar, "_guard"), \
+		     patch.object(ar, "_load_subject", return_value=doc), \
+		     patch.object(ar, "_supported", return_value=True), \
+		     patch.object(ar, "_full_address", side_effect=lambda d: d.get("property_address")), \
+		     patch.object(ar, "_resolve") as resolve, \
+		     patch.object(ar, "_clear_resolution") as clear, \
+		     patch.object(ar.frappe, "enqueue") as enqueue:
+			out = ar.dismiss_address_suggestion(doc.name)
+		self.assertTrue(out["ok"])
+		resolve.assert_not_called()
+		enqueue.assert_not_called()
+		clear.assert_not_called()
+
+	def test_only_the_accept_resolve_may_move_a_centre(self):
+		"""The sanctioned move is a NAMED path, not a new public knob."""
+		with patch.object(ar, "_resolve", return_value={"ok": True}) as resolve:
+			ar.resolve_after_address_correction("LEAD-1")
+		resolve.assert_called_once_with("LEAD-1", move_centre=True)
+		# And the manual API still has no way to ask for it.
+		self.assertEqual(list(inspect.signature(ar.resolve_now).parameters), ["subject"])
+
+
+class GeoErrorsRedactInternalUrls(unittest.TestCase):
+	"""FIX 2: whitelisted geo endpoints never leak the internal service URL.
+
+	requests embeds the full URL in exception text; the operator keeps the
+	traceback in Error Log, the API response gets a stable reason.
+	"""
+
+	INTERNAL = "Connection refused: http://172.22.0.1:8110/properties"
+
+	def _assert_redacted(self, out):
+		self.assertFalse(out["ok"])
+		self.assertNotIn("172.22.0.1", str(out))
+		self.assertNotIn("8110", str(out))
+
+	def test_get_parcels(self):
+		from crm.api import geo
+
+		with patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo.requests, "get", side_effect=ConnectionError(self.INTERNAL)):
+			out = geo.get_parcels("LEAD-1", bbox="-90,30,-80,40")
+		self._assert_redacted(out)
+		self.assertEqual(out["reason"], "parcels request failed")
+
+	def test_get_neighborhood(self):
+		from crm.api import geo
+
+		with patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo, "_lead_point", return_value=(1.0, 2.0)), \
+		     patch.object(geo.requests, "get", side_effect=ConnectionError(self.INTERNAL)):
+			out = geo.get_neighborhood("LEAD-1")
+		self._assert_redacted(out)
+		self.assertEqual(out["reason"], "properties request failed")
+
+	def test_warm_lead(self):
+		from crm.api import geo
+
+		with patch.object(ar, "resolve", return_value={"ok": True, "exact": True}), \
+		     patch.object(geo, "_enabled", return_value=True), \
+		     patch.object(geo, "_lead_point", return_value=(1.0, 2.0)), \
+		     patch.object(geo.requests, "post", side_effect=ConnectionError(self.INTERNAL)):
+			out = geo.warm_lead("LEAD-1")
+		self._assert_redacted(out)
+		self.assertEqual(out["reason"], "warm request failed")
+
+	def test_no_exception_text_reaches_any_geo_response(self):
+		from pathlib import Path
+
+		source = (Path(ar.__file__).parent / "geo.py").read_text()
+		self.assertNotIn("str(e)", source)
+
+
+class IngestRetry(unittest.TestCase):
+	"""FIX 3: a transient ingest failure retries, bounded, carrying the token."""
+
+	def _warm(self, resolved, **kwargs):
+		from crm.api import geo
+
+		with patch.object(ar, "resolve", return_value=resolved) as normal, \
+		     patch.object(ar, "resolve_at_ingest", return_value=resolved), \
+		     patch.object(geo.frappe, "enqueue") as enqueue:
+			out = geo.warm_lead("LEAD-1", **kwargs)
+		return out, enqueue, normal
+
+	def test_transient_failure_retries_with_delay_and_the_token(self):
+		from crm.api import geo
+
+		resolved = {"ok": False, "exact": False, "reason": "exception", "retryable": True}
+		out, enqueue, _ = self._warm(resolved, ingest_creation="stamp")
+		self.assertFalse(out["ok"])
+		self.assertTrue(out["retry_enqueued"])
+		enqueue.assert_called_once()
+		kwargs = enqueue.call_args.kwargs
+		self.assertEqual(enqueue.call_args.args[0], "crm.api.geo.warm_lead")
+		self.assertEqual(kwargs["ingest_creation"], "stamp")
+		self.assertEqual(kwargs["ingest_attempt"], 2)
+		self.assertEqual(kwargs["delay"], geo.INGEST_RETRY_DELAY_S)
+
+	def test_the_cap_stops_a_forever_retry(self):
+		from crm.api import geo
+
+		resolved = {"ok": False, "exact": False, "reason": "exception", "retryable": True}
+		out, enqueue, _ = self._warm(
+			resolved, ingest_creation="stamp", ingest_attempt=geo.INGEST_MAX_ATTEMPTS)
+		self.assertFalse(out["retry_enqueued"])
+		enqueue.assert_not_called()
+
+	def test_a_non_retryable_failure_never_retries(self):
+		resolved = {"ok": False, "exact": False, "reason": "unresolvable", "retryable": False}
+		out, enqueue, _ = self._warm(resolved, ingest_creation="stamp")
+		self.assertFalse(out["retry_enqueued"])
+		enqueue.assert_not_called()
+
+	def test_a_tokenless_failure_never_retries(self):
+		"""Manual warm/backfill carry no creation token: no retry can be minted."""
+		resolved = {"ok": False, "exact": False, "reason": "exception", "retryable": True}
+		out, enqueue, normal = self._warm(resolved)
+		self.assertFalse(out["retry_enqueued"])
+		enqueue.assert_not_called()
+		normal.assert_called_once_with("LEAD-1")

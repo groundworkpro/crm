@@ -59,7 +59,43 @@ def _lead_point(lead):
 	return float(lat), float(lng)
 
 
-def warm_lead(lead, radius_m=None, ingest_creation=None):
+#: Transient ingest-time failures (the scraper or propwarehouse being down when a
+#: lead lands) retry this many times, then stop. A lead whose services are still
+#: down hours later is recoverable via warm_backfill/resolve_now; a job that
+#: retries forever is worse than one that gives up audibly.
+INGEST_MAX_ATTEMPTS = 3
+#: Seconds between attempts -- long enough for an egress outage to clear, short
+#: enough that the neighbourhood is warm before a rep opens a lead bought today.
+INGEST_RETRY_DELAY_S = 300
+
+
+def _enqueue_ingest_retry(lead, radius_m, ingest_creation, attempt):
+	"""Re-run this lead's ingest warm after a transient failure. Bounded.
+
+	The creation token is forwarded UNCHANGED: this is still that lead's ingest --
+	the same logical job, deferred -- so the retry keeps the one-time authority to
+	move the circle. A token-less caller (manual warm, backfill) never reaches
+	here, so a retry can never be minted out of a non-ingest job.
+	"""
+	try:
+		frappe.enqueue(
+			"crm.api.geo.warm_lead",
+			queue="long",
+			job_name=f"geo-warm-{lead}-retry-{attempt}",
+			enqueue_after_commit=True,
+			lead=lead,
+			radius_m=radius_m,
+			ingest_creation=ingest_creation,
+			ingest_attempt=attempt,
+			delay=INGEST_RETRY_DELAY_S,
+		)
+		return True
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "geo: ingest retry enqueue failed")
+		return False
+
+
+def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1):
 	"""Ask the service to sweep this lead's neighbourhood. Returns a status dict.
 
 	Best-effort by construction: every failure path returns rather than raises,
@@ -83,10 +119,20 @@ def warm_lead(lead, radius_m=None, ingest_creation=None):
 		if ingest_creation else resolve(lead)
 	)
 	if not resolved.get("ok") or not resolved.get("exact"):
+		retry_enqueued = False
+		if (
+			ingest_creation
+			and resolved.get("retryable")
+			and int(ingest_attempt or 1) < INGEST_MAX_ATTEMPTS
+		):
+			retry_enqueued = _enqueue_ingest_retry(
+				lead, radius_m, ingest_creation, int(ingest_attempt or 1) + 1
+			)
 		return {
 			"ok": False,
 			"reason": resolved.get("reason") or "no exact parcel point",
 			"retryable": bool(resolved.get("retryable")),
+			"retry_enqueued": retry_enqueued,
 			"resolved": resolved,
 		}
 
@@ -105,11 +151,14 @@ def warm_lead(lead, radius_m=None, ingest_creation=None):
 		)
 		r.raise_for_status()
 		return {"ok": True, "lead": lead, "lat": lat, "lng": lng, **(r.json() or {})}
-	except Exception as e:
+	except Exception:
 		# Logged, not raised. The desk still works without a warm neighbourhood;
-		# it just has less to draw.
+		# it just has less to draw. The reason is a stable string, never the
+		# exception text: requests embeds the full internal service URL in its
+		# exceptions, and a whitelisted response must not leak it. The operator
+		# gets the traceback.
 		frappe.log_error(frappe.get_traceback(), "geo: warm failed")
-		return {"ok": False, "reason": str(e)[:200], "lead": lead}
+		return {"ok": False, "reason": "warm request failed", "lead": lead}
 
 
 def on_lead_insert(doc, method=None):
@@ -198,9 +247,10 @@ def get_neighborhood(lead, radius_m=None, live=0, bbox=None, limit=None):
 		)
 		r.raise_for_status()
 		payload = r.json() or {}
-	except Exception as e:
+	except Exception:
 		frappe.log_error(frappe.get_traceback(), "geo: get_neighborhood failed")
-		return {"ok": False, "reason": str(e)[:200], "features": []}
+		# Stable reason, never the exception text -- it carries the internal URL.
+		return {"ok": False, "reason": "properties request failed", "features": []}
 
 	features = [_trim(f) for f in (payload.get("features") or [])]
 	total = len(features)
@@ -241,9 +291,10 @@ def get_parcels(lead, bbox=None):
 		r = requests.get(f"{_base_url()}/parcels", params={"bbox": bbox}, timeout=TIMEOUT)
 		r.raise_for_status()
 		return {"ok": True, **(r.json() or {})}
-	except Exception as e:
+	except Exception:
 		frappe.log_error(frappe.get_traceback(), "geo: get_parcels failed")
-		return {"ok": False, "reason": str(e)[:200], "parcels": []}
+		# Stable reason, never the exception text -- it carries the internal URL.
+		return {"ok": False, "reason": "parcels request failed", "parcels": []}
 
 
 @frappe.whitelist()
