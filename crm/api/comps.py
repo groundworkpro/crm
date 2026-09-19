@@ -408,10 +408,45 @@ def _self_listing(doc):
 	return None
 
 
+def redfin_first_subject_enabled() -> bool:
+	"""May the subject-facts cascade read Redfin before Zillow?
+
+	DEFAULT FALSE — this is OPT-IN, the opposite default to
+	`lead_round_robin_enabled`'s break-glass switch, and the reason is that
+	turning it on MOVES COMPS ON A REP'S BOARD.
+
+	The chain, which is not obvious from `_subject_facts` alone: the subject's
+	beds/baths/sqft/year become `*_band` values, `_preset_tiers` turns those
+	bands into filter windows, and `_matches` excludes any comp whose known
+	value falls outside them. So a Redfin sqft of 1,800 where Zillow said 1,500
+	moves a ±25% window from 1,125–1,875 to 1,350–2,250, and comps at either
+	edge appear or disappear. A tier that yielded 5 comps may now yield 4,
+	which flips `relaxed` and drops the board to a looser preset.
+
+	Worse while it was ungated: `redfin.cached_subject_record` is a pure cache
+	read, so a cold lead was Zillow-first for exactly one request and
+	Redfin-first afterwards — the SAME lead could show different comps on a
+	first and second open with no user action. Off by default, that
+	non-determinism cannot occur; on, it is a deliberate choice applied going
+	forward rather than a silent migration of leads already worked.
+
+	Flip it in site_config when the comp set is allowed to move:
+
+	    "redfin_first_subject_enabled": 1
+
+	What this does NOT gate is as important as what it does — see the callers
+	in `_subject_facts` and the ladder note in `_shape_detail`.
+	"""
+	return bool(frappe.conf.get("redfin_first_subject_enabled", False))
+
+
 def _subject_facts(doc, redfin_rec=None):
 	"""Everything we can honestly say about the subject, best source first.
 
-	1. REDFIN (`redfin_rec`, the cached /facts record) — beds/baths/sqft/year/type
+	1. REDFIN (`redfin_rec`, the cached /facts record) — beds/baths/sqft/year/type,
+	   ONLY when `redfin_first_subject_enabled()` says so. Off (the default) this
+	   rung is skipped entirely and the cascade is exactly the Zillow-first one
+	   that shipped before it, because reordering the subject moves the comp set.
 	2. ZILLOW (`crm.api.zillow`) — the same numbers where Redfin has none, plus
 	   everything Redfin structurally cannot answer (see below)
 	3. its own listing in the comp inventory (real numbers, but a last ASK, and
@@ -474,7 +509,13 @@ def _subject_facts(doc, redfin_rec=None):
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow facts failed")
 	# Only a MATCHED record may answer for the subject. An unmatched or errored
 	# record is "Redfin does not know this house", not "the house has no beds".
-	redfin_facts = redfin_rec if (redfin_rec or {}).get("matched") else None
+	redfin_matched = redfin_rec if (redfin_rec or {}).get("matched") else None
+	# THE FLAG APPLIES HERE AND NOWHERE ELSE IN THIS FUNCTION. Nulling the record
+	# at the single point every fact rung reads is what makes "off" provably
+	# identical to the pre-cascade behaviour: `take`, `property_type` and
+	# `last_sale` all consult `redfin_facts`, so one assignment closes all three
+	# and no future rung can miss the gate by forgetting to check it.
+	redfin_facts = redfin_matched if redfin_first_subject_enabled() else None
 	facts = {"source": {}}
 
 	def take(key, lead_field, listing_field=None, zillow_key=None, unit="", group=False,
@@ -567,7 +608,14 @@ def _subject_facts(doc, redfin_rec=None):
 	# Sibling flag for `redfin.subject_has_vendor_facts`, so a subject Redfin
 	# resolved but Zillow did not still gets its record fetched — and with it the
 	# Redfin Estimate and the listing URL, which ride the same fetch.
-	facts["has_redfin"] = bool(redfin_facts and redfin_facts.get("property_id"))
+	#
+	# DELIBERATELY UNGATED, and reads `redfin_matched` rather than the gated
+	# `redfin_facts`. This is a PRESENCE flag, not a fact value: it says a record
+	# exists, never what is in it. It reaches `subject_has_vendor_facts` (the
+	# fetch gate widened in 3447bda04) and nothing else — no band, no filter
+	# window, no displayed number — so it cannot move a comp. Gating it would
+	# narrow that gate back down for no gain.
+	facts["has_redfin"] = bool(redfin_matched and redfin_matched.get("property_id"))
 	facts["zillow_queried_address"] = (zillow or {}).get("_queried_address") or ""
 	# May be "" here: leads cached before `cover_photo` was carried have no key.
 	# `get_lead_comps` fills the gap from the area search's self-match afterwards,
@@ -1256,8 +1304,22 @@ def _shape_detail(row, zpid=None):
 	# — better or tied in all six sale-age buckets. Redfin leads outright because
 	# it returns a full gallery (median ~22 images) where both vendors return a
 	# single frame, and because its /photos is our own store rather than a billed
-	# call. Zillow last also means a Redfin-covered comp never spends a vendor
-	# photo request.
+	# call.
+	#
+	# Zillow last does NOT save its photo request, and the comment here used to
+	# claim it did. `_zillow_detail` above is unconditional and asks for photos
+	# alongside the facts — `photos=True` on the warehouse call, and
+	# `property_photos` on the RapidAPI fallback — so that spend happens before
+	# this ladder runs and whichever rung wins. What Zillow-last actually buys is
+	# a BETTER PICTURE, not a cheaper one. Making it cheaper means splitting
+	# `_zillow_detail` into separate facts and photo halves (they share one cache
+	# entry today); worth doing, not done here.
+	#
+	# NOT GATED by `redfin_first_subject_enabled`, on purpose: this ladder changes
+	# which PICTURES appear on a comp, never which comps exist. Only the subject
+	# cascade feeds the bands that `_preset_tiers` and `_matches` select on, so
+	# only that is behind the flag. Do not "consistently" gate this too — it would
+	# withhold a strictly better gallery for no safety gain.
 	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
 	photos = rf.get("photos") or []
 	# /photos carries the matched row's observed listing path, so on the happy

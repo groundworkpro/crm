@@ -67,7 +67,16 @@ ZILLOW = {
 
 
 def facts(redfin_rec=None, zillow=ZILLOW, doc=None):
-	with patch.object(comps, "_self_listing", return_value=None), \
+	"""Subject facts with the Redfin-first cascade ON.
+
+	The cascade is opt-in (`redfin_first_subject_enabled`, default FALSE) because
+	it moves the comp set — see that function's docstring. Every test in THIS
+	file is about what the cascade does once enabled, so the helper turns it on.
+	The off state is covered in `unit_test_subject_cascade_flag.py`, which is
+	where a regression in the default would surface.
+	"""
+	with patch.object(comps, "redfin_first_subject_enabled", return_value=True), \
+		 patch.object(comps, "_self_listing", return_value=None), \
 		 patch.object(comps, "_sqft_override", return_value=0), \
 		 patch.object(comps, "_sqft_override_supported", return_value=True):
 		import crm.api.zillow as zillow_api
