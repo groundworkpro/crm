@@ -134,6 +134,16 @@
                 @error="onPhotoError"
                 @load="onPhotoLoad"
               />
+              <!-- A Google streetscape is context, not a listing photo. Label it
+                   on the image itself so a rep cannot mistake the fallback for
+                   seller/MLS evidence. It only exists when every real-photo rung
+                   (Redfin → Realtor → Zillow) above it returned empty. -->
+              <div
+                v-if="isStaticStreetView && heroLoaded"
+                class="absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-xs font-medium text-white"
+              >
+                {{ __('Street View') }}
+              </div>
               <div
                 v-if="photoPending"
                 class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-sm text-white"
@@ -452,6 +462,7 @@ const photoBust = ref(0)
 const photoBroken = ref(false)
 const photoEl = ref(null)
 const heroLoaded = ref(false)
+const streetViewUnavailable = ref(false)
 const retriedPhotos = new Set()
 
 const photoSrc = computed(() => {
@@ -474,6 +485,15 @@ function syncHeroFromEl() {
 function onPhotoError() {
   const url = photos.value[photoIndex.value] || ''
   if (!url) return
+  // The relay returns 404 when metadata says there is no panorama or any
+  // upstream validation fails. That is a clean "no image" answer, not a broken
+  // gallery frame and not something to retry/bill in a loop.
+  if (isStaticStreetView.value) {
+    streetViewUnavailable.value = true
+    heroLoaded.value = false
+    photoBroken.value = false
+    return
+  }
   if (url.includes('maps.googleapis.com') && !retriedPhotos.has(url)) {
     retriedPhotos.add(url)
     photoBust.value = Date.now()
@@ -502,7 +522,11 @@ watch(photoIndex, () => {
 })
 
 const details = computed(() => response.value?.details || null)
-const photos = computed(() => {
+// These are the three real-photo rungs, plus the already-existing cover-photo
+// compatibility fallback. Street View MUST NOT enter this list: keeping it
+// separate makes the "only after every real photo is empty" contract visible
+// and prevents a later refactor from letting it displace listing imagery.
+const realPhotos = computed(() => {
   const list = response.value?.photos || []
   if (list.length) return list
   const cover =
@@ -511,11 +535,30 @@ const photos = computed(() => {
     ''
   return cover ? [cover] : []
 })
+const streetViewPhotoUrl = computed(() => {
+  // COMP gallery only. The lead desk's interactive Maps Embed iframe is a
+  // different product/key and stays in utils/streetView.js.
+  if (props.subjectMode || !response.value || loading.value || realPhotos.value.length) return ''
+  if (streetViewUnavailable.value) return ''
+  const lat = props.comp?.lat ?? details.value?.lat
+  const lng = props.comp?.lng ?? details.value?.lng
+  if (lat == null || lng == null || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return ''
+  const qs = new URLSearchParams({ lat: String(Number(lat)), lng: String(Number(lng)) })
+  return `/api/method/crm.api.streetview.comp_streetview?${qs.toString()}`
+})
+const photos = computed(() => {
+  if (realPhotos.value.length) return realPhotos.value
+  return streetViewPhotoUrl.value ? [streetViewPhotoUrl.value] : []
+})
+const isStaticStreetView = computed(
+  () => !!streetViewPhotoUrl.value && photos.value[photoIndex.value] === streetViewPhotoUrl.value,
+)
 const photoDateByUrl = reactive({})
 const photoDateState = reactive({})
 function canDatePhoto(url) {
   if (!url) return false
   if (url.includes('maps.googleapis.com') || url.includes('imgix.net')) return false
+  if (url.includes('crm.api.streetview.comp_streetview')) return false
   return true
 }
 function photoDateLabel(iso) {
@@ -766,6 +809,7 @@ watch(
 async function load(force = false) {
   if (!props.comp?.name) return
   const name = props.comp.name
+  streetViewUnavailable.value = false
   if (!force && cache.has(name)) {
     response.value = cache.get(name)
     return
