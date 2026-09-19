@@ -98,6 +98,40 @@ def realtor_photos(address):
 	return _get("/realtor/photos", {"address": addr})
 
 
+def realtor_search(lat=None, lng=None, radius_mi=None, zip_code=None,
+				   kind="forsold", sold_date_min=None):
+	"""Apivex circle+ZIP search through the warehouse. Envelope, or None.
+
+	PASS `zip_code` WHENEVER THE LEAD HAS ONE. Apivex's `/coordinates` search
+	under-returns badly and the ZIP search is the better half -- measured over
+	the same circles and the same 12-month window:
+
+	    coordinates alone   33% recall
+	    ZIP alone           68%
+	    both, merged        73%
+
+	Spokane alone: 32 homes from the coordinate search against 81 from the ZIP
+	search, same vendor, same day. A coordinates-only answer therefore arrives
+	as `ok=True` with a plausible row count and is a third of the market.
+
+	THE QUERY PARAMETER IS `zip`, NOT `zip_code`. FastAPI binds by parameter
+	name, so `zip_code=` is silently ignored and the ZIP half never runs -- the
+	failure is a quiet two-thirds loss of comps, not an error. The keyword here
+	is `zip_code` only because `zip` is a Python builtin.
+	"""
+	params = {"kind": kind}
+	if lat is not None and lng is not None and radius_mi:
+		params.update(lat=lat, lng=lng, radius_mi=radius_mi)
+	zc = str(zip_code or "").strip()[:10]
+	if zc:
+		params["zip"] = zc
+	if sold_date_min:
+		params["sold_date_min"] = sold_date_min
+	if "lat" not in params and "zip" not in params:
+		return None
+	return _get("/realtor/search", params)
+
+
 def payload_or_fallback(envelope):
 	"""(use_warehouse, payload).
 

@@ -780,15 +780,30 @@ def _pin_facts_many(addresses):
 
 
 def _apply_facts(existing, incoming):
-	"""Zillow's shape wins. ISTL sqft is the listing/tax figure and is what
-	Dennis just caught disagreeing with the Zillow page — we used to keep it
+	"""Zillow's shape wins over ISTL's. ISTL sqft is the listing/tax figure and is
+	what Dennis caught disagreeing with the Zillow page — we used to keep it
 	whenever it was already set, so a merge that updated the SALE left the
 	wrong living area on the pin.
+
+	EXCEPT AGAINST REDFIN, which outranks both. Measured over the benchmark's
+	matched houses, the odd one out on sqft is Zillow 52% of the time against
+	Redfin's 9%, and on price Zillow 42% against Redfin's 12%. Once
+	`comp_merge` has stamped a value onto a row, this must not quietly undo it
+	— and it would, because `attach_sale_history` calls this on the final board
+	AFTER the merge has run, with a billed `/property` payload in hand.
+
+	Filling a BLANK is still allowed and still wanted: Redfin returning no sqft
+	is Redfin declining to answer, not an assertion that the house has none, so
+	Zillow's number is strictly better than nothing.
 	"""
+	redfin_owned = existing.get("field_authority") == "redfin"
 	for key in ("square_footage", "bedrooms", "bathrooms", "year_built", "lot_size"):
 		val = incoming.get(key)
-		if val:
-			existing[key] = val
+		if not val:
+			continue
+		if redfin_owned and existing.get(key):
+			continue
+		existing[key] = val
 
 
 def _apply_sale(row, price, date):

@@ -247,6 +247,26 @@ def _full_address(doc) -> str:
 	return ", ".join(p for p in parts if p)
 
 
+def _self_merge_keys(doc) -> set:
+	"""Address keys that mean "this is the subject itself", for a merge to skip.
+
+	A house is not a comparable for itself. The subject usually sits inside its
+	own search radius, so every provider returns it; without this it lands on the
+	board at distance 0 as a pill under the subject dot, inflating the count and
+	comping the house against itself.
+
+	Both forms are needed because a webhook lead carries the whole address in
+	`property_address` while a hand-entered one is street-only — the two produce
+	different keys, and a provider may echo either.
+	"""
+	from crm.api.zillow_comps import merge_key
+
+	keys = {merge_key(doc.get("property_address") or ""), merge_key(_full_address(doc))}
+	keys.discard(merge_key(""))
+	keys.discard("")
+	return keys
+
+
 def _census_geocode(address: str):
 	"""One address -> (lat, lng), or None. Free, US-only, no API key."""
 	qs = urllib.parse.urlencode(
@@ -2066,6 +2086,13 @@ def get_lead_comps(
 	# Redfin ingest overlay on ISTL pool pins. After Zillow so extra zillow::
 	# solds stay Zillow's, but ingested CRM Comp rows take photos + MLS status
 	# from the store that purchase already warmed.
+	#
+	# THEN THE MERGE. The overlay above stamps photo + status onto pins we
+	# already had; `comp_merge.apply_redfin` is the different, bigger claim --
+	# Redfin's FIELD VALUES win on any row it matches, and the Redfin houses
+	# nobody else returned are added. Measured, those are 10% of the sold union
+	# and used to be discarded entirely. Order matters: the overlay is allowed
+	# to run first because authority overwrites whatever it set.
 	if redfin_istl_job is not None:
 		try:
 			from crm.api import redfin
@@ -2073,8 +2100,32 @@ def get_lead_comps(
 			features, meta = redfin.finish_istl_coverage(redfin_istl_job)
 			base["redfin"] = redfin.apply_istl_comps(out, features)
 			redfin.maybe_rewarm(lead, meta)
+			if not rental:
+				from crm.api import comp_merge
+
+				base["redfin"]["merge"] = comp_merge.apply_redfin(
+					out, features, lat, lng, radius, today,
+					self_keys=_self_merge_keys(doc),
+				)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin ISTL overlay failed")
+
+	# Realtor ADDS houses and nothing else. It is the single biggest contributor
+	# to the union (21% sole source) and the worst measured field authority
+	# (outlier on price 45% of the time) -- so we take its inventory and ignore
+	# its opinion about anything already on the board. Rentals are excluded: this
+	# is a recorded-sale and for-sale search, not a ForRent one.
+	if not rental and subject is not None:
+		try:
+			from crm.api import comp_merge
+
+			base["realtor"] = comp_merge.fetch_and_apply_realtor(
+				out, doc, lat, lng, radius, today,
+				self_keys=_self_merge_keys(doc),
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Realtor merge failed")
+			base["realtor"] = {"used": False, "reason": "error"}
 
 	# Subject photo, cheapest source first: the facts we already cached, else the
 	# self-match the area search threw away. Both are free; neither is worth a
@@ -2111,12 +2162,19 @@ def get_lead_comps(
 
 	out.sort(key=lambda r: r["distance_mi"])
 
-	# BatchData when Zillow RecentlySold produced no priced sales (Louisiana and
-	# the other non-disclosure states). Zillow for-sale listings do not count —
-	# an ask is not a sale. ISTL last-asks also do not count: they are last LISTs,
-	# labelled off-market, and treating them as solds is how LA maps went yellow
-	# without a single Sold pin. Pin-refreshed ISTL rows keep their ISTL name even
-	# after `source` flips to zillow, so only `zillow::` solds are real search hits.
+	# BatchData when the merged board produced no priced sales (Louisiana and the
+	# other non-disclosure states). For-sale listings do not count — an ask is not
+	# a sale. ISTL last-asks also do not count: they are last LISTs, labelled
+	# off-market, and treating them as solds is how LA maps went yellow without a
+	# single Sold pin.
+	#
+	# THIS GATE USED TO TEST `name.startswith("zillow::")` AND NOTHING ELSE, and
+	# leaving it that way would have been the expensive half of this change: a
+	# board carrying `redfin::` and `realtor::` solds reads as "nobody has a
+	# price", so the PAID fallback fires on a full board and bills $0.15 for comps
+	# already in hand. `has_recorded_sale` is now the one place that question is
+	# answered, and it knows every prefix the merge can mint plus the
+	# `sale_source` a provider stamps onto an existing pin.
 	had_pins = bool(out)
 	if rental:
 		# BatchData is recorded sales. A rent is not a sale.
@@ -2125,16 +2183,14 @@ def get_lead_comps(
 			"reason": "rentals", "had_pins": had_pins,
 		}
 	else:
-		zillow_solds = [
-			r for r in out
-			if r.get("price")
-			and str(r.get("name") or "").startswith("zillow::")
-			and r.get("listing_state") == "sold"
-		]
-		if zillow_solds:
+		from crm.api import comp_merge
+
+		priced_solds = [r for r in out if comp_merge.has_recorded_sale(r)]
+		if priced_solds:
 			base["fallback"] = {
 				"source": "batchdata", "used": False,
-				"reason": "zillow_has_prices", "had_pins": had_pins,
+				"reason": "merged_has_prices", "had_pins": had_pins,
+				"priced_solds": len(priced_solds),
 			}
 		else:
 			base["fallback"] = _batchdata_fallback(doc, base, merge_into=out)

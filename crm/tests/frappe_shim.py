@@ -169,6 +169,10 @@ def install(user="lance.johnson@groundworkpro.com"):
 
 	utils.add_to_date = _add_to_date
 	utils.getdate = lambda v=None: (v if isinstance(v, datetime) else datetime.fromisoformat(str(v))).date() if v else datetime(2026, 9, 7).date()
+	# Real frappe: days from `d2` to `d1`, so a past `d2` yields a POSITIVE age.
+	# `_recency_days` relies on that sign, and a reversed shim would make every
+	# comp look like it sold in the future.
+	utils.date_diff = lambda d1, d2: (utils.getdate(d1) - utils.getdate(d2)).days
 	utils.today = lambda: "2026-09-07"
 	utils.nowdate = utils.today
 	utils.get_fullname = lambda u: u
