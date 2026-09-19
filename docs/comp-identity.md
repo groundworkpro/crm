@@ -70,10 +70,11 @@ also matches `zillow-rent::`. Deliberate, and any new scheme must preserve it.
 
 ## 4. How many leads are affected
 
-**I could not query production.** This task explicitly forbids ssh, and the
-CRM database runs in Docker on the OVH box (`frappe-crm-db-1`, database
-`_5a5a94322d465cc1`). Nothing in this repo caches the answer either. **Do not
-plan the migration window without running this first**, read-only:
+**These counts have to be taken ON THE BOX; they are not knowable from a dev
+machine.** The CRM MariaDB runs in Docker on OVH (`frappe-crm-db-1`) and is
+not reachable from a laptop — an attempt does not fail fast, it hangs until
+something times out. Nothing in this repo caches the answer either. **Do not
+plan the migration window without running these first**, read-only:
 
 ```sql
 SELECT
@@ -93,6 +94,16 @@ FROM `tabCRM Lead`
 WHERE comps_hidden LIKE '%zillow::%' OR comps_selected LIKE '%zillow::%'
 LIMIT 50;
 ```
+
+Run both on the box, e.g.:
+
+```sh
+# on OVH; `docker exec -i` so the heredoc reaches mysql's stdin
+sudo docker exec -i frappe-crm-db-1 mysql -u<db_name> -p<db_password> <db_name>
+```
+
+with the credentials from
+`/home/frappe/frappe-bench/sites/crm.groundworkpro.com/site_config.json`.
 
 If the second query returns ~0 rows, this whole problem is theoretical and
 Option A can be taken cheaply. If it returns thousands, Option B's migration
