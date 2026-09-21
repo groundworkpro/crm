@@ -77,7 +77,7 @@ MAX_SEARCH_CALLS = 40
 # be served. NOTE these bumps are now the ONLY way a cached circle is
 # invalidated: since gw365 the caches survive `bench clear-cache`, so a deploy no
 # longer quietly does it for you (crm/hooks.py, persistent_cache_keys).
-AREA_CACHE_VERSION = 8  # v5 price-splits past 800; v6 imgSrc; v7 pending; v8 DOM fix
+AREA_CACHE_VERSION = 9  # v5 price-splits past 800; v6 imgSrc; v7 pending; v8 DOM fix; v9 unpriced rows drop
 PIN_CACHE_VERSION = 5  # v2 cover_photo; v3 parsed history (dropped); v4 raw price_history; v5 is_for_auction
 
 
@@ -101,7 +101,20 @@ def _migrate_area_v7(data):
 	return data
 
 
-AREA_MIGRATIONS = {7: _migrate_area_v7}
+def _migrate_area_v8(data):
+	"""v9 drops price-less rows from the board entirely; strip them from circles.
+
+	Shaping change, not a fetch change, so an old blob answers the new question
+	fine once its unpriced rows are removed.
+	"""
+	rows = data.get("rows") if isinstance(data, dict) else data
+	if not isinstance(rows, list):
+		return data
+	kept = [r for r in rows if not isinstance(r, dict) or r.get("price")]
+	return dict(data, rows=kept) if isinstance(data, dict) else kept
+
+
+AREA_MIGRATIONS = {7: _migrate_area_v7, 8: _migrate_area_v8}
 
 
 def _migrate_pin_v4(data):
@@ -374,9 +387,14 @@ def _shape_search(prop, kind):
 		dom = None
 	home = str(prop.get("propertyType") or "").strip().upper()
 	state = listing_state(prop, kind)
-	# Auctions list at $0 (no ask). Dropping those rows is how they only ever
-	# arrived via RecentlySold, as a sold pin, while Zillow still showed Auction.
-	if not price and state in ("sold", "off_market"):
+	# A row with no price carries no pricing evidence, so none of them board
+	# (Lance, 2026-09-22): ND-state solds (price null), $0-ask auctions,
+	# price-less listings and rentals. The auction carve-out that used to sit
+	# here existed so a live auction didn't arrive via RecentlySold masquerading
+	# as a sold pin — moot now that unpriced solds drop too. Cost: apply()'s
+	# subject-photo salvage reads these rows, so an unpriced subject listing
+	# loses that free thumbnail; the facts cover_photo remains.
+	if not price:
 		return None
 	# A pending/auction home has NOT sold, so it stays "Active" in the status field
 	# every filter, colour and count in this app already keys on. What makes it

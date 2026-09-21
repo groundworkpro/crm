@@ -552,6 +552,11 @@ duplicating. Work substantial features in a worktree of your own.
       dropped the raw priceHistory v4 is built on — nothing to carry). Verified
       on prod against a synthetic v7 blob: sold rows lose `days_on_market`,
       active rows keep it, `t` preserved, expired generations not resurrected.
+      **v9 (2026-09-22): unpriced rows never board, in ANY state** (Lance) —
+      ND-state solds, $0-ask auctions (the old carve-out is gone), price-less
+      listings/rentals all drop in `_shape_search`, `comps.py` re-filters the
+      merged board as a safety net, and `_migrate_area_v8` strips them from
+      cached circles without a re-buy.
     - **Sold circles are served 14 days, for-sale 7** (`AREA_SOLD_HIT_DAYS` /
       `AREA_HIT_DAYS`, carried on `AREA_QUERIES` as a 4th field). The nightly
       prewarm was ~500 calls re-buying week-old solds that had not changed; at

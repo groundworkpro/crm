@@ -9,6 +9,7 @@ install()
 from crm.api.zillow_comps import (  # noqa: E402
 	_apply_listing,
 	_is_auction,
+	_migrate_area_v8,
 	_migrate_pin_v4,
 	_shape_search,
 	_state_from_facts,
@@ -54,20 +55,39 @@ class ListingStateTests(unittest.TestCase):
 		prop = _search_prop(listingStatus="PENDING", listingSubType={"is_FSBA": True})
 		self.assertEqual(listing_state(prop, "sale"), "pending")
 
-	def test_shape_keeps_zero_price_auction(self):
-		row = _shape_search(
-			_search_prop(
-				price=0,
-				listingStatus="FOR_SALE",
-				listingSubType={"is_forAuction": True},
-				dateSold=None,
-			),
-			"sale",
+	def test_shape_drops_zero_price_auction(self):
+		# No unpriced pins at all (Lance, 2026-09-22) — a $0-ask auction included.
+		self.assertIsNone(
+			_shape_search(
+				_search_prop(
+					price=0,
+					listingStatus="FOR_SALE",
+					listingSubType={"is_forAuction": True},
+					dateSold=None,
+				),
+				"sale",
+			)
 		)
-		self.assertIsNotNone(row)
-		self.assertEqual(row["listing_state"], "auction")
-		self.assertEqual(row["status"], "Active")
-		self.assertEqual(row["price"], 0)
+
+	def test_shape_drops_for_sale_without_price(self):
+		self.assertIsNone(
+			_shape_search(_search_prop(price=None, listingStatus="FOR_SALE", dateSold=None), "sale")
+		)
+
+	def test_shape_drops_rental_without_price(self):
+		self.assertIsNone(
+			_shape_search(_search_prop(price=0, listingStatus="FOR_RENT", dateSold=None), "rent")
+		)
+
+	def test_migrate_area_v8_strips_unpriced_rows(self):
+		priced = {"address": "a", "price": 100}
+		unpriced = {"address": "b", "price": None}
+		zero = {"address": "c", "price": 0}
+		out = _migrate_area_v8({"rows": [priced, unpriced, zero], "complete": True})
+		self.assertEqual(out["rows"], [priced])
+		self.assertTrue(out["complete"])
+		# A bare-list blob (older shape) is tolerated too.
+		self.assertEqual(_migrate_area_v8([priced, unpriced]), [priced])
 
 	def test_shape_drops_sold_without_price(self):
 		self.assertIsNone(_shape_search(_search_prop(price=0), "sold"))

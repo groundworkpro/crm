@@ -2156,6 +2156,14 @@ def get_lead_comps(
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Realtor estimate failed")
 
+	# No unpriced pin boards, whatever the source (Lance, 2026-09-22): a comp
+	# that cannot say a number is not pricing evidence. Search shaping drops
+	# these at the source; this catches the paths that mutate rows afterwards
+	# (a priced pin re-listed as a $0 auction) and anything an old cached
+	# circle carried forward. A picked comp that goes unpriced leaves the board
+	# but keeps its name in comps_selected — the calc only reads board rows.
+	out[:] = [r for r in out if r.get("price")]
+
 	for row in out:
 		row["selected"] = row["name"] in selected
 		row["hidden"] = row["name"] in hidden
