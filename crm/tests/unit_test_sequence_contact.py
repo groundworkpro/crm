@@ -2,6 +2,7 @@
 
 import unittest
 from datetime import datetime
+from unittest import mock
 
 from crm.tests.frappe_shim import install
 
@@ -83,7 +84,19 @@ class ContactSourceTests(unittest.TestCase):
 		self.assertEqual(contact.latest_contact_for_lead("CRM-LEAD-00001"), datetime(2026, 9, 14, 8, 45))
 		self.assertEqual(shim.db.sql.call_count, 3)
 		self.assertTrue(all(call.args[1] == {"lead": "CRM-LEAD-00001"} for call in shim.db.sql.call_args_list))
-		self.assertIn("not in ('scheduled', 'canceled')", shim.db.sql.call_args_list[-1].args[0])
+		self.assertIn("not in ('scheduled', 'canceled', 'failed')", shim.db.sql.call_args_list[-1].args[0])
+
+	def test_public_context_api_uses_runner_contract_and_is_json_safe(self):
+		with mock.patch.object(contact, "latest_contact_for_lead", return_value=datetime(2026, 9, 11, 16, 0)) as latest:
+			self.assertEqual(
+				contact.get_sequence_contact_context("CRM-LEAD-00001", now="2026-09-14 09:00:00"),
+				{
+					"contacted_within_one_business_day": True,
+					"last_contact": "2026-09-11 16:00:00",
+				},
+			)
+		latest.assert_called_once_with("CRM-LEAD-00001")
+		self.assertTrue(contact.get_sequence_contact_context._whitelisted)
 
 	def test_context_is_json_safe(self):
 		shim.db.sql.side_effect = [

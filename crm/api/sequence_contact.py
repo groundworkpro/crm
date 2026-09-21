@@ -1,9 +1,10 @@
 """Recent-contact context for CRM Sequence Jinja conditions.
 
-Sequence Server Scripts can call ``frappe.call('crm.api.sequence_contact.context',
-lead=lead.name)`` and use ``contact.contacted_within_one_business_day`` in a
-Jinja condition.  The check is made by the runner immediately before sending,
-so a conversation after enrollment still suppresses the outbound step.
+Sequence Server Scripts call
+``frappe.call('crm.api.sequence_contact.get_sequence_contact_context',
+lead_name=lead.name)`` and use ``contact.contacted_within_one_business_day``
+in a Jinja condition. The check is made by the runner immediately before
+sending, so a conversation after enrollment still suppresses the outbound step.
 """
 
 from __future__ import annotations
@@ -53,8 +54,8 @@ def contacted_within_one_business_day(last_contact, now=None) -> bool:
 def _contact_queries():
 	"""Timestamp queries for genuine, lead-linked contacts.
 
-	Quo placeholders are intentionally omitted: a scheduled or canceled text
-	does not mean a seller was contacted.  The other two sources only contain
+	Quo placeholders are intentionally omitted: a scheduled, canceled, or failed
+	text does not mean a seller was contacted. The other two sources only contain
 	actual recorded call/email activity once linked to the lead.
 	"""
 	queries = [
@@ -75,7 +76,7 @@ def _contact_queries():
 				select max(coalesce(message_date, creation)) as last_contact
 				from `tabQuo Message`
 				where reference_doctype = 'CRM Lead' and reference_docname = %(lead)s
-				  and coalesce(status, '') not in ('scheduled', 'canceled')
+				  and coalesce(status, '') not in ('scheduled', 'canceled', 'failed')
 			"""
 		)
 	return queries
@@ -94,14 +95,20 @@ def latest_contact_for_lead(lead):
 
 
 @frappe.whitelist()
-def context(lead, now=None):
+def get_sequence_contact_context(lead_name, now=None):
 	"""JSON-safe recent-contact values for a CRM Sequence Server Script.
 
 	``now`` exists for deterministic bench/testing calls; the sequence runner
 	leaves it blank and always evaluates at send time.
 	"""
-	last_contact = latest_contact_for_lead(lead)
+	last_contact = latest_contact_for_lead(lead_name)
 	return {
 		"contacted_within_one_business_day": contacted_within_one_business_day(last_contact, now),
 		"last_contact": last_contact.isoformat(sep=" ") if isinstance(last_contact, datetime) else None,
 	}
+
+
+@frappe.whitelist()
+def context(lead, now=None):
+	"""Compatibility alias for callers using the original API shape."""
+	return get_sequence_contact_context(lead_name=lead, now=now)
