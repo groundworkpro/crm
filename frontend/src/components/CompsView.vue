@@ -1436,12 +1436,34 @@ const rentalReady = computed(
 )
 const comps = computed(() => (rentalReady.value ? data.value?.comps || [] : []))
 
+const compStreetView = ref(null)
+const compStreetViewLoading = ref(false)
+const compStreetViewAttempted = ref(false)
+
+watch(focusedComp, () => {
+  compStreetView.value = null
+  compStreetViewAttempted.value = false
+})
+
 const streetViewPoint = computed(() => {
   const name = focusedComp.value
   if (name) {
     const c = comps.value.find((x) => x.name === name)
     if (c?.lat != null && c?.lng != null) {
-      return { lat: c.lat, lng: c.lng, heading: 0, label: c.address || '' }
+      const resolved = compStreetView.value
+      if (
+        resolved?.ok && resolved?.available &&
+        c.lat === resolved.lat && c.lng === resolved.lng
+      ) {
+        return {
+          lat: c.lat,
+          lng: c.lng,
+          heading: Number.isFinite(Number(resolved.heading)) ? Number(resolved.heading) : 0,
+          pano_id: resolved.pano_id || '',
+          label: c.address || '',
+        }
+      }
+      return { lat: c.lat, lng: c.lng, heading: 0, pano_id: '', label: c.address || '' }
     }
   }
   if (subjectStreetViewLoading.value) return null
@@ -1454,6 +1476,7 @@ const streetViewPoint = computed(() => {
       lat: resolved.lat,
       lng: resolved.lng,
       heading: Number.isFinite(Number(resolved.heading)) ? Number(resolved.heading) : 0,
+      pano_id: resolved.pano_id || '',
       label: resolved.address || data.value?.address || props.address || '',
     }
   }
@@ -1517,8 +1540,30 @@ watch(
     subjectStreetViewAttempted.value = false
   },
 )
+
+async function loadCompStreetView() {
+  if (!focusedComp.value) return
+  const c = comps.value.find((x) => x.name === focusedComp.value)
+  if (!c || c.lat == null || c.lng == null) return
+  if (compStreetViewAttempted.value && !compStreetView.value?.retryable) return
+  compStreetViewLoading.value = true
+  try {
+    compStreetView.value = await call('crm.api.streetview.metadata', {
+      lat: c.lat,
+      lng: c.lng,
+    })
+  } catch (_) {
+    compStreetView.value = { ok: false, available: false, retryable: true }
+  } finally {
+    compStreetViewAttempted.value = true
+    compStreetViewLoading.value = false
+  }
+}
+
 watch([showStreet, focusedComp], ([open, focused]) => {
-  if (open && !focused) loadSubjectStreetView()
+  if (!open) return
+  if (focused) loadCompStreetView()
+  else loadSubjectStreetView()
 })
 
 function onStreetViewLoad() {
@@ -1539,16 +1584,17 @@ function syncStreetView() {
     streetViewMsg.value = ''
     return
   }
-  if (subjectStreetViewLoading.value && !focusedComp.value) {
+  if ((subjectStreetViewLoading.value && !focusedComp.value) || (compStreetViewLoading.value && focusedComp.value)) {
     streetViewSrc.value = ''
     streetViewMsg.value = __('Locating the exact parcel…')
     return
   }
   const pt = streetViewPoint.value
-  const src = pt ? streetViewEmbedUrl(pt.lat, pt.lng, pt.heading) : ''
+  const src = pt ? streetViewEmbedUrl(pt.lat, pt.lng, pt.heading, pt.pano_id) : ''
   if (!src) {
     streetViewSrc.value = ''
-    streetViewMsg.value = subjectStreetViewAttempted.value && !focusedComp.value
+    const attempted = focusedComp.value ? compStreetViewAttempted.value : subjectStreetViewAttempted.value
+    streetViewMsg.value = attempted
       ? __('No Street View is available at this parcel.')
       : __('No coordinates for Street View yet.')
     return

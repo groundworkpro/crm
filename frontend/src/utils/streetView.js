@@ -21,13 +21,18 @@ export function bearingDeg(lat1, lng1, lat2, lng2) {
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
 }
 
-export function streetViewEmbedUrl(lat, lng, heading = 0) {
+export function streetViewEmbedUrl(lat, lng, heading = 0, panoId = '') {
   if (lat == null || lng == null || Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) {
     return ''
   }
   const h = Number.isFinite(Number(heading)) ? Number(heading) : 0
-  return (
-    `https://www.google.com/maps/embed/v1/streetview?key=${MAPS_EMBED_KEY}` +
-    `&location=${Number(lat)},${Number(lng)}&heading=${h}&pitch=10&fov=80`
-  )
+  const base = `https://www.google.com/maps/embed/v1/streetview?key=${MAPS_EMBED_KEY}`
+  // A pano ID is the exact camera location Google chose for this address. Use
+  // it when we have it and look FROM the camera TO the house with `heading`.
+  // Without it, `location=` asks Google to pick the nearest pano, which is the
+  // old source of "wrong house / down the block".
+  if (panoId) {
+    return `${base}&pano=${encodeURIComponent(panoId)}&heading=${h}&pitch=10&fov=80`
+  }
+  return `${base}&location=${Number(lat)},${Number(lng)}&heading=${h}&pitch=10&fov=80`
 }

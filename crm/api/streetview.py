@@ -91,6 +91,30 @@ def _jpeg_bytes(response) -> bytes | None:
 	return body or None
 
 
+def _streetview_meta(lat, lng):
+	"""Ask PropWarehouse for panorama metadata at one coordinate. Returns dict."""
+	from crm.api.vendor_facts import _base_url
+
+	base = (_base_url() or "").rstrip("/")
+	if not base:
+		return {"ok": False, "reason": "no vendor_facts base"}
+	import requests
+
+	try:
+		r = requests.get(
+			f"{base}/streetview", params={"lat": lat, "lng": lng},
+			timeout=META_TIMEOUT,
+		)
+		if r.status_code != 200:
+			return {"ok": False, "reason": f"status {r.status_code}"}
+		meta = r.json()
+		if not isinstance(meta, dict):
+			return {"ok": False, "reason": "bad meta"}
+		return meta
+	except Exception:
+		return {"ok": False, "reason": "exception"}
+
+
 @frappe.whitelist(methods=["GET"])
 def comp_streetview(lat=None, lng=None):
 	"""Stream one Street View JPEG for an explicitly opened comp, or return 404.
@@ -109,21 +133,16 @@ def comp_streetview(lat=None, lng=None):
 	if not point or not base:
 		return _no_image()
 
+	meta = _streetview_meta(*point)
+	if not meta.get("available"):
+		return _no_image()
+	image_path = _safe_image_path(meta.get("image_path"))
+	if not image_path:
+		return _no_image()
+
 	import requests
 
 	try:
-		meta_response = requests.get(
-			f"{base}/streetview", params={"lat": point[0], "lng": point[1]},
-			timeout=META_TIMEOUT,
-		)
-		if meta_response.status_code != 200:
-			return _no_image()
-		meta = meta_response.json()
-		if not isinstance(meta, dict) or not meta.get("available"):
-			return _no_image()
-		image_path = _safe_image_path(meta.get("image_path"))
-		if not image_path:
-			return _no_image()
 		image_response = requests.get(
 			f"{base}{image_path}", timeout=IMAGE_TIMEOUT, stream=True,
 		)
@@ -131,8 +150,6 @@ def comp_streetview(lat=None, lng=None):
 		if body is None:
 			return _no_image()
 	except Exception:
-		# Never surface requests' exception text: it can contain the full internal
-		# URL, and an upstream URL may itself carry credentials or a provider key.
 		return _no_image()
 
 	_response_set("filename", "street-view.jpg")
@@ -145,3 +162,31 @@ def comp_streetview(lat=None, lng=None):
 	# this merely avoids a repeat relay inside one browser.
 	_response_set("headers", {"Cache-Control": "private, max-age=86400"})
 	return None
+
+
+@frappe.whitelist()
+def metadata(lat=None, lng=None):
+	"""Return panorama metadata/heading for a coordinate; no persistence.
+
+	Used by the interactive Street View overlay when the user focuses a comp:
+	we know the house's lat/lng but need the camera position and the bearing
+	from camera to house so the embed faces the right building.
+	"""
+	from crm.api.comps import _guard
+
+	_guard()
+	point = _point(lat, lng)
+	if not point:
+		return {"ok": False, "available": False, "reason": "bad coordinates"}
+	meta = _streetview_meta(*point)
+	return {
+		"ok": True,
+		"available": bool(meta.get("available")),
+		"lat": point[0],
+		"lng": point[1],
+		"heading": meta.get("heading"),
+		"pano_id": meta.get("pano_id") or "",
+		"camera_m": meta.get("camera_m"),
+		"captured": meta.get("captured") or "",
+		"reason": meta.get("reason"),
+	}
