@@ -13,7 +13,7 @@
       <Tooltip
         :text="
           __(
-            'Acq = New → Signed Contract · Dispo = Photos & Lockbox → Buyer Assigned · All = everyone, including dead and parked',
+            'Acq = New → Contract Sent · Dispo = Photos & Lockbox → Buyer Assigned · All = everyone, including dead and parked',
           )
         "
       >

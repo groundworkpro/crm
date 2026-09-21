@@ -18,7 +18,7 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <Tooltip :text="__('Acquisition = New through Signed Contract')">
+        <Tooltip :text="__('Acquisition = New through Contract Sent')">
           <div
             class="inline-flex rounded-md bg-surface-gray-2 p-0.5 text-sm font-medium"
           >
@@ -283,7 +283,7 @@ const report = createResource({
 
 const stages = computed(() => report.data?.stages || [])
 
-// Acquisition-phase statuses (New → Signed Contract). Dispo and parking/terminal
+// Acquisition-phase statuses (New → Contract Sent). Dispo and parking/terminal
 // stages are hidden as rows in Acquisition scope but still show inside a row's
 // unfolded Came-from / Went-to flows (so leakage to Dead Lead etc. stays visible).
 const ACQ_STAGES = new Set([
@@ -293,7 +293,6 @@ const ACQ_STAGES = new Set([
   'Underwriting',
   'Make Offer',
   'Contract Sent',
-  'Signed Contract',
 ])
 
 const scope = ref(localStorage.getItem('statusReportScope') || 'acquisition')

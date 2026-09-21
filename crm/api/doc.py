@@ -686,6 +686,7 @@ def get_data(
 
 	return {
 		"data": data,
+		"doctype": doctype,
 		"columns": columns,
 		"rows": rows,
 		"fields": fields,

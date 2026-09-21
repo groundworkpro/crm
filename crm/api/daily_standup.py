@@ -59,13 +59,13 @@ CHASE_STATUSES = ("New", "Called No Answer", "Follow Up", "Future Follow Up")
 CLOSER_STATUSES = ("Contract Sent", "Make Offer", "Underwriting")
 
 #: Under contract / disposition. Contract Sent is still closer work on Today;
-#: Signed Contract and after is not the setters' board (Lance, 2026-09-11).
-#: Keep in sync with investorlift_ingest.DISPO_LEAD_STATUSES.
+#: Photos & Lockbox and after is not the setters' board (Lance, 2026-09-11).
+#: "Signed Contract" was retired 2026-09-22 — signed deals rest in Contract
+#: Sent until photos start. Keep in sync with investorlift_ingest.DISPO_LEAD_STATUSES.
 POST_CONTRACT_STATUSES = (
-	"Signed Contract",
 	"Photos & Lockbox In Progress",
-	"Needs Listing",
-	"Marketing to Buyer",
+	"Submit to Dispo",
+	"Dispo Accepted",
 	"Buyer Assigned",
 )
 
@@ -426,7 +426,7 @@ def _classify(row, today):
 		return ("scheduled", 0, False,
 		        f"booked {frappe.utils.format_datetime(row.next_future_due, 'd MMM')}")
 
-	# Signed Contract and later is dispo, not the calling list — even a due
+	# Photos & Lockbox and later is dispo, not the calling list — even a due
 	# task on it must not mint a Today card.
 	if row.status in POST_CONTRACT_STATUSES:
 		return ("dispo", 0, False, row.status)
