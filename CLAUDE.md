@@ -28,6 +28,31 @@ duplicating. Work substantial features in a worktree of your own.
 
 ## Our changes vs upstream (keep this list current)
 
+- **Status lifecycle: real deletion + a rename/delete guard** (2026-09-22) —
+  deleting a kanban column used to only set `delete: true` on the saved view,
+  so the status survived, stayed assignable, and any lead given it vanished
+  from the board (this is what hid "Signed Contract"). Now the column's
+  Delete calls `crm.api.lead_status.delete_status` (manager-only): refuses
+  while records sit in the status (optional `move_to` migrates them via
+  `doc.save()`), deletes the `CRM Lead Status` row, and strips the column
+  from every user's saved view (`columns` + `kanban_columns`). The same
+  module is the **status guard**: `watched_statuses()` is DERIVED from the
+  code constants that match statuses by name (`CHASE_STATUSES` /
+  `CLOSER_STATUSES` / `POST_CONTRACT_STATUSES` / `ACQ_STATUSES` /
+  `DISPO_STATUSES` / `DISPO_LEAD_STATUSES`), and `CRM Lead Status`
+  on_update/on_trash hooks + a `daily_long` integrity sweep email Lance when
+  a watched status is renamed, deleted, or simply missing. Motivation: "Needs
+  Listing"/"Marketing to Buyer" had been renamed to "Submit to Dispo"/
+  "Dispo Accepted" and the code kept matching the old names — Dispo Accepted
+  leads were getting daily Today nudge cards. **"Signed Contract" was retired
+  through this flow** (zero leads sat in it; signed deals rest in Contract
+  Sent until photos start, so they keep closer cards in that gap — Dennis
+  moves them within a day). Acquisition scope is now New → Contract Sent;
+  dispo starts at Photos & Lockbox. `get_data` now returns `doctype` so the
+  board can map to its status doctype. Tests: `unit_test_lead_status.py`;
+  `frappe_shim` gained query-builder stubs. Deploy needs `sync_jobs` (new
+  daily_long hook).
+
 - **Next workspace (Telnyx desk + Talk), backend** — staging-first; the
   build contract is `docs/next-workspace-build.md`. Four pieces:
   - **Gating** (`crm/api/workspace.py`): `get()` → `{version, allowed}`,

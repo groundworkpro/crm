@@ -207,7 +207,7 @@ import Autocomplete from '@/components/frappe-ui/Autocomplete.vue'
 import IndicatorIcon from '@/components/Icons/IndicatorIcon.vue'
 import { isTouchScreenDevice, colors, parseColor, dueTint } from '@/utils'
 import Draggable from 'vuedraggable'
-import { Dropdown, Popover } from 'frappe-ui'
+import { Dropdown, Popover, call, toast } from 'frappe-ui'
 import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -332,14 +332,46 @@ function actions(column) {
         {
           label: __('Delete'),
           icon: 'trash-2',
-          onClick: () => {
-            column.column['delete'] = true
-            updateColumn()
-          },
+          onClick: () => deleteColumn(column),
         },
       ],
     },
   ]
+}
+
+// Deleting a column deletes the STATUS everywhere — the status row itself,
+// every user's saved view, and its place in every lead's status dropdown —
+// not just this board (Lance, 2026-09-22: a hidden column whose status
+// survives makes leads assigned to it vanish from the board).
+// The server refuses while any record still sits in the status.
+async function deleteColumn(column) {
+  const name = column.column.name
+  const boardDoctype = kanban.value?.data?.doctype
+  const statusDoctype =
+    boardDoctype === 'CRM Deal' ? 'CRM Deal Status' : 'CRM Lead Status'
+  const ok = window.confirm(
+    __(
+      'Delete the "{0}" status everywhere? This removes the status itself — every board and every status dropdown — not just this column. It is refused while any record is still in "{0}".',
+      [name],
+    ),
+  )
+  if (!ok) return
+  try {
+    await call('crm.api.lead_status.delete_status', {
+      doctype: statusDoctype,
+      status: name,
+    })
+  } catch (e) {
+    toast.error(
+      __('Could not delete "{0}"', [name]) +
+        ': ' +
+        (e?.messages?.join?.('\n') || e?.message || __('Unknown error')),
+    )
+    return
+  }
+  toast.success(__('Status "{0}" deleted', [name]))
+  column.column['delete'] = true
+  updateColumn()
 }
 
 function addColumn(e) {

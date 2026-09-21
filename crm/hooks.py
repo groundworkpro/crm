@@ -317,6 +317,17 @@ doc_events = {
 	# engine can't sleep or enqueue cleanly into a worker, so the burst is driven
 	# from here (non-sandboxed): enqueue a worker that sleeps the real waits and
 	# reuses the engine for each step. Fires on the same condition as auto-enroll.
+	# Statuses whose NAMES app logic depends on (Today board phases, dashboard
+	# scopes, the dispo gate) — alert Lance if one is renamed or deleted, and
+	# sweep daily in case it happened outside these hooks. crm/api/lead_status.py
+	"CRM Lead Status": {
+		"on_update": ["crm.api.lead_status.guard_on_update"],
+		"on_trash": ["crm.api.lead_status.guard_on_trash"],
+	},
+	"CRM Deal Status": {
+		"on_update": ["crm.api.lead_status.guard_on_update"],
+		"on_trash": ["crm.api.lead_status.guard_on_trash"],
+	},
 	"CRM Lead": {
 		# Round-robin the owner of a new ownerless (i.e. inbound webhook) lead
 		# between the setters, so German and Exe split the day's intake instead of
@@ -393,6 +404,9 @@ scheduler_events = {
 		"crm.lead_syncing.background_sync.sync_leads_from_sources_daily",
 		# AI "Integrity Report": review yesterday's recorded calls + email Lance a digest
 		"crm.api.call_review_ai.run_daily_integrity_report",
+		# Status guard: email Lance if any code-referenced status name no longer
+		# exists (rename/delete outside the doc hooks). Needs `sync_jobs` on prod.
+		"crm.api.lead_status.daily_integrity_check",
 	],
 	"hourly_long": [
 		"crm.lead_syncing.background_sync.sync_leads_from_sources_hourly",

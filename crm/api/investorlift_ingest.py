@@ -35,10 +35,9 @@ LEAD_BUYER_DOCTYPE = "CRM Lead Buyer"
 # yet and "Won" is closed. Single source of truth: crm.api.buyer_import imports
 # this for its property picker (importing the other way round would cycle).
 DISPO_LEAD_STATUSES = (
-	"Signed Contract",
 	"Photos & Lockbox In Progress",
-	"Needs Listing",
-	"Marketing to Buyer",
+	"Submit to Dispo",
+	"Dispo Accepted",
 	"Buyer Assigned",
 )
 

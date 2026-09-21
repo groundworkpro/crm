@@ -207,6 +207,21 @@ def install(user="lance.johnson@groundworkpro.com"):
 	sys.modules["frappe.model"] = model
 	sys.modules["frappe.model.document"] = document
 
+	# Query-builder stubs: enough for api modules that import DocType/Count at
+	# module level (leads_dashboard et al.) to load under the shim. The classes
+	# are never exercised — any real query needs a bench.
+	query_builder = types.ModuleType("frappe.query_builder")
+	query_builder.DocType = lambda name: name
+	query_builder.Case = lambda *a, **k: None
+	query_builder.Interval = lambda *a, **k: None
+	query_builder.Order = types.SimpleNamespace(asc="asc", desc="desc")
+	qb_functions = types.ModuleType("frappe.query_builder.functions")
+	for _fn in ("Avg", "Coalesce", "Count", "Date", "DateFormat", "IfNull", "Sum", "Max", "Min", "Now", "CurDate"):
+		setattr(qb_functions, _fn, lambda *a, **k: None)
+	query_builder.functions = qb_functions
+	sys.modules["frappe.query_builder"] = query_builder
+	sys.modules["frappe.query_builder.functions"] = qb_functions
+
 	if "requests" not in sys.modules:
 		try:
 			import requests  # noqa: F401

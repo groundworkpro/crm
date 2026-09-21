@@ -716,7 +716,7 @@ def get_leads_by_source_names(
 # counts and the per-lead unfold/drill-down.
 
 
-# Acquisition-phase statuses (New → Signed Contract). Keep in sync with the
+# Acquisition-phase statuses (New → Contract Sent). Keep in sync with the
 # ACQ_STAGES constant in frontend/src/components/Dashboard/StatusChangeReport.vue.
 ACQ_STATUSES = (
 	"New",
@@ -725,7 +725,6 @@ ACQ_STATUSES = (
 	"Underwriting",
 	"Make Offer",
 	"Contract Sent",
-	"Signed Contract",
 )
 
 
@@ -986,8 +985,8 @@ def get_activity_leads(
 
 DISPO_STATUSES = (
 	"Photos & Lockbox In Progress",
-	"Needs Listing",
-	"Marketing to Buyer",
+	"Submit to Dispo",
+	"Dispo Accepted",
 	"Buyer Assigned",
 )
 

@@ -162,7 +162,7 @@
         {{
           list.length
             ? __('Select a property to see its buyer board.')
-            : __('No properties are in disposition yet. A lead gets a buyer board once it reaches Signed Contract.')
+            : __('No properties are in disposition yet. A lead gets a buyer board once it reaches Photos & Lockbox In Progress.')
         }}
       </span>
     </div>
