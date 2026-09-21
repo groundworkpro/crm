@@ -102,7 +102,8 @@ def _migrate_area_v7(data):
 
 
 def _migrate_area_v8(data):
-	"""v9 drops price-less rows from the board entirely; strip them from circles.
+	"""v9 drops price-less rows from the board, except auctions (kept for
+	deal flow); strip the rest from circles.
 
 	Shaping change, not a fetch change, so an old blob answers the new question
 	fine once its unpriced rows are removed.
@@ -110,7 +111,11 @@ def _migrate_area_v8(data):
 	rows = data.get("rows") if isinstance(data, dict) else data
 	if not isinstance(rows, list):
 		return data
-	kept = [r for r in rows if not isinstance(r, dict) or r.get("price")]
+	kept = [
+		r
+		for r in rows
+		if not isinstance(r, dict) or r.get("price") or r.get("listing_state") == "auction"
+	]
 	return dict(data, rows=kept) if isinstance(data, dict) else kept
 
 
@@ -387,14 +392,13 @@ def _shape_search(prop, kind):
 		dom = None
 	home = str(prop.get("propertyType") or "").strip().upper()
 	state = listing_state(prop, kind)
-	# A row with no price carries no pricing evidence, so none of them board
-	# (Lance, 2026-09-22): ND-state solds (price null), $0-ask auctions,
-	# price-less listings and rentals. The auction carve-out that used to sit
-	# here existed so a live auction didn't arrive via RecentlySold masquerading
-	# as a sold pin — moot now that unpriced solds drop too. Cost: apply()'s
-	# subject-photo salvage reads these rows, so an unpriced subject listing
-	# loses that free thumbnail; the facts cover_photo remains.
-	if not price:
+	# A row with no price carries no pricing evidence, so it does not board
+	# (Lance, 2026-09-22): ND-state solds (price null), price-less listings and
+	# rentals. EXCEPT auctions (Lance, same day): a $0-ask auction is still a
+	# deal-flow signal worth an orange pin, even though it comps nothing.
+	# Cost: apply()'s subject-photo salvage reads these rows, so an unpriced
+	# subject listing loses that free thumbnail; the facts cover_photo remains.
+	if not price and state != "auction":
 		return None
 	# A pending/auction home has NOT sold, so it stays "Active" in the status field
 	# every filter, colour and count in this app already keys on. What makes it

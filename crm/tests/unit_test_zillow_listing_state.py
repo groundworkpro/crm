@@ -55,19 +55,22 @@ class ListingStateTests(unittest.TestCase):
 		prop = _search_prop(listingStatus="PENDING", listingSubType={"is_FSBA": True})
 		self.assertEqual(listing_state(prop, "sale"), "pending")
 
-	def test_shape_drops_zero_price_auction(self):
-		# No unpriced pins at all (Lance, 2026-09-22) — a $0-ask auction included.
-		self.assertIsNone(
-			_shape_search(
-				_search_prop(
-					price=0,
-					listingStatus="FOR_SALE",
-					listingSubType={"is_forAuction": True},
-					dateSold=None,
-				),
-				"sale",
-			)
+	def test_shape_keeps_zero_price_auction(self):
+		# Auctions are exempt from the unpriced drop (Lance, 2026-09-22): a $0-ask
+		# auction is a deal-flow signal even though it is not pricing evidence.
+		row = _shape_search(
+			_search_prop(
+				price=0,
+				listingStatus="FOR_SALE",
+				listingSubType={"is_forAuction": True},
+				dateSold=None,
+			),
+			"sale",
 		)
+		self.assertIsNotNone(row)
+		self.assertEqual(row["listing_state"], "auction")
+		self.assertEqual(row["status"], "Active")
+		self.assertEqual(row["price"], 0)
 
 	def test_shape_drops_for_sale_without_price(self):
 		self.assertIsNone(
@@ -83,8 +86,9 @@ class ListingStateTests(unittest.TestCase):
 		priced = {"address": "a", "price": 100}
 		unpriced = {"address": "b", "price": None}
 		zero = {"address": "c", "price": 0}
-		out = _migrate_area_v8({"rows": [priced, unpriced, zero], "complete": True})
-		self.assertEqual(out["rows"], [priced])
+		auction = {"address": "d", "price": 0, "listing_state": "auction"}
+		out = _migrate_area_v8({"rows": [priced, unpriced, zero, auction], "complete": True})
+		self.assertEqual(out["rows"], [priced, auction])
 		self.assertTrue(out["complete"])
 		# A bare-list blob (older shape) is tolerated too.
 		self.assertEqual(_migrate_area_v8([priced, unpriced]), [priced])
