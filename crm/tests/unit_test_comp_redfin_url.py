@@ -2,11 +2,10 @@
 
 TWO separate contracts live in `_shape_detail`, and they used to be tangled:
 
-* **The photo ladder is Redfin -> Zillow -> Realtor.** Redfin leads because it
-  returns a full gallery where both vendors return one frame, and because its
-  /photos is our own store rather than a billed call. Zillow is already fetched
-  with the facts, so it is the second rung and Realtor is only asked when that
-  gallery is still thin.
+* **The photo ladder is Redfin -> Zillow -> Realtor.** The next provider is
+  asked while the gallery still has fewer than 10 photos, and only replaces the
+  set when it has more. Zillow's photos ride the facts call; Realtor is an extra
+  request and is skipped once the gallery is already at 10.
 
 * **The Redfin listing LINK must never hold the gallery hostage.** Measured on
   prod 2026-09-10: Zillow facts + photos 0.39s, then `/url` 6.3s run serially
@@ -89,7 +88,7 @@ class RedfinUrlBudget(unittest.TestCase):
 
 
 class PhotoLadder(unittest.TestCase):
-	"""Redfin -> Zillow -> Realtor, and each rung only while the gallery is thin.
+	"""Redfin -> Zillow -> Realtor. Next rung is asked while there are < 10 photos.
 
 	Every provider is stubbed in all four tests: an unstubbed rung would make a
 	real HTTP attempt, which is both flaky and a silent pass for the wrong
@@ -126,6 +125,31 @@ class PhotoLadder(unittest.TestCase):
 		out = self._shape(redfin_photos=[], realtor=["x1", "x2"], zillow_photos=["z1"])
 		self.assertEqual(out["photos"], ["x1", "x2"])
 		self.assertEqual(out["photo_source"], "realtor")
+
+	def test_under_ten_still_asks_the_next_provider(self):
+		out = self._shape(
+			redfin_photos=[f"r{i}" for i in range(6)],
+			zillow_photos=[f"z{i}" for i in range(8)],
+			realtor=[f"x{i}" for i in range(12)],
+		)
+		self.assertEqual(out["photo_source"], "realtor")
+		self.assertEqual(len(out["photos"]), 12)
+
+	def test_ten_stops_the_ladder(self):
+		from crm.api import apivex
+
+		realtor = unittest.mock.Mock(return_value=["x1"] * 20)
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
+			 patch.object(redfin, "redfin_gallery",
+						  return_value=gallery([f"r{i}" for i in range(10)])), \
+			 patch.object(apivex, "realtor_photo_urls", realtor), \
+			 patch.object(comps, "_zillow_detail",
+						  return_value=({ "address": "5 Main St" }, [f"z{i}" for i in range(15)])):
+			out = comps._shape_detail(row())
+		self.assertEqual(out["photo_source"], "redfin")
+		self.assertEqual(len(out["photos"]), 10)
+		realtor.assert_not_called()
 
 	def test_no_provider_has_photos(self):
 		out = self._shape()

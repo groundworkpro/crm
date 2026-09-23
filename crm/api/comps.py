@@ -108,7 +108,7 @@ DEFAULT_WITHIN_DAYS = 365
 #: opens the same house. A failed/partial lookup gets a short retry window.
 DETAIL_CACHE_SECONDS = 30 * 24 * 60 * 60
 DETAIL_RETRY_SECONDS = 60 * 60
-DETAIL_CACHE_VERSION = 3  # v3 retries thin Zillow galleries via Realtor
+DETAIL_CACHE_VERSION = 4  # v4 asks the next provider while the gallery has < 10
 #: The two BILLED calls behind a gallery (`/property` + `/photos`) are cached on
 #: their own, for the full month, the moment Zillow ANSWERS -- even when the
 #: answer is one leftover frame. The thin-gallery retry above exists so the
@@ -119,11 +119,17 @@ DETAIL_CACHE_VERSION = 3  # v3 retries thin Zillow galleries via Realtor
 #: `crm:comp-detail` prefix so `persistent_cache_keys` already keeps it.
 DETAIL_ZILLOW_CACHE_VERSION = 1
 #: Older gallery generations that can be served as the current one without a
-#: refetch. {from_version: fn(cached) -> cached | None}; None refuses. v2->v3 only
-#: changed what happens to a THIN gallery, so a full v2 gallery is still the answer.
+#: refetch. {from_version: fn(cached) -> cached | None}; None refuses. A gallery
+#: already at 10 photos answered the new ladder; a shorter one was frozen before
+#: the next provider was asked, so it refetches once.
 DETAIL_MIGRATIONS = {
 	2: lambda c: c if len((c or {}).get("photos") or []) > 1 else None,
+	3: lambda c: c if len((c or {}).get("photos") or []) >= 10 else None,
 }
+
+#: Ask the next photo provider while the gallery is still shorter than this.
+#: Redfin, then Zillow, then Realtor. Ten is the bar, not one.
+GALLERY_ASK_BELOW = 10
 
 #: Per-lead, TEAM-WIDE record of which comps a human hid or picked. Not per-user:
 #: a junk comp is junk for everyone, and "the comps we used" is a deal artifact
@@ -1388,16 +1394,15 @@ def _shape_detail(row, zpid=None):
 	lat = row.get("lat") or (details or {}).get("lat")
 	lng = row.get("lng") or (details or {}).get("lng")
 
-	# PHOTO LADDER: Redfin -> Zillow -> Realtor. Each rung fires only while the
-	# gallery is still ≤1 image, on an explicit open, never for the tray, and the
-	# winner rides the 30-day detail cache. Absent its key, a rung no-ops.
-	# Lance, 2026-09-22: this order, not Redfin -> Realtor -> Zillow.
+	# PHOTO LADDER: Redfin -> Zillow -> Realtor. The next rung is asked while the
+	# gallery still has fewer than GALLERY_ASK_BELOW photos, and it only replaces
+	# the set when it has more. On an explicit open, never for the tray. The winner
+	# rides the 30-day detail cache. Absent its key, a rung no-ops.
 	#
-	# Zillow's photos are already in hand. `_zillow_detail` above is unconditional
-	# and asks for photos alongside the facts, so putting Zillow second does not
-	# save that call — it skips the Realtor request when Zillow already has a
-	# gallery. Splitting facts and photos so a Redfin gallery skips Zillow too is
-	# still not done; they share one cache entry.
+	# Zillow's photos are already in hand: `_zillow_detail` asks for them with the
+	# facts, which the panel needs either way. The bar decides whether those photos
+	# are used and whether Realtor is called. Splitting the Zillow photo request
+	# off the facts call is still not done; they share one cache entry.
 	#
 	# NOT GATED by `_redfin_first_for` (nor by `redfin_first_cutover`), on purpose:
 	# this ladder changes which PICTURES appear on a comp, never which comps exist.
@@ -1413,10 +1418,10 @@ def _shape_detail(row, zpid=None):
 	redfin_url, url_pending = rf.get("url"), False
 	photo_source = "redfin" if photos else ""
 
-	if len(photos) <= 1 and len(zillow_photos) > len(photos):
+	if len(photos) < GALLERY_ASK_BELOW and len(zillow_photos) > len(photos):
 		photos = zillow_photos
 		photo_source = "zillow"
-	if len(photos) <= 1:
+	if len(photos) < GALLERY_ASK_BELOW:
 		from crm.api import apivex
 
 		realtor = apivex.realtor_photo_urls(addr)
