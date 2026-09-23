@@ -2,13 +2,11 @@
 
 TWO separate contracts live in `_shape_detail`, and they used to be tangled:
 
-* **The photo ladder is Redfin -> Realtor -> Zillow.** Measured over the
-  100-subject benchmark (`redfin-scraper-api/bench/README.md`): of 214 comps
-  where Redfin returned the row but no picture, Realtor supplied one 36% of the
-  time against Zillow's 29%, and was the SOLE source on 19% against 12% --
-  better or tied in all six sale-age buckets. Redfin leads outright because it
-  returns a full gallery (median ~22 images) where both vendors return one
-  frame, and because its /photos is our own store rather than a billed call.
+* **The photo ladder is Redfin -> Zillow -> Realtor.** Redfin leads because it
+  returns a full gallery where both vendors return one frame, and because its
+  /photos is our own store rather than a billed call. Zillow is already fetched
+  with the facts, so it is the second rung and Realtor is only asked when that
+  gallery is still thin.
 
 * **The Redfin listing LINK must never hold the gallery hostage.** Measured on
   prod 2026-09-10: Zillow facts + photos 0.39s, then `/url` 6.3s run serially
@@ -91,7 +89,7 @@ class RedfinUrlBudget(unittest.TestCase):
 
 
 class PhotoLadder(unittest.TestCase):
-	"""Redfin -> Realtor -> Zillow, and each rung only while the gallery is thin.
+	"""Redfin -> Zillow -> Realtor, and each rung only while the gallery is thin.
 
 	Every provider is stubbed in all four tests: an unstubbed rung would make a
 	real HTTP attempt, which is both flaky and a silent pass for the wrong
@@ -119,16 +117,15 @@ class PhotoLadder(unittest.TestCase):
 		self.assertEqual(out["photos"], ["r1", "r2", "r3"])
 		self.assertEqual(out["photo_source"], "redfin")
 
-	def test_realtor_is_second_when_redfin_is_thin(self):
-		"""Realtor beat Zillow 36% to 29% on exactly this population."""
+	def test_zillow_is_second_when_redfin_is_thin(self):
 		out = self._shape(redfin_photos=["r1"], realtor=["x1", "x2"], zillow_photos=["z1", "z2"])
-		self.assertEqual(out["photos"], ["x1", "x2"])
-		self.assertEqual(out["photo_source"], "realtor")
-
-	def test_zillow_is_the_last_rung(self):
-		out = self._shape(redfin_photos=[], realtor=[], zillow_photos=["z1", "z2"])
 		self.assertEqual(out["photos"], ["z1", "z2"])
 		self.assertEqual(out["photo_source"], "zillow")
+
+	def test_realtor_is_the_last_rung(self):
+		out = self._shape(redfin_photos=[], realtor=["x1", "x2"], zillow_photos=["z1"])
+		self.assertEqual(out["photos"], ["x1", "x2"])
+		self.assertEqual(out["photo_source"], "realtor")
 
 	def test_no_provider_has_photos(self):
 		out = self._shape()

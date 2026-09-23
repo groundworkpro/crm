@@ -1388,26 +1388,16 @@ def _shape_detail(row, zpid=None):
 	lat = row.get("lat") or (details or {}).get("lat")
 	lng = row.get("lng") or (details or {}).get("lng")
 
-	# PHOTO LADDER: Redfin -> Realtor -> Zillow. Each rung fires only while the
+	# PHOTO LADDER: Redfin -> Zillow -> Realtor. Each rung fires only while the
 	# gallery is still ≤1 image, on an explicit open, never for the tray, and the
 	# winner rides the 30-day detail cache. Absent its key, a rung no-ops.
+	# Lance, 2026-09-22: this order, not Redfin -> Realtor -> Zillow.
 	#
-	# This order is measured, and it is the reverse of what it was. Of 214 comps
-	# where Redfin returned the row but no picture, Realtor supplied one 36% of
-	# the time against Zillow's 29%, and was the SOLE source on 19% against 12%
-	# — better or tied in all six sale-age buckets. Redfin leads outright because
-	# it returns a full gallery (median ~22 images) where both vendors return a
-	# single frame, and because its /photos is our own store rather than a billed
-	# call.
-	#
-	# Zillow last does NOT save its photo request, and the comment here used to
-	# claim it did. `_zillow_detail` above is unconditional and asks for photos
-	# alongside the facts — `photos=True` on the warehouse call, and
-	# `property_photos` on the RapidAPI fallback — so that spend happens before
-	# this ladder runs and whichever rung wins. What Zillow-last actually buys is
-	# a BETTER PICTURE, not a cheaper one. Making it cheaper means splitting
-	# `_zillow_detail` into separate facts and photo halves (they share one cache
-	# entry today); worth doing, not done here.
+	# Zillow's photos are already in hand. `_zillow_detail` above is unconditional
+	# and asks for photos alongside the facts, so putting Zillow second does not
+	# save that call — it skips the Realtor request when Zillow already has a
+	# gallery. Splitting facts and photos so a Redfin gallery skips Zillow too is
+	# still not done; they share one cache entry.
 	#
 	# NOT GATED by `_redfin_first_for` (nor by `redfin_first_cutover`), on purpose:
 	# this ladder changes which PICTURES appear on a comp, never which comps exist.
@@ -1423,6 +1413,9 @@ def _shape_detail(row, zpid=None):
 	redfin_url, url_pending = rf.get("url"), False
 	photo_source = "redfin" if photos else ""
 
+	if len(photos) <= 1 and len(zillow_photos) > len(photos):
+		photos = zillow_photos
+		photo_source = "zillow"
 	if len(photos) <= 1:
 		from crm.api import apivex
 
@@ -1430,9 +1423,6 @@ def _shape_detail(row, zpid=None):
 		if len(realtor) > len(photos):
 			photos = realtor
 			photo_source = "realtor"
-	if len(photos) <= 1 and len(zillow_photos) > len(photos):
-		photos = zillow_photos
-		photo_source = "zillow"
 
 	# Only wait on the /url thread when Redfin's gallery did not already answer
 	# with the link — an unmatched house has no observed path to carry.
