@@ -824,12 +824,15 @@ async function load(force = false) {
       : await call('crm.api.comps.get_comp_details', {
           lead: props.lead,
           comp: name,
-          // Lets the server fall back to an address lookup (Zillow, then Realtor
-          // photos) when the zpid /property call returns an empty shell; lat/lng
-          // feed the Redfin photo rung's neighbourhood sweep.
+          // Realtor/Redfin pins are not CRM Comp rows — without this address the
+          // server used to throw "does not exist" before the photo ladder ran.
+          // City/state/zip qualify a street-only line; lat/lng feed the Redfin sweep.
           address: props.comp.address || '',
           lat: props.comp.lat ?? null,
           lng: props.comp.lng ?? null,
+          city: props.comp.city || '',
+          state: props.comp.state || '',
+          zip: props.comp.zip || '',
         })
     if (token !== requestToken) return
     response.value = result

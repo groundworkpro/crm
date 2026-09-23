@@ -1621,8 +1621,25 @@ def _batchdata_row(lead, comp):
 	return None
 
 
+#: Provider-minted pins. None of these are CRM Comp docnames. Looking one up
+#: there throws "Comparable property realtor::… does not exist" and the gallery
+#: never reaches the photo ladder — Dennis, 2026-09-22, every Realtor pin.
+DETAIL_PIN_PREFIXES = ("zillow::", "zillow-rent::", "redfin::", "realtor::")
+
+def _caller_pin_row(comp, address=None, lat=None, lng=None, city=None, state=None, zip_code=None):
+	"""The board already rendered this pin. Its address is the lookup, not a doc."""
+	return frappe._dict({
+		"name": comp,
+		"address": str(address or "").strip(),
+		"city": str(city or "").strip(),
+		"state": str(state or "").strip(),
+		"zip": str(zip_code or "").strip(),
+		"lat": lat,
+		"lng": lng,
+	})
+
 @frappe.whitelist()
-def get_comp_details(lead, comp, address=None, lat=None, lng=None):
+def get_comp_details(lead, comp, address=None, lat=None, lng=None, city=None, state=None, zip=None):
 	"""On-demand Zillow facts + scrollable photos for one comp.
 
 	The compact Today view already has the comparison facts from `CRM Comp`; this
@@ -1636,14 +1653,14 @@ def get_comp_details(lead, comp, address=None, lat=None, lng=None):
 	if not _available():
 		return {"available": False, "comp": None, "details": None, "photos": []}
 
-	if str(comp).startswith("zillow::") or str(comp).startswith("zillow-rent::"):
-		# Area-search pins are not CRM Comp rows. _shape_detail looks them up by zpid.
-		# The caller's address matters more than it looks: when Zillow's /property
-		# returns an empty shell for the zpid (it does, on some pending listings),
-		# the address is the only route left — a Zillow address retry, then the
-		# Realtor photo fallback, both of which no-op on an empty string. The
-		# coordinates are what the Redfin rung sweeps around.
-		row = frappe._dict({"name": comp, "address": str(address or "").strip(), "lat": lat, "lng": lng})
+	if str(comp).startswith(DETAIL_PIN_PREFIXES):
+		# Area-search / Redfin / Realtor pins are not CRM Comp rows. Zillow pins
+		# are looked up by zpid inside _shape_detail; the others have no zpid, so
+		# the caller's address is the only route — a hollow zpid shell, a Redfin
+		# sweep, and the Realtor photo fallback all no-op on an empty string.
+		# City/state/zip keep a street-only Realtor line from resolving the wrong
+		# house. Coordinates feed the Redfin rung's neighbourhood sweep.
+		row = _caller_pin_row(comp, address, lat, lng, city, state, zip)
 	elif str(comp).startswith("batchdata::"):
 		# BatchData fallback pins are not CRM Comp rows either — resolve from the
 		# lead's cached blob; _shape_detail then looks Zillow up by address.

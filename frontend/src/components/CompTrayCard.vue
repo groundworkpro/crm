@@ -358,6 +358,9 @@ function prefetchPhotos() {
     props.comp.address || '',
     props.comp.lat ?? null,
     props.comp.lng ?? null,
+    props.comp.city || '',
+    props.comp.state || '',
+    props.comp.zip || '',
   ).then((urls) => {
     if (!urls.length) return
     photos.value = urls
