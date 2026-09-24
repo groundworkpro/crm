@@ -4,6 +4,16 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: Redfin coverage read asks for dated rows only** (2026-09-24) —
+  `redfin._fetch_coverage` now sends `dated_only=true` to redfin-scraper-api
+  `/properties`. Cell sweeps store every house Redfin knows; about half are
+  "Off Market" public-record rows whose price is an undated last sale, often
+  decades old. They passed the 12-month filter as "unknown", showed as gray
+  pins at 1990s prices, and (the read being nearest-first, capped at 5000)
+  pushed real recent sales off the page. CRM-LEAD-2026-01471: 45 gray pins ->
+  0; 7 actives + 2 pendings now show. The subject lookup and the
+  neighbourhood map layer still read every house.
+
 - **Comps: cross-provider address key uses the street line only** (2026-09-24) —
   `zillow_comps.merge_key` keyed the full address, but Zillow appends
   `, City, ST ZIP` and Realtor/Redfin/ISTL do not, so no Zillow pin ever

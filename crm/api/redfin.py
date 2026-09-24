@@ -684,7 +684,16 @@ def _fetch_coverage(base, lat, lng, radius_m, holder):
 	try:
 		r = requests.get(
 			f"{base}/properties",
-			params={"lat": float(lat), "lng": float(lng), "radius": float(radius_m)},
+			# dated_only: the store holds every house a cell sweep saw, and about
+			# half are "Off Market" public-record rows whose price is an UNDATED
+			# last sale (6518 N 68th St: $67,900 from 1997, shown as a comp on
+			# CRM-LEAD-2026-01471). They passed the 12-month filter as "unknown"
+			# and, the read being nearest-first and capped at 5000, pushed real
+			# recent sales off the page (165 -> 374 in that circle).
+			params={
+				"lat": float(lat), "lng": float(lng), "radius": float(radius_m),
+				"dated_only": "true",
+			},
 			timeout=COVERAGE_TIMEOUT,
 		)
 		r.raise_for_status()
