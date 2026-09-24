@@ -93,4 +93,3 @@ def set_version(version: str):
 # merge-deploy test A
 
 # merge-deploy test C (conflicts with A)
-||||||| 067047e4a
