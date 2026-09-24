@@ -760,5 +760,3 @@ def _mirror(doc, action: str):
 		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Talk: could not enqueue Mattermost mirror")
-
-# merge-deploy test B
