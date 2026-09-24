@@ -4153,11 +4153,19 @@ CRM_DEV_TARGET=https://crm.groundworkpro.com yarn dev
 # 2. After the local checks pass, commit and push this app repo
 # 3. Pull the latest deploy repo, then deploy and smoke-test
 cd ../../frappe-crm-deploy && git pull
-./scripts/build_image.sh && python3 scripts/smoke_test.py
-# commit and push the compose pin bump in ../frappe-crm-deploy
+./scripts/push_deploy.sh && python3 scripts/smoke_test.py
 ```
 
-`build_image.sh` is the deploy step. It **refuses a linked git worktree** —
+**Deploys are a git push since 2026-09-24** — prod runs this repo from a host
+checkout, no image build. `push_deploy.sh` ships HEAD (clean tree required;
+a push that would drop live commits is rejected by git), then rebuilds the
+frontend only if `frontend/` changed and restarts the backend (standby-backed,
+no outage) only if Python changed. ~17s Python, ~55s frontend. Details in
+`../frappe-crm-deploy/CLAUDE.md` → Workflows. `build_image.sh` is now ONLY
+for Frappe/base upgrades (`BASE_UPGRADE=1`); the rest of this section
+describes it.
+
+`build_image.sh` was the deploy step. It **refuses a linked git worktree** —
 that path replaces prod with the whole tree and is how a feature branch
 deletes other people's live work. Merge to `groundwork`, deploy from the main
 checkout. `ALLOW_WORKTREE=1` overrides. Frontend has no
