@@ -89,3 +89,5 @@ def set_version(version: str):
 	except Exception:
 		pass
 	return {"version": version}
+
+# Deployed by push (host checkout), not by image build.
