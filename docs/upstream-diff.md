@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: wait up to 15s for the Redfin store read** (2026-09-24) —
+  `redfin.finish_istl_coverage` joined the store read with a 1s budget, and
+  the read takes 5-15s (propwarehouse under load), so Redfin silently missed
+  nearly every comps board. Budget is now 15s (the scraper's own
+  statement_timeout) and the HTTP timeout 16s. The comps page can take that
+  long to load while the host is busy.
+
 - **Comps: Redfin coverage read asks for dated rows only** (2026-09-24) —
   `redfin._fetch_coverage` now sends `dated_only=true` to redfin-scraper-api
   `/properties`. Cell sweeps store every house Redfin knows; about half are

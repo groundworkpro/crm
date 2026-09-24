@@ -580,7 +580,13 @@ _SOLD = {"sold", "recently sold", "closed"}
 _RENT = {"for rent", "rented"}
 _AUCTION = {"auction"}
 _OFF = {"off market", "not for sale", "hold", "withdrawn", "expired", "cancelled", "canceled"}
-COVERAGE_TIMEOUT = 8
+#: The store read is local (propwarehouse on this host) but not fast: 5-15s
+#: measured 2026-09-24 across twelve lead circles under load, and the
+#: scraper's own statement_timeout is 15s. The old 1s join budget meant Redfin
+#: silently missed nearly every board, so the join now waits as long as the
+#: store itself is allowed to take. 16 leaves room for the response transfer.
+COVERAGE_TIMEOUT = 16
+COVERAGE_BUDGET = 15
 
 
 def mls_listing_state(mls_status):
@@ -723,7 +729,7 @@ def start_istl_coverage(lat, lng, radius_mi):
 	return {"thread": thread, "holder": holder, "lat": lat, "lng": lng, "radius_mi": radius_mi}
 
 
-def finish_istl_coverage(job, budget=1.0):
+def finish_istl_coverage(job, budget=COVERAGE_BUDGET):
 	"""Collect the store read. Empty features on timeout/error — map still loads."""
 	if not job:
 		return [], {}
