@@ -61,5 +61,3 @@ export function classicWorkspaceQuery(query = {}) {
   delete rest.phonePreview; delete rest.phoneDesign; delete rest.commsDesign; delete rest.phoneIncoming
   return rest
 }
-
-// Deployed by push (host checkout), not by image build.
