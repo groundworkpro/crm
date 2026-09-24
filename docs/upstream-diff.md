@@ -4,6 +4,16 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: cross-provider address key uses the street line only** (2026-09-24) —
+  `zillow_comps.merge_key` keyed the full address, but Zillow appends
+  `, City, ST ZIP` and Realtor/Redfin/ISTL do not, so no Zillow pin ever
+  merged with another provider's. On CRM-LEAD-2026-01471, 19 of 50 board slots
+  were duplicates, which crowded out the pendings and actives. The subject's
+  own Redfin row could also slip past `_self_merge_keys` and appear as a comp.
+  The key now drops the city/state/ZIP tail (keeping `, Apt 4`-style unit
+  segments) and also folds North/South/East/West and Apt/Unit/Ste/`#`.
+  Keys are compared in memory only, so no stored data changes.
+
 
 - **Status lifecycle: real deletion + a rename/delete guard** (2026-09-22) —
   deleting a kanban column used to only set `delete: true` on the saved view,

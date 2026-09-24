@@ -113,6 +113,44 @@ class UnionArithmetic(unittest.TestCase):
 			rows, [redfin_feature("R1", "100 N First STREET")], 43.0, -87.9, 1.0, TODAY)
 		self.assertEqual(len(rows), 1)
 
+	def test_zillow_full_address_collides_with_street_line(self):
+		"""Zillow appends `, City, ST ZIP`; Realtor and Redfin do not.
+
+		The exact shapes from CRM-LEAD-2026-01471 (2026-09-24), where every one
+		of these landed twice on the board.
+		"""
+		pairs = [
+			("6544 N 67th St, Milwaukee, WI 53223", "6544 N 67th St"),
+			("6650 W Clovernook COURT, Milwaukee, WI 53223", "6650 W Clovernook Ct"),
+			("6579 N 66th STREET, Milwaukee, WI 53223", "6579 N 66th St"),
+			("6526 North 68th Street", "6526 N. 68th St"),
+		]
+		for zillow_addr, realtor_addr in pairs:
+			rows = [pool_row("zillow::1", zillow_addr)]
+			info = comp_merge.apply_realtor(
+				rows, [realtor_prop("A1", realtor_addr)], 43.0, -87.9, 1.0, TODAY, kind="forsold")
+			self.assertEqual((info["added"], info["duplicate"]), (0, 1), zillow_addr)
+
+	def test_subject_full_address_excludes_its_street_line_echo(self):
+		"""The lead stores the full address; Redfin echoes the street line."""
+		from crm.api.zillow_comps import merge_key
+
+		self_keys = {merge_key("6526 N 68th St, Milwaukee, WI 53223")}
+		rows = []
+		comp_merge.apply_redfin(
+			rows, [redfin_feature("R1", "6526 N 68th St")], 43.0, -87.9, 1.0, TODAY,
+			self_keys=self_keys)
+		self.assertEqual(rows, [], "the subject must not be its own comp")
+
+	def test_units_stay_distinct_and_spellings_collide(self):
+		from crm.api.zillow_comps import merge_key
+
+		self.assertEqual(merge_key("10 Oak Ave, Apt 4, Milwaukee, WI"), merge_key("10 Oak Ave #4"))
+		self.assertEqual(merge_key("10 Oak Ave Unit 4"), merge_key("10 Oak Avenue Apt 4"))
+		self.assertNotEqual(merge_key("10 Oak Ave #4"), merge_key("10 Oak Ave #5"))
+		self.assertNotEqual(merge_key("10 Oak Ave"), merge_key("12 Oak Ave"))
+		self.assertEqual(merge_key(", Milwaukee, WI"), merge_key(""))
+
 	def test_realtor_adds_only_what_is_new(self):
 		rows = [pool_row("zillow::7", "100 N First St")]
 		info = comp_merge.apply_realtor(
