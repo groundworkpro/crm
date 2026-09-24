@@ -90,4 +90,7 @@ def set_version(version: str):
 		pass
 	return {"version": version}
 
+# merge-deploy test A
+
 # merge-deploy test C (conflicts with A)
+||||||| 067047e4a
