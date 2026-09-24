@@ -4157,8 +4157,12 @@ cd ../../frappe-crm-deploy && git pull
 ```
 
 **Deploys are a git push since 2026-09-24** — prod runs this repo from a host
-checkout, no image build. `push_deploy.sh` ships HEAD (clean tree required;
-a push that would drop live commits is rejected by git), then rebuilds the
+checkout, no image build. **Deploy from your own worktree/branch; do not
+rebase.** Run `../frappe-crm-deploy/scripts/push_deploy.sh` from inside the
+worktree (it detects it): the host merges your commit into whatever is live,
+runs `crm/tests/run_unit.py` on the merge, and ships it. Exit 2 = you and live
+edited the same lines — `git merge live/groundwork`, fix, re-run. Exit 3 =
+tests failed on the merged tree. Clean tree required. It then rebuilds the
 frontend only if `frontend/` changed and restarts the backend (standby-backed,
 no outage) only if Python changed. ~17s Python, ~55s frontend. Details in
 `../frappe-crm-deploy/CLAUDE.md` → Workflows. `build_image.sh` is now ONLY
@@ -4338,7 +4342,9 @@ CRM_DEV_TARGET=https://crm.groundworkpro.com yarn dev    # same command in every
 - The dev API token is shared (Infisical), so every agent's dev server acts as
   the same user. Fine on one laptop; worth remembering if a session looks like
   it is "someone else's" activity.
-- **PUSH BEFORE YOU DEPLOY, PULL BEFORE YOU BUILD — this is the one that bites
+- **(Historical — solved by the server-side merge in `push_deploy.sh`, 2026-09-24.
+  Kept for the image-build path, `build_image.sh BASE_UPGRADE=1`.)**
+  **PUSH BEFORE YOU DEPLOY, PULL BEFORE YOU BUILD — this is the one that bites
   ACROSS MACHINES.** The serialisation above only protects agents on the *same*
   laptop; the lock, the tag counter and the assets volume say nothing about
   whether the tree you're shipping is current. `build_image.sh` ships the
