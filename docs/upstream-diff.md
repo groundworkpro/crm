@@ -4,21 +4,19 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
-- **Sequences: a booked follow-up holds the lead's sequences until that date** (2026-09-25) —
+- **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
-  lead due after today, every Active enrollment on the lead has its `next_run` moved
-  to 8am the day after the booked date, and the sequence engine's open tasks on the
-  lead (owner Administrator) are Canceled. Held, not Paused: the sequence resumes on
-  its own after the booking. Enforced by a CRM Task after_insert/on_update hook and a
-  drainer guard (`check_before_step`) as the safety net. Sequences whose steps
-  carry `not has_open_rep_task` (Long-Term Follow-Up) are NOT held — the runner
-  already skips their calls while a rep task is open; only their stale engine
-  tasks are canceled. `_align_next_run` now only
-  pulls a step back to 8am within the same day, so it can no longer drag a hold back
-  to now + wait. One-off `sequence_booking.backfill` applies it to bookings made
-  before this. Why: Darlene Scott (CRM-LEAD-2026-00799) had an Oct 11 booking while
-  her 10-day sequence kept minting tasks that sat overdue and invisible; Lance: "the
-  scheduled follow-up task for the future should trump. Period."
+  lead due after today: an Active enrollment in a sequence with `then_enroll`
+  (New Lead 10-Day) is Stopped and the lead is enrolled in the next sequence
+  (Long-Term Follow-Up), same gates as the runner's `chain_next`; the sequence
+  engine's open tasks on the lead (owner Administrator) are Canceled. Sequences whose
+  steps carry `not has_open_rep_task` (Long-Term) are left to that rule — the runner
+  skips their calls while a rep task is open and resumes after. Other sequences are
+  untouched. Enforced by a CRM Task after_insert/on_update hook and a drainer guard
+  (`check_before_step`). One-off `sequence_booking.backfill`. Why: Darlene Scott
+  (CRM-LEAD-2026-00799) had an Oct 11 booking while her 10-day kept minting tasks
+  that sat overdue and invisible. Replaces a same-day "hold until the booked date"
+  version (Lance: "it doesn't make any sense to pause the 10-day").
 
 - **Comps: wait up to 15s for the Redfin store read** (2026-09-24) —
   `redfin.finish_istl_coverage` joined the store read with a 1s budget, and

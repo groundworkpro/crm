@@ -259,7 +259,8 @@ def _drain_locked(enrollment):
 		if not check_before_step(enr):
 			return
 		# A rep's booked follow-up after today trumps the sequence
-		# (crm/api/sequence_booking.py) — hold it past that date instead.
+		# (crm/api/sequence_booking.py): a chained sequence (New Lead 10-Day)
+		# ends and hands the lead to the next one (Long-Term Follow-Up).
 		if not sequence_booking.check_before_step(enr):
 			return
 		# Quiet hours + business days: a scheduled Text/Call/Task that comes due
@@ -380,11 +381,7 @@ def _align_next_run(enr):
 	current = get_datetime(enr.next_run)
 	target = current
 	morning = calendar_due(now_datetime(), step)
-	# Only ever pull back WITHIN the day (the engine's +24h afternoon slot to
-	# 8am). A next_run on a later day was put there on purpose — a booked
-	# follow-up's hold (crm/api/sequence_booking.py) — and must not be dragged
-	# back to now + wait.
-	if morning and morning < target and morning.date() == target.date():
+	if morning and morning < target:
 		target = morning
 	target = business_hold_until(target, step) or target
 	if target == current:
