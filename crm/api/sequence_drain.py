@@ -39,6 +39,7 @@ from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.safe_exec import call_with_form_dict
 
 from crm.api.daily_standup import is_business_day
+from crm.api import sequence_booking
 from crm.api.sequence_status import check_before_step
 
 # dedicated queue so sleeping drainers never block the main background worker
@@ -257,6 +258,10 @@ def _drain_locked(enrollment):
 		# before the step would fire — the safety net behind the on_update hook.
 		if not check_before_step(enr):
 			return
+		# A rep's booked follow-up after today trumps the sequence
+		# (crm/api/sequence_booking.py) — hold it past that date instead.
+		if not sequence_booking.check_before_step(enr):
+			return
 		# Quiet hours + business days: a scheduled Text/Call/Task that comes due
 		# at night, on a weekend or on a holiday waits for the next working
 		# morning. Written to next_run so drain_due picks it up then.
@@ -375,7 +380,11 @@ def _align_next_run(enr):
 	current = get_datetime(enr.next_run)
 	target = current
 	morning = calendar_due(now_datetime(), step)
-	if morning and morning < target:
+	# Only ever pull back WITHIN the day (the engine's +24h afternoon slot to
+	# 8am). A next_run on a later day was put there on purpose — a booked
+	# follow-up's hold (crm/api/sequence_booking.py) — and must not be dragged
+	# back to now + wait.
+	if morning and morning < target and morning.date() == target.date():
 		target = morning
 	target = business_hold_until(target, step) or target
 	if target == current:

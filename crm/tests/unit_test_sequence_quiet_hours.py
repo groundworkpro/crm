@@ -162,5 +162,38 @@ class HoldUntilTests(unittest.TestCase):
 		self.assertIsNone(sd.hold_until(datetime(2026, 9, 12, 23, 0), step(wait_value=0)))
 
 
+class AlignTests(unittest.TestCase):
+	"""_align_next_run pulls the engine's +24h slot back to 8am the same day,
+	but never drags a booked-follow-up hold back to now + wait."""
+
+	def _align(self, now, next_run, st):
+		from types import SimpleNamespace
+
+		orig = (sd.now_datetime, sd._next_step, sd.get_datetime)
+		sd.now_datetime = lambda: now
+		sd._next_step = lambda enr: st
+		sd.get_datetime = lambda d: d
+		shim.db.set_value = lambda *a, **k: None
+		shim.db.commit = lambda: None
+		enr = SimpleNamespace(name="E", next_run=next_run)
+		try:
+			sd._align_next_run(enr)
+		finally:
+			sd.now_datetime, sd._next_step, sd.get_datetime = orig
+		return enr.next_run
+
+	def test_engine_plus_a_week_snaps_to_8am(self):
+		got = self._align(
+			datetime(2026, 9, 9, 11, 39), datetime(2026, 9, 16, 11, 39), step("Call", 1, "Weeks")
+		)
+		self.assertEqual(got, datetime(2026, 9, 16, 8, 0))
+
+	def test_booking_hold_is_not_pulled_back(self):
+		# held to Wed Oct 14 8:00; now + 1 week is Oct 2 — must stay held
+		got = self._align(
+			datetime(2026, 9, 25, 10, 0), datetime(2026, 10, 14, 8, 0), step("Call", 1, "Weeks")
+		)
+		self.assertEqual(got, datetime(2026, 10, 14, 8, 0))
+
 if __name__ == "__main__":
 	unittest.main()

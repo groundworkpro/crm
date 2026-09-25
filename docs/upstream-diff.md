@@ -4,6 +4,19 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Sequences: a booked follow-up holds the lead's sequences until that date** (2026-09-25) —
+  new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
+  lead due after today, every Active enrollment on the lead has its `next_run` moved
+  to 8am the day after the booked date, and the sequence engine's open tasks on the
+  lead (owner Administrator) are Canceled. Held, not Paused: the sequence resumes on
+  its own after the booking. Enforced by a CRM Task after_insert/on_update hook and a
+  drainer guard (`check_before_step`) as the safety net. `_align_next_run` now only
+  pulls a step back to 8am within the same day, so it can no longer drag a hold back
+  to now + wait. One-off `sequence_booking.backfill` applies it to bookings made
+  before this. Why: Darlene Scott (CRM-LEAD-2026-00799) had an Oct 11 booking while
+  her 10-day sequence kept minting tasks that sat overdue and invisible; Lance: "the
+  scheduled follow-up task for the future should trump. Period."
+
 - **Comps: wait up to 15s for the Redfin store read** (2026-09-24) —
   `redfin.finish_istl_coverage` joined the store read with a 1s budget, and
   the read takes 5-15s (propwarehouse under load), so Redfin silently missed
