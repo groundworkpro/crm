@@ -22,6 +22,13 @@ every sequence task is owned by Administrator; reps' tasks are owned by the
 rep. On prod since 2026-08-20 that split is clean (2,147 Administrator tasks,
 all "Text X — day N of M" / "Call X"; every other task is a user's).
 
+Sequences that govern themselves are left alone. Long-Term Follow-Up (deploy
+repo 68259e7, 2026-09-24) puts `not has_open_rep_task` on its steps: the
+runner skips each call while a rep task is open and keeps the weekly/monthly
+cadence. Holding it too would stack two rules on one sequence, so any sequence
+whose steps carry that condition is not held — only its stale engine tasks
+are canceled on a booking, like every other sequence's.
+
 Two enforcement points:
 - `on_task_change` (CRM Task after_insert / on_update) holds at the moment the
   booking is made or moved later.
@@ -61,6 +68,19 @@ def is_booking(task, today) -> bool:
 
 RESUME_HOUR = 8
 
+#: step condition the runner evaluates itself (crm_sequence_runner_core.py)
+REP_TASK_CONDITION = "not has_open_rep_task"
+
+def has_rep_task_rule(steps) -> bool:
+	"""Pure: any step already skips itself while a rep task is open."""
+	return any(((st.get("condition") or "").strip() == REP_TASK_CONDITION) for st in (steps or []))
+
+def self_governed(sequence) -> bool:
+	try:
+		return has_rep_task_rule(frappe.get_cached_doc("CRM Sequence", sequence).steps)
+	except Exception:
+		return False
+
 def hold_target(due):
 	"""Pure: 8am the day after the booked date — when the sequence resumes."""
 	due_day = due.date() if isinstance(due, datetime) else getdate(due)
@@ -98,8 +118,10 @@ def hold_enrollments(lead, due, reason) -> list:
 	for row in frappe.get_all(
 		"CRM Sequence Enrollment",
 		filters={"lead": lead, "status": "Active"},
-		fields=["name", "next_run"],
+		fields=["name", "next_run", "sequence"],
 	):
+		if self_governed(row.sequence):
+			continue
 		nr = frappe.utils.get_datetime(row.next_run) if row.next_run else None
 		if not needs_hold(nr, target):
 			continue
@@ -161,6 +183,8 @@ def check_before_step(enr) -> bool:
 	"""Drainer guard: False (after holding) when the lead has a booked
 	follow-up after today; True otherwise. Fails open."""
 	try:
+		if self_governed(enr.sequence):
+			return True
 		due = future_booking(enr.lead)
 		if not due:
 			return True

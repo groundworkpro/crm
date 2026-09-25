@@ -10,7 +10,10 @@ entries for an area (grep it) before touching that area.
   to 8am the day after the booked date, and the sequence engine's open tasks on the
   lead (owner Administrator) are Canceled. Held, not Paused: the sequence resumes on
   its own after the booking. Enforced by a CRM Task after_insert/on_update hook and a
-  drainer guard (`check_before_step`) as the safety net. `_align_next_run` now only
+  drainer guard (`check_before_step`) as the safety net. Sequences whose steps
+  carry `not has_open_rep_task` (Long-Term Follow-Up) are NOT held — the runner
+  already skips their calls while a rep task is open; only their stale engine
+  tasks are canceled. `_align_next_run` now only
   pulls a step back to 8am within the same day, so it can no longer drag a hold back
   to now + wait. One-off `sequence_booking.backfill` applies it to bookings made
   before this. Why: Darlene Scott (CRM-LEAD-2026-00799) had an Oct 11 booking while

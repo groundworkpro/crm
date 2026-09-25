@@ -82,6 +82,18 @@ class HookTests(unittest.TestCase):
 		self.assertEqual(len(self.calls), 1)
 
 class HoldTests(unittest.TestCase):
+	def setUp(self):
+		self._sg = sb.self_governed
+		sb.self_governed = lambda seq: seq == "Long-Term Follow-Up"
+
+	def tearDown(self):
+		sb.self_governed = self._sg
+
+	def test_rep_task_rule_detected(self):
+		self.assertTrue(sb.has_rep_task_rule([{"condition": ""}, {"condition": " not has_open_rep_task "}]))
+		self.assertFalse(sb.has_rep_task_rule([{"condition": None}, {"condition": "not recently_contacted"}]))
+		self.assertFalse(sb.has_rep_task_rule(None))
+
 	def test_hold_target_is_morning_after(self):
 		self.assertEqual(sb.hold_target(datetime(2026, 10, 11, 9, 0)), datetime(2026, 10, 12, 8, 0))
 		self.assertEqual(sb.hold_target(date(2026, 10, 11)), datetime(2026, 10, 12, 8, 0))
@@ -101,8 +113,9 @@ class HoldTests(unittest.TestCase):
 			queries.append((doctype, dict(filters or {})))
 			if doctype == "CRM Sequence Enrollment":
 				return [
-					_AttrDict(name="ENR-EARLY", next_run=datetime(2026, 10, 1, 8, 0)),
-					_AttrDict(name="ENR-LATE", next_run=datetime(2026, 11, 1, 8, 0)),
+					_AttrDict(name="ENR-EARLY", next_run=datetime(2026, 10, 1, 8, 0), sequence="New Lead 10-Day"),
+					_AttrDict(name="ENR-LATE", next_run=datetime(2026, 11, 1, 8, 0), sequence="New Lead 10-Day"),
+					_AttrDict(name="ENR-LT", next_run=datetime(2026, 10, 1, 8, 0), sequence="Long-Term Follow-Up"),
 				]
 			return ["S1", "S2"]
 
@@ -135,9 +148,10 @@ class HoldTests(unittest.TestCase):
 		shim.utils.format_datetime = lambda d, fmt=None: "11 Oct"
 		try:
 			sb.future_booking = lambda lead, now=None: None
-			self.assertTrue(sb.check_before_step(SimpleNamespace(lead="LEAD-1")))
+			self.assertTrue(sb.check_before_step(SimpleNamespace(lead="LEAD-1", sequence="New Lead 10-Day")))
 			sb.future_booking = lambda lead, now=None: datetime(2026, 10, 11, 9, 0)
-			self.assertFalse(sb.check_before_step(SimpleNamespace(lead="LEAD-1")))
+			self.assertTrue(sb.check_before_step(SimpleNamespace(lead="LEAD-1", sequence="Long-Term Follow-Up")))
+			self.assertFalse(sb.check_before_step(SimpleNamespace(lead="LEAD-1", sequence="New Lead 10-Day")))
 			self.assertEqual(calls, [("LEAD-1", datetime(2026, 10, 11, 9, 0))])
 		finally:
 			sb.future_booking, sb.hold_for_booking = orig
