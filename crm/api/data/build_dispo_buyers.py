@@ -135,6 +135,14 @@ def main() -> int:
         # Only counties no market reached are asserted coverage.
         if market not in claims.get(k, []):
             nw_asserted[k] = market
+    # Explicit promotion (mirrors newwestern._load): a county a market reached
+    # through its own cities, but with evidence of a wider buy box (Atlanta's
+    # stated 50mi radius). Always asserted, unlike the tie-break above.
+    for row in ov.get("assert_counties") or []:
+        k = county_key(row[0], row[1])
+        if k:
+            nw_counties[k] = row[2]
+            nw_asserted[k] = row[2]
 
     # --- KeyGlee: FIPS -> (county, state) ---------------------------------
     # Reverse the crosswalk once. A FIPS can be reached by several spellings; we
