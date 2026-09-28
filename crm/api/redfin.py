@@ -580,7 +580,13 @@ _SOLD = {"sold", "recently sold", "closed"}
 _RENT = {"for rent", "rented"}
 _AUCTION = {"auction"}
 _OFF = {"off market", "not for sale", "hold", "withdrawn", "expired", "cancelled", "canceled"}
-COVERAGE_TIMEOUT = 8
+#: The store read is local (propwarehouse on this host) but not fast: 5-15s
+#: measured 2026-09-24 across twelve lead circles under load, and the
+#: scraper's own statement_timeout is 15s. The old 1s join budget meant Redfin
+#: silently missed nearly every board, so the join now waits as long as the
+#: store itself is allowed to take. 16 leaves room for the response transfer.
+COVERAGE_TIMEOUT = 16
+COVERAGE_BUDGET = 15
 
 
 def mls_listing_state(mls_status):
@@ -684,14 +690,18 @@ def _fetch_coverage(base, lat, lng, radius_m, holder):
 	try:
 		r = requests.get(
 			f"{base}/properties",
-			# dated_only: a comps board only uses houses with an MLS status, a
-			# sale or a listing date. Without it a 2-mile Wichita circle came
-			# back as 5,000 rows (capped, 2.3 MB, 0.6-1.2s against a 1s join
-			# budget) of which 4,977 were undated public records with no
-			# photos; with it, 44 rows in 0.1s. Dense circles (Indianapolis)
-			# hit the service's statement timeout on the full read.
-			params={"lat": float(lat), "lng": float(lng), "radius": float(radius_m),
-				"dated_only": "true"},
+			# dated_only: the store holds every house a cell sweep saw, and about
+			# half are "Off Market" public-record rows whose price is an UNDATED
+			# last sale (6518 N 68th St: $67,900 from 1997, shown as a comp on
+			# CRM-LEAD-2026-01471). They passed the 12-month filter as "unknown"
+			# and, the read being nearest-first and capped at 5000, pushed real
+			# recent sales off the page (165 -> 374 in that circle). It is also the
+			# fast read: Wichita 2-mile went 5,000 rows / 0.6-1.2s -> 44 / 0.1s,
+			# inside the 1s join budget.
+			params={
+				"lat": float(lat), "lng": float(lng), "radius": float(radius_m),
+				"dated_only": "true",
+			},
 			timeout=COVERAGE_TIMEOUT,
 		)
 		r.raise_for_status()
@@ -721,7 +731,7 @@ def start_istl_coverage(lat, lng, radius_mi):
 	return {"thread": thread, "holder": holder, "lat": lat, "lng": lng, "radius_mi": radius_mi}
 
 
-def finish_istl_coverage(job, budget=1.0):
+def finish_istl_coverage(job, budget=COVERAGE_BUDGET):
 	"""Collect the store read. Empty features on timeout/error — map still loads."""
 	if not job:
 		return [], {}

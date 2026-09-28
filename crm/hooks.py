@@ -219,6 +219,12 @@ doc_events = {
 		"after_insert": ["crm.api.todo.after_insert"],
 		"on_update": ["crm.api.todo.on_update"],
 	},
+	# A rep's hand-made task due after today pauses the lead's sequences and
+	# cancels the engine's open tasks on it. See crm/api/sequence_booking.py.
+	"CRM Task": {
+		"after_insert": ["crm.api.sequence_booking.on_task_change"],
+		"on_update": ["crm.api.sequence_booking.on_task_change"],
+	},
 	"Communication": {
 		"after_insert": ["crm.utils.on_communication_insert"],
 		"on_update": ["crm.utils.on_communication_update"],

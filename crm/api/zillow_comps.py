@@ -171,7 +171,38 @@ _SUFFIXES = {
 	"highway": "hwy",
 	"parkway": "pkwy",
 	"trail": "trl",
+	# Directionals: `6526 North 68th St` and `6526 N 68th St` are one house.
+	"north": "n",
+	"south": "s",
+	"east": "e",
+	"west": "w",
 }
+
+#: Unit designators. `Apt 4`, `Unit 4`, `Ste 4` and `#4` all reduce to `4`, so the
+#: unit number still separates two flats in one building.
+_UNIT_WORDS = {"apt", "apartment", "unit", "ste", "suite"}
+_UNIT_TAIL = re.compile(r"^\s*(#|apt\b|apartment\b|unit\b|ste\b|suite\b)", re.I)
+
+
+def _street_line(address: str) -> str:
+	"""`6544 N 67th St, Milwaukee, WI 53223` -> `6544 N 67th St`.
+
+	Zillow writes the whole address; Realtor, Redfin and ISTL write the street
+	line only. Keying the full string meant no Zillow row ever matched another
+	provider's -- measured 2026-09-24 on CRM-LEAD-2026-01471: Zillow and Realtor
+	pins for the same houses both landed on the 50-comp board, and the subject
+	house came back as its own comp from Redfin.
+
+	A comma segment that starts with a unit marker (`, Apt 4`, `, #4`) is part of
+	the street line and is kept; everything after it is city/state/ZIP.
+	"""
+	parts = (address or "").split(",")
+	keep = [parts[0]]
+	for p in parts[1:]:
+		if not _UNIT_TAIL.match(p):
+			break
+		keep.append(p)
+	return " ".join(keep)
 
 
 def _cache_rec(key):
@@ -290,12 +321,19 @@ def merge_key(address: str) -> str:
 	ISTL writes `3362 N 22nd St`; Zillow search writes `3362 N 22nd STREET`.
 	The CRM Comp docname is the ISTL form, so a raw address_key miss would
 	duplicate the pin instead of refreshing it.
+
+	Only the street line is keyed (see `_street_line`): the providers disagree
+	on whether to append city/state/ZIP, and a key that includes them never
+	collides across providers. Keys are only ever compared in memory within one
+	lead's circle, so dropping the city cannot merge two towns' houses.
 	"""
-	norm = re.sub(r"\s+", " ", (address or "").strip().lower())
-	parts = []
-	for word in re.split(r"([^a-z0-9]+)", norm):
-		parts.append(_SUFFIXES.get(word, word))
-	return _comps().address_key("".join(parts))
+	norm = _street_line(address).strip().lower()
+	words = []
+	for word in re.split(r"[^a-z0-9]+", norm):
+		if not word or word in _UNIT_WORDS:
+			continue
+		words.append(_SUFFIXES.get(word, word))
+	return _comps().address_key(" ".join(words))
 
 
 def _ll_key(lat, lng):

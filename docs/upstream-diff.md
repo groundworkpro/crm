@@ -4,6 +4,47 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
+  new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
+  lead due after today: an Active enrollment in a sequence with `then_enroll`
+  (New Lead 10-Day) is Stopped and the lead is enrolled in the next sequence
+  (Long-Term Follow-Up), same gates as the runner's `chain_next`; the sequence
+  engine's open tasks on the lead (owner Administrator) are Canceled. Sequences whose
+  steps carry `not has_open_rep_task` (Long-Term) are left to that rule — the runner
+  skips their calls while a rep task is open and resumes after. Other sequences are
+  untouched. Enforced by a CRM Task after_insert/on_update hook and a drainer guard
+  (`check_before_step`). One-off `sequence_booking.backfill`. Why: Darlene Scott
+  (CRM-LEAD-2026-00799) had an Oct 11 booking while her 10-day kept minting tasks
+  that sat overdue and invisible. Replaces a same-day "hold until the booked date"
+  version (Lance: "it doesn't make any sense to pause the 10-day").
+
+- **Comps: wait up to 15s for the Redfin store read** (2026-09-24) —
+  `redfin.finish_istl_coverage` joined the store read with a 1s budget, and
+  the read takes 5-15s (propwarehouse under load), so Redfin silently missed
+  nearly every comps board. Budget is now 15s (the scraper's own
+  statement_timeout) and the HTTP timeout 16s. The comps page can take that
+  long to load while the host is busy.
+
+- **Comps: Redfin coverage read asks for dated rows only** (2026-09-24) —
+  `redfin._fetch_coverage` now sends `dated_only=true` to redfin-scraper-api
+  `/properties`. Cell sweeps store every house Redfin knows; about half are
+  "Off Market" public-record rows whose price is an undated last sale, often
+  decades old. They passed the 12-month filter as "unknown", showed as gray
+  pins at 1990s prices, and (the read being nearest-first, capped at 5000)
+  pushed real recent sales off the page. CRM-LEAD-2026-01471: 45 gray pins ->
+  0; 7 actives + 2 pendings now show. The subject lookup and the
+  neighbourhood map layer still read every house.
+
+- **Comps: cross-provider address key uses the street line only** (2026-09-24) —
+  `zillow_comps.merge_key` keyed the full address, but Zillow appends
+  `, City, ST ZIP` and Realtor/Redfin/ISTL do not, so no Zillow pin ever
+  merged with another provider's. On CRM-LEAD-2026-01471, 19 of 50 board slots
+  were duplicates, which crowded out the pendings and actives. The subject's
+  own Redfin row could also slip past `_self_merge_keys` and appear as a comp.
+  The key now drops the city/state/ZIP tail (keeping `, Apt 4`-style unit
+  segments) and also folds North/South/East/West and Apt/Unit/Ste/`#`.
+  Keys are compared in memory only, so no stored data changes.
+
 
 - **Comps: Sources card; Redfin is waited for, not raced** (2026-09-28) — the
   comps page gave Redfin a silent 1-second window; a slow read showed nothing

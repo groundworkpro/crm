@@ -39,6 +39,7 @@ from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.safe_exec import call_with_form_dict
 
 from crm.api.daily_standup import is_business_day
+from crm.api import sequence_booking
 from crm.api.sequence_status import check_before_step
 
 # dedicated queue so sleeping drainers never block the main background worker
@@ -256,6 +257,11 @@ def _drain_locked(enrollment):
 		# has left the statuses this sequence runs in is Paused here, right
 		# before the step would fire — the safety net behind the on_update hook.
 		if not check_before_step(enr):
+			return
+		# A rep's booked follow-up after today trumps the sequence
+		# (crm/api/sequence_booking.py): a chained sequence (New Lead 10-Day)
+		# ends and hands the lead to the next one (Long-Term Follow-Up).
+		if not sequence_booking.check_before_step(enr):
 			return
 		# Quiet hours + business days: a scheduled Text/Call/Task that comes due
 		# at night, on a weekend or on a holiday waits for the next working
