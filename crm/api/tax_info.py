@@ -1,9 +1,11 @@
-"""Property tax / owner / lien info pulled from BatchData (per-lead, $0.22 a pull).
+"""Property tax / owner / lien info (per-lead pull, ~$0.10 on RealEstateAPI).
 
 A user clicks **Fetch Tax Info** on a lead or the comps page → the `pull-tax-info`
-server script (ops repo, `../frappe-crm-deploy`) hits BatchData's
-`/property/lookup/all-attributes` with the deed-history Infisical key and stores the
-raw property record on a **CRM Property Tax Pull** doc. The sandbox can't parse
+server script (ops repo, `../frappe-crm-deploy`) hits RealEstateAPI's
+`/v2/PropertyDetail` and stores the raw property record on a **CRM Property Tax
+Pull** doc. Until 2026-09-28 it used BatchData (`lookup/all-attributes`, $0.22);
+those rows stay readable: a RealEstateAPI record is first converted into the
+BatchData shape (`_normalize`), and every parser below reads that one shape. The sandbox can't parse
 richly or `publish_realtime`, so the app-code `after_insert` hook:
 
   - flattens headline columns (owner, APN, tax status, annual tax, assessed),
@@ -52,6 +54,105 @@ def _iso_date(value):
 	return value[:10]
 
 
+def _is_reapi(p: dict) -> bool:
+	"""RealEstateAPI PropertyDetail `data` vs a BatchData property record."""
+	return isinstance(p, dict) and any(k in p for k in ("taxInfo", "ownerInfo", "lotInfo", "saleHistory"))
+
+def _normalize(p: dict) -> dict:
+	"""Map a RealEstateAPI record onto the BatchData fields we read; pass BatchData through."""
+	if not _is_reapi(p):
+		return p if isinstance(p, dict) else {}
+	owner = p.get("ownerInfo") or {}
+	tax = p.get("taxInfo") or {}
+	lot = p.get("lotInfo") or {}
+	mail = owner.get("mailAddress") or {}
+
+	names = [n for n in (owner.get("owner1FullName"), owner.get("owner2FullName")) if n]
+	if owner.get("corporateOwned") or owner.get("companyName"):
+		status = "Company"
+	else:
+		status = owner.get("owner1Type")
+
+	# Only an ACTIVE foreclosure filing is a current foreclosure; RealEstateAPI also
+	# lists old, resolved ones (e.g. a 2008 lis pendens on a house sold since).
+	active = [f for f in (p.get("foreclosureInfo") or []) if isinstance(f, dict) and f.get("active")]
+	active.sort(key=lambda f: f.get("recordingDate") or "", reverse=True)
+	fc = active[0] if active else {}
+
+	deeds = []
+	for d in p.get("saleHistory") or []:
+		if isinstance(d, dict):
+			deeds.append(
+				{
+					"recordingDate": d.get("recordingDate"),
+					"saleDate": d.get("saleDate"),
+					"documentType": d.get("documentType"),
+					"buyers": [d["buyerNames"]] if d.get("buyerNames") else [],
+					"sellers": [d["sellerNames"]] if d.get("sellerNames") else [],
+					"salePrice": d.get("saleAmount"),
+					"documentNumber": d.get("documentNumber"),
+				}
+			)
+
+	mortgages = []
+	for m in p.get("mortgageHistory") or []:
+		if isinstance(m, dict):
+			mortgages.append(
+				{
+					"recordingDate": m.get("recordingDate") or m.get("documentDate"),
+					"lenderName": m.get("lenderName"),
+					"loanAmount": m.get("amount"),
+					"loanType": m.get("loanType"),
+					"interestRate": m.get("interestRate") or None,  # 0 means "not recorded"
+					"borrowers": [m["granteeName"]] if m.get("granteeName") else [],
+				}
+			)
+
+	year = tax.get("year") or tax.get("assessmentYear")
+	return {
+		"owner": {
+			"fullName": " & ".join(names) or None,
+			"ownerOccupied": owner.get("ownerOccupied"),
+			"ownerStatusType": status,
+			"mailingAddress": {
+				"street": mail.get("address"),
+				"city": mail.get("city"),
+				"state": mail.get("state"),
+				"zip": mail.get("zip"),
+			},
+		},
+		"ids": {"apn": lot.get("apn")},
+		"tax": {
+			"taxAmount": tax.get("taxAmount"),
+			"taxYear": year,
+			"taxDelinquentYear": tax.get("taxDelinquentYear"),
+		},
+		"assessment": {"totalAssessedValue": tax.get("assessedValue")},
+		"valuation": {"estimatedValue": p.get("estimatedValue"), "equityPercent": p.get("equityPercent")},
+		"quickLists": {
+			"taxDefault": bool(p.get("taxLien")),
+			"preforeclosure": bool(p.get("preForeclosure")),
+			"freeAndClear": bool(p.get("freeClear")),
+		},
+		"openLien": {"totalOpenLienCount": len(p.get("currentMortgages") or [])},
+		"foreclosure": {
+			"status": "Active" if fc else None,
+			"documentType": fc.get("documentType"),
+			"recordingDate": fc.get("recordingDate"),
+			"auctionDate": fc.get("auctionDate"),
+			"caseNumber": fc.get("caseNumber") or fc.get("trusteeSaleNumber"),
+			"borrowerName": fc.get("borrowerName"),
+			"trusteeName": fc.get("trusteeFullName"),
+			"currentLenderName": fc.get("lenderName"),
+		}
+		if fc
+		else {},
+		"deedHistory": deeds,
+		"mortgageHistory": mortgages,
+		"listing": {"taxes": [{"year": year, "amount": tax.get("taxAmount")}] if tax.get("taxAmount") else []},
+		"general": {"vacant": p.get("vacant")},
+	}
+
 def _listing_tax(p: dict):
 	"""Newest listing.taxes row that has an amount (assessor block is often empty)."""
 	rows = (p.get("listing") or {}).get("taxes") or []
@@ -63,7 +164,8 @@ def _listing_tax(p: dict):
 
 
 def _parse_property(p: dict) -> dict:
-	"""Flatten a BatchData property record into our pull-doc columns."""
+	"""Flatten a property record (either provider) into our pull-doc columns."""
+	p = _normalize(p)
 	owner = p.get("owner") or {}
 	ids = p.get("ids") or {}
 	tax = p.get("tax") or {}
@@ -99,6 +201,7 @@ def _dd_from_raw(p: dict) -> dict:
 	"""Compact records tables for the Tax Info card / comps panel."""
 	if not isinstance(p, dict) or not p:
 		return {}
+	p = _normalize(p)
 	owner = p.get("owner") or {}
 	mailing = owner.get("mailingAddress") or {}
 	quick = p.get("quickLists") or {}
