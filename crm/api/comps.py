@@ -2206,17 +2206,31 @@ def get_lead_comps(
 	else:
 		from crm.api import comp_merge
 
-		priced_solds = [r for r in out if comp_merge.has_recorded_sale(r)]
+		# Only a RECENT sale answers "do we have priced solds?" — the board's own
+		# default window. A 2019 Redfin close used to switch the fallback off for a
+		# Kansas lead whose only other solds were unpriced (2026-09-28).
+		def _recent(r):
+			days = r.get("recency_days")
+			if days is None:
+				days = _recency_days(r, today)
+			return days is not None and days <= DEFAULT_WITHIN_DAYS
+
+		priced_solds = [r for r in out if comp_merge.has_recorded_sale(r) and _recent(r)]
 		if priced_solds:
-			base["fallback"] = {
-				"source": "batchdata", "used": False,
-				"reason": "merged_has_prices", "had_pins": had_pins,
-				"priced_solds": len(priced_solds),
-			}
+			# No new purchase — but comps this lead ALREADY paid for still board.
+			base["fallback"] = _batchdata_fallback(doc, base, merge_into=out, cache_only=True)
+			base["fallback"].update(
+				{"reason": "merged_has_prices", "priced_solds": len(priced_solds)}
+			)
 		else:
 			base["fallback"] = _batchdata_fallback(doc, base, merge_into=out)
-			base["fallback"]["had_pins"] = had_pins
-			out.sort(key=lambda r: r["distance_mi"])
+		base["fallback"]["had_pins"] = had_pins
+		# BatchData rows are minted unpicked; honour what the rep saved.
+		for row in out:
+			if row["name"].startswith("batchdata::"):
+				row["selected"] = row["name"] in selected
+				row["hidden"] = row["name"] in hidden
+		out.sort(key=lambda r: r["distance_mi"])
 
 	# Condition tags, stamped once over the final pool (ISTL + Zillow + BatchData
 	# rows alike) so every surface — tray, gallery, discard drawer — reads the same
@@ -2326,8 +2340,11 @@ def get_lead_comps(
 	return base
 
 
-def _batchdata_fallback(doc, base, merge_into=None):
+def _batchdata_fallback(doc, base, merge_into=None, cache_only=False):
 	"""Fill an empty comps map from BatchData. Returns a small status dict.
+
+	`cache_only` merges comps already bought for this lead and never calls the
+	paid API — used when the board has its own recent priced solds.
 
 	Split out so the paid path is one obvious, greppable place rather than an inline
 	branch someone later widens by accident.
@@ -2338,7 +2355,12 @@ def _batchdata_fallback(doc, base, merge_into=None):
 		return {"source": "batchdata", "used": False, "reason": "not_configured"}
 
 	try:
-		comps = batchdata_comps.fetch_for_lead(doc)
+		if cache_only:
+			comps = batchdata_comps.cached_comps(doc)
+			if not comps:
+				return {"source": "batchdata", "used": False}
+		else:
+			comps = batchdata_comps.fetch_for_lead(doc)
 	except Exception:
 		# A comps map that renders without the fallback beats a 500 on lead detail.
 		frappe.log_error(frappe.get_traceback(), "BatchData comps fallback failed")

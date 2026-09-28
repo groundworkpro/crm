@@ -125,6 +125,18 @@ def _cached(doc):
 	return payload
 
 
+def cached_comps(doc):
+	"""Comps already bought for this lead, or []. Never calls the API.
+
+	For boards that do not NEED the fallback: once a lead has paid for recorded
+	sales they stay on it, even after a vendor starts returning its own priced
+	solds. Without this, the paid rows silently vanished the moment one Redfin
+	sale appeared (Myesha Moore, Wichita KS, 2026-09-28).
+	"""
+	hit = _cached(doc)
+	return (hit or {}).get("comps") or []
+
+
 def _store(doc, comps):
 	if not _cache_supported():
 		return
