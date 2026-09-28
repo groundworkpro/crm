@@ -15,6 +15,7 @@ import LucideListChecks from '~icons/lucide/list-checks'
 import LucideCircleDollarSign from '~icons/lucide/circle-dollar-sign'
 import LucideTarget from '~icons/lucide/target'
 import LucideMapPinHouse from '~icons/lucide/map-pin-house'
+import LucideHardHat from '~icons/lucide/hard-hat'
 
 // Read the logged-in user from the session cookie directly (no store import — the
 // session store imports the router, which imports this module → circular).
@@ -39,6 +40,7 @@ export const sidebarLinks = [
   { label: 'Deals', icon: DealsIcon, to: 'Deals' },
   { label: 'Dispo', icon: LucideColumns3, to: 'Dispo' },
   { label: 'Buyers', icon: LucideUsersRound, to: 'Buyers' },
+  { label: 'Contractors', icon: LucideHardHat, to: 'Contractors' },
   { label: 'Contacts', icon: ContactsIcon, to: 'Contacts' },
   { label: 'Organizations', icon: OrganizationsIcon, to: 'Organizations' },
   { label: 'Notes', icon: NoteIcon, to: 'Notes' },
