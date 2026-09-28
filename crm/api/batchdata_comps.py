@@ -137,6 +137,15 @@ def cached_comps(doc):
 	return (hit or {}).get("comps") or []
 
 
+def cached_at(doc):
+	"""Epoch the saved answer was bought, or None. Free; never calls the API."""
+	hit = _cached(doc)
+	try:
+		return float(hit["t"]) if hit and hit.get("t") else None
+	except (TypeError, ValueError):
+		return None
+
+
 def _store(doc, comps):
 	if not _cache_supported():
 		return

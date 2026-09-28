@@ -95,7 +95,7 @@ def _enqueue_ingest_retry(lead, radius_m, ingest_creation, attempt):
 		return False
 
 
-def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1):
+def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1, priority="new_lead"):
 	"""Ask the service to sweep this lead's neighbourhood. Returns a status dict.
 
 	Best-effort by construction: every failure path returns rather than raises,
@@ -144,11 +144,14 @@ def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1):
 		return {"ok": False, "reason": "lead has no geocodable address", "lead": lead}
 
 	try:
-		r = requests.post(
-			f"{_base_url()}/warm",
-			json={"lat": lat, "lng": lng, "radius_m": float(radius_m or DEFAULT_RADIUS_M)},
-			timeout=TIMEOUT,
-		)
+		body = {"lat": lat, "lng": lng, "radius_m": float(radius_m or DEFAULT_RADIUS_M)}
+		# `new_lead` (5) puts a just-bought lead -- or one a rep just opened --
+		# ahead of the nationwide ingest backlog (10), where coverage waits
+		# measured p90 16 min. Bulk backfills pass "ingest" and keep their place.
+		r = requests.post(f"{_base_url()}/warm", json={**body, "priority": priority}, timeout=TIMEOUT)
+		if getattr(r, "status_code", 200) == 422 and priority != "ingest":
+			# A service that predates the class: warm at the default, never not at all.
+			r = requests.post(f"{_base_url()}/warm", json=body, timeout=TIMEOUT)
 		r.raise_for_status()
 		return {"ok": True, "lead": lead, "lat": lat, "lng": lng, **(r.json() or {})}
 	except Exception:
@@ -338,7 +341,7 @@ def warm_backfill(dry_run=1, limit=None, radius_m=None):
 
 	warmed, failed = 0, []
 	for l in leads:
-		res = warm_lead(l["name"], radius_m=radius_m)
+		res = warm_lead(l["name"], radius_m=radius_m, priority="ingest")
 		if res.get("ok"):
 			warmed += 1
 		else:

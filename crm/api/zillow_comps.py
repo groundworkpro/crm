@@ -728,12 +728,32 @@ def area_comps(lat, lng, radius_mi):
 		return {"sold": [], "for_sale": [], "location": "", "cached": True}
 	coords = _coordinates(float(lat), float(lng), float(radius_mi))
 	# Driven off AREA_QUERIES so this and `area_is_cached` are the same question.
-	out = {"location": f"{radius_mi:.2f}mi", "cached": True}
+	out = {"location": f"{radius_mi:.2f}mi", "cached": True, "checked_at": None}
 	for key, status_type, sold_in_last, hit_days in AREA_QUERIES:
 		rows, complete = _area_cached(coords, status_type, sold_in_last, hit_days)
 		out[key] = rows or []
 		out["cached"] = out["cached"] and bool(complete)
+		out["checked_at"] = _older(out["checked_at"], _area_stamp(coords, status_type, sold_in_last))
 	return out
+
+
+def _area_stamp(coordinates, status_type, sold_in_last=None):
+	"""When this circle was actually fetched from Zillow (epoch), or None.
+
+	Read after `_area_cached`, so a circle bought on this request stamps ~now
+	and a served one keeps its original time (migrations preserve `t` too).
+	For the comps Sources card: "saved area, checked 2 days ago".
+	"""
+	rec = _cache_rec(_area_key(coordinates, status_type, sold_in_last))
+	return rec[0] if rec and rec[0] else None
+
+
+def _older(a, b):
+	if a is None:
+		return b
+	if b is None:
+		return a
+	return min(a, b)
 
 
 def area_rentals(lat, lng, radius_mi):
@@ -1123,6 +1143,7 @@ def apply(doc, out, lat, lng, radius):
 	area = area_comps(lat, lng, radius)
 	info["location"] = area.get("location") or ""
 	info["cached"] = bool(area.get("cached"))
+	info["checked_at"] = area.get("checked_at")
 	incoming = []
 	for row in (area.get("sold") or []) + (area.get("for_sale") or []):
 		dist = _comps()._haversine_mi(lat, lng, row["lat"], row["lng"])

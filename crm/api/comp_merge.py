@@ -454,6 +454,8 @@ def fetch_and_apply_realtor(rows, doc, lat, lng, radius_mi, today, self_keys=Non
 	payload = envelope.get("payload") or {}
 	info["coverage"] = payload.get("coverage")
 	info["source"] = envelope.get("source")
+	# "Saved, checked <when>" vs "fetched live just now" on the Sources card.
+	info["fetched_at"] = envelope.get("fetched_at")
 	# A cached answer cost no vendor call at all. Counting it as one would
 	# overstate the quota this feature actually burns.
 	if envelope.get("source") == "store":

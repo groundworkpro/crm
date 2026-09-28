@@ -445,6 +445,14 @@
             :class="wide ? 'h-full min-h-0 flex-1' : 'min-h-0 flex-1'"
           >
             <div ref="mapEl" class="size-full" />
+            <!-- Over the map on desktop, top-right (Leaflet's zoom is top-left,
+                 attribution bottom-right). Below Street View's z-[1100]. -->
+            <CompSourcesCard
+              v-if="wide && data?.sources"
+              :sources="data.sources"
+              overlay
+              class="absolute right-2 top-2 z-[1000]"
+            />
             <!-- Street View chrome lives ABOVE the iframe, never over it.
                  Google's embed already has an address chip, fullscreen,
                  zoom, compass and legal bar — our Close / label used to
@@ -492,6 +500,8 @@
               </div>
             </div>
           </div>
+          <!-- Phone: under the map, never over it — a 16rem map has no room. -->
+          <CompSourcesCard v-if="!wide && data?.sources" :sources="data.sources" class="mt-2 shrink-0" />
 
           <!-- Sized in px, not rem: this app's root font-size is 20px, so a
                `21rem` rail reads as 420px and takes more of the split than the
@@ -767,6 +777,7 @@ import {
 } from '@/utils/comps'
 import { copyToClipboard } from '@/utils'
 import CompDetailModal from '@/components/CompDetailModal.vue'
+import CompSourcesCard from '@/components/CompSourcesCard.vue'
 import CompConditionModal from '@/components/Modals/CompConditionModal.vue'
 import LiveOneModal from '@/components/Modals/LiveOneModal.vue'
 import FetchTaxInfoModal from '@/components/Modals/FetchTaxInfoModal.vue'
@@ -3016,12 +3027,70 @@ async function saveSubjectSqft(sqft) {
   }
 }
 
+// ── Re-check while a source is still on its way ──────────────────────────
+// The server no longer waits for Redfin (a cold area takes 5-8s to read) or
+// decides BatchData on a board that is missing it: it answers with
+// `sources.pending` and this re-asks, quietly, until everything is in. Each
+// re-ask is cheap -- Zillow and Realtor answer from their saved areas.
+// `settle` is the give-up: past it the server decides BatchData without Redfin,
+// which is the old behaviour, but only after the rep has actually waited.
+let pollTimer = null
+let pollSince = 0
+const POLL_GIVE_UP_MS = 15 * 60 * 1000
+let pollOnVisible = null
+function stopPoll() {
+  clearTimeout(pollTimer)
+  pollTimer = null
+  if (pollOnVisible) document.removeEventListener('visibilitychange', pollOnVisible)
+  pollOnVisible = null
+}
+function schedulePoll(d) {
+  stopPoll()
+  const src = d?.sources
+  if (!src?.pending || !show.value) {
+    pollSince = 0
+    return
+  }
+  if (!pollSince) pollSince = Date.now()
+  const waited = Date.now() - pollSince
+  const r = src.redfin || {}
+  const eta = r.queue?.eta_seconds
+  const settle =
+    waited > POLL_GIVE_UP_MS ||
+    (r.state === 'loading' && waited > 90 * 1000) ||
+    (r.state === 'queued' && eta == null && waited > 2 * 60 * 1000)
+  // Loading resolves in seconds; a queue is re-read at a quarter of its ETA,
+  // between 5 and 20 seconds.
+  const delay =
+    r.state === 'queued' ? Math.min(20000, Math.max(5000, ((eta ?? 40) * 1000) / 4)) : 3000
+  pollTimer = setTimeout(() => {
+    pollTimer = null
+    // Never race the rep: their own reload bumps loadGen and would be thrown
+    // away by ours. Try again after it lands (its finally re-schedules).
+    if (loading.value) return
+    // A background tab re-asks when the rep comes back, not every few seconds
+    // for nobody (Chrome would throttle it to once a minute anyway).
+    if (document.hidden) {
+      pollOnVisible = () => {
+        if (document.hidden) return
+        stopPoll()
+        load({ quiet: true, settle })
+      }
+      document.addEventListener('visibilitychange', pollOnVisible)
+      return
+    }
+    load({ quiet: true, settle })
+  }, delay)
+}
+
 let loadGen = 0
-async function load({ explicit = userTouched.value } = {}) {
+async function load({ explicit = userTouched.value, quiet = false, settle = false } = {}) {
   if (!props.lead) return
+  stopPoll()
+  if (!quiet) pollSince = 0
   const gen = ++loadGen
   const want = inventory.value
-  loading.value = true
+  if (!quiet) loading.value = true
   try {
     // Loop, not recurse: a `return load()` still runs this try's `finally`,
     // which would flip `loading` off while the inner call is in flight.
@@ -3032,6 +3101,7 @@ async function load({ explicit = userTouched.value } = {}) {
         include_hidden: 1,
         inventory: want,
       }
+      if (settle) payload.settle = 1
       if (explicit) {
         payload.filters = JSON.stringify(currentFilters())
         payload.auto = 0
@@ -3071,9 +3141,12 @@ async function load({ explicit = userTouched.value } = {}) {
       if (next) detailComp.value = next
     }
   } catch (e) {
-    if (gen === loadGen) toast.error(e.messages?.[0] || __('Could not load comps.'))
+    if (gen === loadGen && !quiet) toast.error(e.messages?.[0] || __('Could not load comps.'))
   } finally {
-    if (gen === loadGen) loading.value = false
+    if (gen === loadGen) {
+      loading.value = false
+      schedulePoll(data.value)
+    }
   }
 }
 
@@ -3310,6 +3383,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopPoll()
   compsViewCount.value = Math.max(0, compsViewCount.value - 1)
   if (streetViewTimer) {
     clearTimeout(streetViewTimer)

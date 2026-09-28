@@ -1757,6 +1757,7 @@ def get_comps(
 	auto: int | str = 0,
 	include_hidden: int | str = 1,
 	inventory=None,
+	settle: int | str = 0,
 ) -> dict:
 	"""The real comps map for this property, with THIS run's hides/picks."""
 	_need()
@@ -1785,6 +1786,7 @@ def get_comps(
 		include_hidden=include_hidden,
 		state={"hidden": slot.get("hidden") or [], "selected": slot.get("selected") or []},
 		inventory=inventory,
+		settle=settle,
 	)
 	data["practice"] = True
 	data["practice_locked"] = (not mine) or att.status != "In Progress"

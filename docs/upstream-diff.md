@@ -5,6 +5,26 @@ current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
 
+- **Comps: Sources card; Redfin is waited for, not raced** (2026-09-28) — the
+  comps page gave Redfin a silent 1-second window; a slow read showed nothing
+  and, with no recent priced sales, bought BatchData on the spot. Now
+  `get_lead_comps` returns `sources` (Zillow / Redfin / Realtor / BatchData:
+  state, homes added, and where the data came from -- saved area + when checked,
+  PropWarehouse + when collected, or Redfin's queue position and ETA) plus
+  `pending`. `CompSourcesCard.vue` draws it on the map (under the map on
+  phones), collapsible, open while loading, choice kept in localStorage
+  `compsSourcesOpen`. While `pending`, `CompsView` re-asks quietly (3s while
+  loading, ETA/4 clamped 5-20s while queued, never in a background tab).
+  BatchData is deferred (`reason: waiting_on_redfin`) while Redfin is loading
+  or queued; the page sends `settle=1` after 90s loading / 2 min queued with no
+  ETA / 15 min overall, which restores the old buy-if-empty rule. The Redfin
+  read now asks `dated_only=true` (Wichita 2-mile: 5,000 capped rows, 4,977
+  undated and photo-less, 0.6-1.2s -> 44 rows, 0.1s). `redfin.maybe_rewarm`
+  skips when the area's jobs are already queued/running, throttled 120s per
+  lead. `geo.warm_lead` asks for the service's new `new_lead` priority (5,
+  ahead of the ingest backlog; bulk backfill stays `ingest`) and falls back to
+  the default if the service rejects it.
+
 - **Comps: bought BatchData solds stay on the board** (2026-09-28) — a lead
   that had paid for BatchData recorded sales lost them the moment any vendor
   returned a priced sold, because the board only merged BatchData when it had

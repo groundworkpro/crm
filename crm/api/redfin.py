@@ -684,7 +684,14 @@ def _fetch_coverage(base, lat, lng, radius_m, holder):
 	try:
 		r = requests.get(
 			f"{base}/properties",
-			params={"lat": float(lat), "lng": float(lng), "radius": float(radius_m)},
+			# dated_only: a comps board only uses houses with an MLS status, a
+			# sale or a listing date. Without it a 2-mile Wichita circle came
+			# back as 5,000 rows (capped, 2.3 MB, 0.6-1.2s against a 1s join
+			# budget) of which 4,977 were undated public records with no
+			# photos; with it, 44 rows in 0.1s. Dense circles (Indianapolis)
+			# hit the service's statement timeout on the full read.
+			params={"lat": float(lat), "lng": float(lng), "radius": float(radius_m),
+				"dated_only": "true"},
 			timeout=COVERAGE_TIMEOUT,
 		)
 		r.raise_for_status()
@@ -722,6 +729,10 @@ def finish_istl_coverage(job, budget=1.0):
 	holder = job["holder"]
 	if job["thread"].is_alive() and "features" not in holder:
 		return [], {"timed_out": True}
+	if "error" in holder and "features" not in holder:
+		# Said out loud now: the comps Sources card shows "Redfin didn't answer"
+		# instead of a board that silently lacks Redfin.
+		return [], {"error": holder["error"]}
 	return holder.get("features") or [], holder.get("meta") or {}
 
 
@@ -732,6 +743,19 @@ def maybe_rewarm(lead, meta):
 	state = (meta or {}).get("coverage_state")
 	if not state or state == "ready":
 		return
+	# Work already in line needs no second push. The comps page now re-checks
+	# every few seconds while Redfin is queued; without this every re-check
+	# would enqueue another warm job.
+	queue = (meta or {}).get("queue") or {}
+	if (queue.get("ours") or 0) + (queue.get("running") or 0) > 0:
+		return
+	throttle = f"redfin_rewarm:{lead}"
+	try:
+		if frappe.cache().get_value(throttle):
+			return
+		frappe.cache().set_value(throttle, 1, expires_in_sec=120)
+	except Exception:
+		pass
 	try:
 		frappe.enqueue(
 			"crm.api.geo.warm_lead",

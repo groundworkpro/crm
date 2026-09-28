@@ -1902,7 +1902,7 @@ def _is_rentals(inventory):
 @frappe.whitelist()
 def get_lead_comps(
 	lead, radius_mi=None, limit=None, filters=None, auto=0, include_hidden=0, state=None,
-	inventory=None,
+	inventory=None, settle=0,
 ):
 	"""Comps near a lead, nearest first, with the subject's real position.
 
@@ -2105,11 +2105,14 @@ def get_lead_comps(
 	# nobody else returned are added. Measured, those are 10% of the sold union
 	# and used to be discarded entirely. Order matters: the overlay is allowed
 	# to run first because authority overwrites whatever it set.
+	# What the Sources card says about Redfin. Rentals never read the sale store.
+	redfin_meta = None
 	if redfin_istl_job is not None:
 		try:
 			from crm.api import redfin
 
 			features, meta = redfin.finish_istl_coverage(redfin_istl_job)
+			redfin_meta = meta or {}
 			base["redfin"] = redfin.apply_istl_comps(out, features)
 			redfin.maybe_rewarm(lead, meta)
 			if not rental:
@@ -2121,6 +2124,8 @@ def get_lead_comps(
 				)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin ISTL overlay failed")
+			redfin_meta = {"error": "overlay"}
+	redfin_status = _redfin_status(redfin_meta, base.get("redfin"), rental, redfin_istl_job)
 
 	# Realtor ADDS houses and nothing else. It is the single biggest contributor
 	# to the union (21% sole source) and the worst measured field authority
@@ -2222,6 +2227,13 @@ def get_lead_comps(
 			base["fallback"].update(
 				{"reason": "merged_has_prices", "priced_solds": len(priced_solds)}
 			)
+		elif redfin_status["state"] in REDFIN_STILL_COMING and not frappe.utils.cint(settle):
+			# THE RACE, REMOVED. Redfin is still loading or its area is queued, and
+			# it usually carries the priced solds that make a purchase pointless.
+			# Wait for it (the page re-checks on its own) instead of deciding on a
+			# board that is missing a source. Already-bought comps still board.
+			base["fallback"] = _batchdata_fallback(doc, base, merge_into=out, cache_only=True)
+			base["fallback"]["reason"] = "waiting_on_redfin"
 		else:
 			base["fallback"] = _batchdata_fallback(doc, base, merge_into=out)
 		base["fallback"]["had_pins"] = had_pins
@@ -2242,6 +2254,7 @@ def get_lead_comps(
 		row["comp_type"] = comp_types.get(row["name"])
 
 	base["total_in_radius"] = len(out)
+	base["sources"] = _sources(base, redfin_status, rental)
 
 	# A comp a human hid is gone from every count and every tier decision — leaving
 	# it in the pool would let junk keep a tier "usable" and suppress the widening
@@ -2340,6 +2353,129 @@ def get_lead_comps(
 	return base
 
 
+#: Redfin states in which a BatchData purchase is deferred and the page polls.
+REDFIN_STILL_COMING = ("loading", "queued")
+
+
+def _redfin_status(meta, overlay, rental, job):
+	"""Redfin's line on the Sources card, from the coverage read's meta.
+
+	loading  -- the store read missed its join budget (was: silently no Redfin)
+	queued   -- the area is not (fully) collected yet; `queue` says where it is
+	ready    -- served from PropWarehouse; `collected_at` is the stalest tile
+	error    -- the service did not answer
+	off      -- not configured, no subject point, or a rentals board
+	"""
+	if rental:
+		return {"state": "off", "reason": "rentals"}
+	if job is None:
+		return {"state": "off", "reason": "not_configured"}
+	meta = meta or {}
+	if meta.get("timed_out"):
+		return {"state": "loading"}
+	if meta.get("error"):
+		return {"state": "error"}
+	merge = (overlay or {}).get("merge") or {}
+	out = {
+		"added": merge.get("added") or 0,
+		"cells": meta.get("coverage_cells"),
+		"ready_cells": meta.get("ready_cells"),
+		"collected_at": meta.get("collected_at"),
+	}
+	cov = meta.get("coverage_state")
+	if cov in (None, "ready"):
+		return {"state": "ready", **out}
+	if cov == "failed":
+		# Some tiles could not be collected; what IS stored has boarded.
+		return {"state": "partial", **out}
+	return {"state": "queued", "queue": meta.get("queue"), **out}
+
+
+def _epoch_iso(t):
+	if not t:
+		return None
+	try:
+		import datetime
+
+		return datetime.datetime.fromtimestamp(float(t), datetime.timezone.utc).isoformat()
+	except (TypeError, ValueError, OverflowError):
+		return None
+
+
+def _sources(base, redfin_status, rental):
+	"""Per-source status for the Sources card. Pure: reads what the request did.
+
+	The card exists because the board used to be decided in one request with a
+	1-second wait for Redfin, and a slow source was indistinguishable from an
+	empty one. Now every source says where its data came from, and `pending`
+	tells the page to re-check while something is still on its way.
+	"""
+	z = base.get("zillow") or {}
+	if z.get("reason") in ("not_configured", "no_subject"):
+		zillow = {"state": "off", "reason": z.get("reason")}
+	elif z.get("reason") == "error":
+		zillow = {"state": "error"}
+	else:
+		zillow = {
+			"state": "ready",
+			"added": z.get("added") or 0,
+			"sold": z.get("sold") or 0,
+			"for_sale": (z.get("for_sale") or 0) + (z.get("pending") or 0),
+			"rentals": z.get("for_rent") or 0,
+			"checked_at": _epoch_iso(z.get("checked_at")),
+			"complete": bool(z.get("cached")),
+		}
+
+	r = base.get("realtor")
+	if rental:
+		realtor = {"state": "off", "reason": "rentals"}
+	elif r is None:
+		realtor = {"state": "off", "reason": "not_configured"}
+	elif r.get("reason") == "not_configured":
+		realtor = {"state": "off", "reason": "not_configured"}
+	elif r.get("reason") and r.get("reason") != "no_zip" and not r.get("added"):
+		realtor = {"state": "error"}
+	else:
+		realtor = {
+			"state": "ready",
+			"added": r.get("added") or 0,
+			"live": r.get("source") == "live",
+			"fetched_at": r.get("fetched_at"),
+			"no_zip": r.get("reason") == "no_zip",
+		}
+
+	f = base.get("fallback") or {}
+	reason = f.get("reason")
+	if rental:
+		batch = {"state": "off", "reason": "rentals"}
+	elif reason == "not_configured":
+		batch = {"state": "off", "reason": "not_configured"}
+	elif reason == "error":
+		batch = {"state": "error"}
+	elif f.get("used") and f.get("count"):
+		batch = {
+			"state": "bought" if f.get("bought_now") else "saved",
+			"count": f["count"],
+			"saved_at": _epoch_iso(f.get("saved_at")),
+		}
+	elif f.get("used"):
+		batch = {"state": "none_found", "saved_at": _epoch_iso(f.get("saved_at"))}
+	elif reason == "waiting_on_redfin":
+		batch = {"state": "waiting"}
+	elif reason == "merged_has_prices":
+		batch = {"state": "skipped", "priced_solds": f.get("priced_solds") or 0}
+	else:
+		batch = {"state": "skipped"}
+
+	return {
+		"zillow": zillow,
+		"redfin": redfin_status,
+		"realtor": realtor,
+		"batchdata": batch,
+		"pending": redfin_status["state"] in REDFIN_STILL_COMING,
+	}
+
+
 def _batchdata_fallback(doc, base, merge_into=None, cache_only=False):
 	"""Fill an empty comps map from BatchData. Returns a small status dict.
 
@@ -2354,6 +2490,9 @@ def _batchdata_fallback(doc, base, merge_into=None, cache_only=False):
 	if not batchdata_comps.available():
 		return {"source": "batchdata", "used": False, "reason": "not_configured"}
 
+	# Before the fetch: a hit here means "saved on this lead", a miss that then
+	# returns rows means "bought just now". The card says which.
+	saved_at = batchdata_comps.cached_at(doc)
 	try:
 		if cache_only:
 			comps = batchdata_comps.cached_comps(doc)
@@ -2367,7 +2506,8 @@ def _batchdata_fallback(doc, base, merge_into=None, cache_only=False):
 		return {"source": "batchdata", "used": False, "reason": "error"}
 
 	if not comps:
-		return {"source": "batchdata", "used": True, "count": 0}
+		return {"source": "batchdata", "used": True, "count": 0,
+			"saved_at": saved_at, "bought_now": saved_at is None}
 
 	lat, lng = base["subject"]["lat"], base["subject"]["lng"]
 	for c in comps:
@@ -2425,6 +2565,8 @@ def _batchdata_fallback(doc, base, merge_into=None, cache_only=False):
 		"used": True,
 		"count": len(comps),
 		"basis": batchdata_comps.WINDOW_LABEL,
+		"saved_at": saved_at,
+		"bought_now": saved_at is None and not cache_only,
 	}
 
 
