@@ -383,7 +383,7 @@
               }}</span>
               <span class="text-ink-gray-5">{{ __('fetched tax info') }}</span>
               <span class="text-ink-gray-4">·</span>
-              <span class="text-ink-gray-5">${{ Number(activity.pull.cost || 0.22).toFixed(2) }}</span>
+              <span class="text-ink-gray-5">${{ Number(activity.pull.cost ?? 0.22).toFixed(2) }}</span>
               <Tooltip :text="formatDate(activity.creation)" class="ml-auto">
                 <div class="whitespace-nowrap text-xs text-ink-gray-5">
                   {{ shortTime(activity.creation) }}
@@ -967,7 +967,7 @@ const smsMessages = createResource({
   transform: (data) => sortByCreation(data),
 })
 
-// BatchData tax-info pulls for this lead (shown in the Activity timeline + the
+// Tax-info pulls (RealEstateAPI; older rows BatchData) for this lead (shown in the Activity timeline + the
 // sidebar Tax Info card). Leads only.
 const taxPulls = createResource({
   url: 'crm.api.tax_info.get_tax_pulls',

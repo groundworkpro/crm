@@ -69,6 +69,8 @@ _ALERT_KEY = "crm:batchdata-wallet-alert"
 
 #: What one app-initiated BatchData call costs.
 #: Tax pull = deed-history token, stamped on CRM Property Tax Pull.cost ($0.22).
+#: Tax pulls moved to RealEstateAPI on 2026-09-28 (source='RealEstateAPI'); only
+#: rows with source BatchData are BatchData wallet spend.
 #: Comps fallback = 10 rows × $0.03. The tax constant is only a fallback for a
 #: row written before the cost field existed.
 TAX_PULL_COST = 0.22
@@ -200,7 +202,8 @@ def app_spend_between(start, end):
 		row = frappe.db.sql(
 			"""SELECT COUNT(*) n, COALESCE(SUM(COALESCE(cost, %s)), 0) c
 			   FROM `tabCRM Property Tax Pull`
-			   WHERE DATE(COALESCE(pulled_at, creation)) BETWEEN %s AND %s""",
+			   WHERE DATE(COALESCE(pulled_at, creation)) BETWEEN %s AND %s
+			     AND COALESCE(source, 'BatchData') = 'BatchData'""",
 			(TAX_PULL_COST, start, end),
 			as_dict=True,
 		)
