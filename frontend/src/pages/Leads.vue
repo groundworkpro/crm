@@ -164,6 +164,7 @@
     @loadMore="(columnName) => viewControls.loadMoreKanban(columnName)"
   >
     <template #title="{ titleField, itemName }">
+      <div class="flex flex-col gap-1.5">
       <div class="flex items-center gap-2">
         <div v-if="titleField === 'status'">
           <IndicatorIcon :class="getRow(itemName, titleField).color" />
@@ -249,6 +250,16 @@
         >
           {{ ownerInitials(itemName) }}
         </span>
+      </div>
+      <!-- Photos & Lockbox cards only (server sends nothing elsewhere): who on
+           our contractor list covers this property's metro. Not a card field,
+           so it shows whatever card fields each person has chosen. -->
+      <div v-if="getRawValue(itemName, '_contractors')" class="flex">
+        <ContractorBadge
+          :value="getRawValue(itemName, '_contractors')"
+          :lead="itemName"
+        />
+      </div>
       </div>
     </template>
     <template #fields="{ fieldName, fieldLabel, showBlank, itemName }">
@@ -616,6 +627,7 @@ import KanbanCardField from '@/components/Kanban/KanbanCardField.vue'
 import HoverMount from '@/components/Kanban/HoverMount.vue'
 import LeadModal from '@/components/Modals/LeadModal.vue'
 import DispoBuyerBadges from '@/components/DispoBuyerBadges.vue'
+import ContractorBadge from '@/components/ContractorBadge.vue'
 import LeadQuickViewModal from '@/components/Modals/LeadQuickViewModal.vue'
 import LeadOpenModeModal from '@/components/Modals/LeadOpenModeModal.vue'
 import {

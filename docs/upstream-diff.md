@@ -4,6 +4,21 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Contractors directory + "who covers this" badge on Photos & Lockbox cards** (2026-09-28) —
+  requested by Exe. New custom doctype **CRM Contractor** (created by
+  `frappe-crm-deploy/scripts/setup_contractors.py`): name, company, phone, email,
+  does_photos / does_lockbox, `metro_areas` (JSON list of CRM Metro Area names, same
+  shape as `CRM Buyer.metro_areas`), notes, active. `crm/api/contractors.py` has the
+  list/save/delete API (sales roles only) and `card_badges`. A lead's metro comes from
+  its `property_county` + `property_state` via `crm/api/data/metro_counties.json`,
+  built from the Census 2023 CBSA delineation by `build_metro_counties.py` (1252
+  counties across the same 393 metros). Board: new kanban pseudo-field `_contractors`
+  (`crm/api/doc.py`, next to `_dispo_buyers`), set only for leads in "Photos & Lockbox
+  In Progress"; `ContractorBadge.vue` renders under the card title — green "N
+  contractors" with a click-to-call popover, amber "No contractor" when the metro has
+  nobody, gray when the county is outside any metro. New page `/contractors`
+  (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
+  Everything returns empty until the doctype exists, so the app can ship first.
 - **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
   lead due after today: an Active enrollment in a sequence with `then_enroll`
