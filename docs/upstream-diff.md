@@ -5,6 +5,15 @@ current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
 
+- **Comps: bought BatchData solds stay on the board** (2026-09-28) — a lead
+  that had paid for BatchData recorded sales lost them the moment any vendor
+  returned a priced sold, because the board only merged BatchData when it had
+  none (Myesha Moore, Wichita KS: 2 comps vanished behind 7 Redfin solds, one
+  from 2019). Now the cached comps always merge in (`batchdata_comps.cached_comps`,
+  never calls the API), and only a priced sold inside the board's default
+  12-month window (`DEFAULT_WITHIN_DAYS`) switches a NEW purchase off. BatchData
+  rows also now honour the rep's saved picks/hides instead of always unpicked.
+
 - **Status lifecycle: real deletion + a rename/delete guard** (2026-09-22) —
   deleting a kanban column used to only set `delete: true` on the saved view,
   so the status survived, stayed assignable, and any lead given it vanished
