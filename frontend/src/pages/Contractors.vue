@@ -50,12 +50,13 @@
         </template>
       </Autocomplete>
       <FormControl
+        class="shrink-0 whitespace-nowrap"
         v-model="showInactive"
         type="checkbox"
         :label="__('Show inactive')"
       />
       <div class="flex-1" />
-      <span class="text-sm text-ink-gray-5">
+      <span class="shrink-0 whitespace-nowrap text-sm text-ink-gray-5">
         {{ rows.length }} {{ rows.length === 1 ? __('contractor') : __('contractors') }}
       </span>
     </div>
