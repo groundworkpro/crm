@@ -10,7 +10,7 @@ from frappe.query_builder.functions import Count, Max
 from frappe.utils import make_filter_tuple
 from pypika import Criterion
 
-from crm.api import dispo_buyers
+from crm.api import contractors, dispo_buyers
 from crm.api.views import get_views
 from crm.fcrm.doctype.crm_form_script.crm_form_script import get_form_script
 from crm.utils import get_dynamic_linked_docs, get_linked_docs, is_frappe_version
@@ -29,6 +29,7 @@ PSEUDO_FIELDS = (
 	"_first_call",
 	"_new_lead_color",
 	"_dispo_buyers",
+	"_contractors",
 )
 
 
@@ -1023,6 +1024,7 @@ def apply_counts(rows, doctype):
 		d["_first_call"] = meta.get("_first_call", "|")
 		d["_new_lead_color"] = meta.get("_new_lead_color", "")
 		d["_dispo_buyers"] = meta.get("_dispo_buyers")
+		d["_contractors"] = meta.get("_contractors")
 
 	return rows
 
@@ -1056,6 +1058,15 @@ def _lead_card_meta(doctype, names):
 
 	leads = frappe.get_all("CRM Lead", filters={"name": ("in", names)}, fields=fields)
 
+	# Photos & Lockbox cards: which contractors on file cover this metro. One
+	# query for the whole page, and only when such a card is on it.
+	contractor_badges = {}
+	if has_location:
+		try:
+			contractor_badges = contractors.card_badges(leads)
+		except Exception:
+			frappe.log_error(title="kanban contractor badges failed")
+
 	meta = {}
 	for lead in leads:
 		first_call = "|"
@@ -1082,6 +1093,7 @@ def _lead_card_meta(doctype, names):
 			"_first_call": first_call,
 			"_new_lead_color": color,
 			"_dispo_buyers": buyers,
+			"_contractors": contractor_badges.get(lead.name),
 		}
 
 	return meta
