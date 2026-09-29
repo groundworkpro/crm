@@ -73,32 +73,22 @@ SALES_ROLES = ("System Manager", "Sales Manager", "Sales User")
 #: walks out (0.5 → 1 → 2 → 5) until it has a usable set; this 2-mile default is
 #: only for older callers that omit the argument entirely.
 DEFAULT_RADIUS_MI = 2.0
-#: Hard cap on returned pins, and since gw366 it is a DATA-COMPLETENESS promise
-#: rather than only a rendering limit: every comp that reaches the map gets its
-#: full sale history fetched (`_attach_sale_history`), so the board can be read
-#: as "everything shown here, we know everything about". A two-tier board -- some
-#: pins carrying a flip warning and some silently lacking one -- would be worse
-#: than no warning at all, because absence would look like evidence of no flip.
+#: How many comps get a BILLED Zillow sale-history lookup per board load. The
+#: board itself is NOT capped (Lance, 2026-09-28): it used to show only the 50
+#: nearest, and a dense cluster of sales (2027 Willow Cir, Centerville MN: 421
+#: comps in 1/2 mile) pushed every for-sale and pending listing off the map.
+#: Now every matched comp is drawn; this number only bounds the spend.
 #:
 #: 50 is a SPEND decision, measured. Sale history is one billed RapidAPI call per
 #: comp on a key shared with istl-buyer's ZIP job. At 25 leads/day against the
 #: 57,000/cycle plan, ~53 comps/lead is what the budget affords once istl-buyer's
-#: ~10,500 is reserved; every comp in a 1/2-mile circle (mean 126, and 253 in
-#: Indianapolis) would need roughly double the plan. Raising this is a one-line
-#: dial, but it is a bill, so turn it deliberately.
+#: ~10,500 is reserved. Raising it is a one-line dial, but it is a bill.
 #:
-#: It is applied AFTER filtering, never before -- capping first would take the 50
-#: nearest and then filter those, hiding better-fitting comps slightly further
-#: out. The tier ladder still runs over the whole filtered set, so what lands on
-#: the board is unchanged; only how many of them are drawn.
-MAX_COMPS = 50
-
-#: Of those slots, up to this many go to the nearest LIVE listings (for sale,
-#: pending, auction) before the rest fill nearest-first. A dense townhouse
-#: cluster (2027 Willow Cir, Centerville MN: 421 comps in 1/2 mile) holds 50+
-#: sales closer than any listing, so a pure nearest-50 cut never drew one --
-#: and the asks are exactly what the rep is looking for. Same total, same bill.
-LISTING_RESERVE = 15
+#: WHO gets the budget is `_history_order`: live listings first (for sale,
+#: pending, auction -- the asks the rep is looking for), then picked comps, then
+#: the nearest sales. Every other comp still gets its history if the 30-day pin
+#: cache holds it (free); otherwise it is marked `sale_history_unchecked`.
+SALE_HISTORY_BUDGET = 50
 LIVE_STATES = ("for_sale", "pending", "auction")
 
 #: How many matches make a tier "usable". Below this you are not comping, you are
@@ -1935,10 +1925,11 @@ def get_lead_comps(
 		radius = max(0.25, min(10.0, float(radius_mi or DEFAULT_RADIUS_MI)))
 	except (TypeError, ValueError):
 		radius = DEFAULT_RADIUS_MI
+	# No cap unless a caller asks for one (see SALE_HISTORY_BUDGET).
 	try:
-		cap = max(1, min(MAX_COMPS, int(limit or MAX_COMPS)))
+		cap = max(1, int(limit)) if limit else None
 	except (TypeError, ValueError):
-		cap = MAX_COMPS
+		cap = None
 
 	lat, lng, cached = _subject_point(doc)
 	subject = {"lat": lat, "lng": lng} if lat is not None else None
@@ -2276,7 +2267,7 @@ def get_lead_comps(
 	# touching the ladder, the counts, or what gets underwritten.
 	out = [r for r in out if not r["hidden"]]
 	if int(include_hidden or 0):
-		base["discarded"] = sorted(hidden_here, key=lambda r: r["distance_mi"])[:cap]
+		base["discarded"] = sorted(hidden_here, key=lambda r: r["distance_mi"])
 
 	explicit = _coerce_filters(filters)
 	if explicit is not None:
@@ -2328,13 +2319,11 @@ def get_lead_comps(
 	base["selected_count"] = sum(1 for r in matched if r["selected"])
 
 	base["total_matched"] = len(matched)
-	base["comps"] = _cap_board(matched, cap)
+	base["comps"] = matched[:cap] if cap else matched
 
-	# LAST, and only on the capped set. This is the first point at which we know
-	# which comps a person will actually see, and the promise is that every one of
-	# them has complete information -- so this must not run before the filter (it
-	# would bill for comps nobody looks at) nor before the cap (same, and far
-	# worse: a 1/2-mile circle holds 126 comps on average and 253 in Indianapolis).
+	# LAST, on the final board: the first point at which we know which comps a
+	# person will actually see. Billed lookups go to `_history_order`'s first
+	# SALE_HISTORY_BUDGET rows (listings first); the rest read the free cache.
 	#
 	# Best-effort by construction: `attach_sale_history` marks a row it could not
 	# resolve rather than raising, because a comps map that renders without flip
@@ -2351,7 +2340,11 @@ def get_lead_comps(
 			# so the name is not guaranteed to exist down here.
 			from crm.api import zillow_comps as _zc
 
-			base["sale_history"] = _zc.attach_sale_history(base["comps"], today)
+			paid, free = _history_order(base["comps"], SALE_HISTORY_BUDGET)
+			base["sale_history"] = _zc.attach_sale_history(paid, today)
+			cached = _zc.attach_sale_history(free, today, cache_only=True)
+			for k, v in cached.items():
+				base["sale_history"][k] = base["sale_history"].get(k, 0) + v
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: sale history failed")
 			base["sale_history"] = {"checked": 0, "with_history": 0, "flips": 0, "missing": len(base["comps"])}
@@ -2361,20 +2354,22 @@ def get_lead_comps(
 	return base
 
 
-def _cap_board(matched, cap):
-	"""The `cap` rows to draw: nearest listings first (up to LISTING_RESERVE),
-	then the rest nearest-first. `matched` is already sorted by distance, and so
-	is the result. Picked comps are never dropped for a listing's slot."""
-	if len(matched) <= cap:
-		return list(matched)
-	live = [r for r in matched if r.get("listing_state") in LIVE_STATES]
-	keep = {id(r) for r in live[: min(LISTING_RESERVE, cap)]}
-	keep |= {id(r) for r in matched if r.get("selected")}
-	for r in matched:
-		if len(keep) >= cap:
+def _history_order(rows, budget):
+	"""Split the board into (billed, cache-only) sale-history lookups.
+
+	Billed, in order: live listings nearest-first, then picked comps, then the
+	nearest sales -- until `budget` rows. Everything else is cache-only.
+	`rows` is sorted by distance, so "nearest-first" is just list order."""
+	live = [r for r in rows if r.get("listing_state") in LIVE_STATES]
+	picked = [r for r in rows if r.get("selected")]
+	order, seen = [], set()
+	for r in live + picked + list(rows):
+		if len(order) >= budget:
 			break
-		keep.add(id(r))
-	return [r for r in matched if id(r) in keep]
+		if id(r) not in seen:
+			seen.add(id(r))
+			order.append(r)
+	return order, [r for r in rows if id(r) not in seen]
 
 
 #: Redfin states in which a BatchData purchase is deferred and the page polls.

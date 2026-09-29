@@ -100,7 +100,7 @@
             }}
           </span>
           <template v-if="(data?.total_matched ?? 0) > comps.length">
-            · {{ __('showing {0}: the nearest, plus the closest listings', [comps.length]) }}
+            · {{ __('showing the {0} nearest', [comps.length]) }}
           </template>
           <template v-if="zillowLine"> · {{ zillowLine }}</template>
               </template>

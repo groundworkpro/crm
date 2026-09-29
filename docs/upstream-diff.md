@@ -19,16 +19,18 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
-- **Comps: the 50-comp cap keeps room for listings** (2026-09-28) —
-  `get_lead_comps` drew the 50 nearest matches, so a dense cluster of sales
+- **Comps: no 50-comp cap; listings get the paid lookups first** (2026-09-28) —
+  `get_lead_comps` drew only the 50 nearest matches, so a dense cluster of sales
   pushed every listing off the board. 2027 Willow Cir, Centerville MN (PROP-00017)
-  has 421 comps within ½ mile and showed 0 for-sale or pending listings, even
-  with every filter cleared. `_cap_board` now keeps up to `LISTING_RESERVE` (15)
-  of the nearest for-sale, pending and auction rows, keeps picked comps, and
-  fills the rest nearest-first. It is still 50 rows, so the Zillow sale-history
-  cost is unchanged. After the fix, ½ mile shows 4 for sale and 1 mile shows
-  13 for sale plus 1 pending. The header now says "showing 50: the nearest,
-  plus the closest listings".
+  has 421 comps within ½ mile and showed 0 of its 8 for-sale listings, even with
+  every filter cleared. Now every matched comp is returned (`limit` still works if a
+  caller passes it). The Zillow sale-history spend is still capped at
+  `SALE_HISTORY_BUDGET` (50) billed lookups per load. `_history_order` gives those
+  lookups to live listings first (for sale, pending, auction), then picked comps,
+  then the nearest sales. Every other comp reads the free 30-day pin cache
+  (`attach_sale_history(cache_only=True)`), or is marked `sale_history_unchecked`
+  if that cache has nothing. Board size: ½ mile ≈ 421 comps, 1 MB, 1s; 2 miles ≈
+  3,400 comps, 8.8 MB, 11s.
 
 - **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a

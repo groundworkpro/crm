@@ -1,8 +1,8 @@
-"""The 50-comp cap reserves slots for live listings.
+"""The board is uncapped; only the billed sale-history lookups are budgeted,
+and listings get the budget first.
 
-2027 Willow Cir, Centerville MN: 421 comps within 1/2 mile, and the nearest 50
-were all sales in the townhouse cluster, so the board never drew one of the 8
-listings nearby even with every filter cleared.
+2027 Willow Cir, Centerville MN: 421 comps within 1/2 mile, and the old
+nearest-50 board was all sales, so none of the listings nearby ever drew.
 """
 
 import unittest
@@ -18,28 +18,26 @@ def row(i, state="sold", selected=False):
 	return {"name": f"r{i}", "distance_mi": i / 100, "listing_state": state, "selected": selected}
 
 
-class CapBoard(unittest.TestCase):
-	def test_under_cap_is_untouched(self):
+class HistoryOrder(unittest.TestCase):
+	def test_small_board_all_billed(self):
 		m = [row(i) for i in range(10)]
-		self.assertEqual(comps._cap_board(m, 50), m)
+		paid, free = comps._history_order(m, 50)
+		self.assertEqual((len(paid), free), (10, []))
 
-	def test_far_listings_still_board(self):
-		m = [row(i) for i in range(100)] + [row(100 + i, "for_sale") for i in range(5)] + [row(200, "pending")]
-		out = comps._cap_board(m, 50)
-		self.assertEqual(len(out), 50)
-		self.assertEqual(sum(r["listing_state"] != "sold" for r in out), 6)
-		self.assertEqual([r["distance_mi"] for r in out], sorted(r["distance_mi"] for r in out))
+	def test_listings_first_then_picked_then_nearest(self):
+		m = [row(i) for i in range(100)] + [row(150, selected=True)]
+		m += [row(200, "for_sale"), row(201, "pending"), row(202, "auction")]
+		paid, free = comps._history_order(m, 10)
+		self.assertEqual([r["name"] for r in paid[:4]], ["r200", "r201", "r202", "r150"])
+		self.assertEqual([r["name"] for r in paid[4:]], [f"r{i}" for i in range(6)])
+		self.assertEqual(len(paid) + len(free), len(m))
+		self.assertFalse({id(r) for r in paid} & {id(r) for r in free})
 
-	def test_reserve_is_bounded(self):
-		m = [row(i) for i in range(100)] + [row(100 + i, "for_sale") for i in range(40)]
-		out = comps._cap_board(m, 50)
-		self.assertEqual(sum(r["listing_state"] == "for_sale" for r in out), comps.LISTING_RESERVE)
-		self.assertEqual(len(out), 50)
-
-	def test_picked_comp_is_not_evicted(self):
-		m = [row(i) for i in range(100)] + [row(150, selected=True)] + [row(200 + i, "for_sale") for i in range(20)]
-		out = comps._cap_board(m, 50)
-		self.assertIn("r150", {r["name"] for r in out})
+	def test_more_listings_than_budget(self):
+		m = [row(i) for i in range(10)] + [row(100 + i, "for_sale") for i in range(60)]
+		paid, _ = comps._history_order(m, 50)
+		self.assertTrue(all(r["listing_state"] == "for_sale" for r in paid))
+		self.assertEqual(len(paid), 50)
 
 
 if __name__ == "__main__":

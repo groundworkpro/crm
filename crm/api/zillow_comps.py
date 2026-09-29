@@ -818,7 +818,7 @@ def _pin_facts(address):
 	return _pin_facts_many([address]).get(address)
 
 
-def _pin_facts_many(addresses):
+def _pin_facts_many(addresses, fetch=True):
 	"""Cached `/property` facts for many pins at once. -> {address: facts|None}.
 
 	Three phases, and the split is the point: read every cache entry HERE, fetch
@@ -839,7 +839,7 @@ def _pin_facts_many(addresses):
 			out[address] = hit or None
 		else:
 			misses.append(address)
-	if not misses:
+	if not misses or not fetch:
 		return out
 
 	bodies = zillow_api.fetch_many(
@@ -1056,7 +1056,7 @@ def refresh_pins(rows, cap=PIN_REFRESH_CAP):
 	return {"checked": checked, "updated": updated}
 
 
-def attach_sale_history(rows, today=None):
+def attach_sale_history(rows, today=None, cache_only=False):
 	"""Give every row in `rows` its sale history. Mutates them. -> status dict.
 
 	Called with the FINAL, already-filtered and already-capped board, because that
@@ -1083,8 +1083,16 @@ def attach_sale_history(rows, today=None):
 		info["missing"] = len(rows)
 		return info
 
-	facts_by_address = _pin_facts_many([r["address"] for r in rows])
+	facts_by_address = _pin_facts_many([r["address"] for r in rows], fetch=not cache_only)
 	for row in rows:
+		# cache_only (past SALE_HISTORY_BUDGET): an address never looked up is
+		# "not checked", not "no history" -- the UI must not read it as clean.
+		if cache_only and row["address"] not in facts_by_address:
+			row["sale_history"] = None
+			row["sale_history_missing"] = True
+			row["sale_history_unchecked"] = True
+			info["unchecked"] = info.get("unchecked", 0) + 1
+			continue
 		info["checked"] += 1
 		facts = facts_by_address.get(row["address"])
 		# Year/beds/baths/sqft live on this same `/property` payload. Search almost
