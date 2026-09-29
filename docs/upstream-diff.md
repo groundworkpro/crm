@@ -19,6 +19,17 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Comps: the 50-comp cap keeps room for listings** (2026-09-28) —
+  `get_lead_comps` drew the 50 nearest matches, so a dense cluster of sales
+  pushed every listing off the board. 2027 Willow Cir, Centerville MN (PROP-00017)
+  has 421 comps within ½ mile and showed 0 for-sale or pending listings, even
+  with every filter cleared. `_cap_board` now keeps up to `LISTING_RESERVE` (15)
+  of the nearest for-sale, pending and auction rows, keeps picked comps, and
+  fills the rest nearest-first. It is still 50 rows, so the Zillow sale-history
+  cost is unchanged. After the fix, ½ mile shows 4 for sale and 1 mile shows
+  13 for sale plus 1 pending. The header now says "showing 50: the nearest,
+  plus the closest listings".
+
 - **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
   lead due after today: an Active enrollment in a sequence with `then_enroll`

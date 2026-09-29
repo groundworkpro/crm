@@ -93,6 +93,14 @@ DEFAULT_RADIUS_MI = 2.0
 #: the board is unchanged; only how many of them are drawn.
 MAX_COMPS = 50
 
+#: Of those slots, up to this many go to the nearest LIVE listings (for sale,
+#: pending, auction) before the rest fill nearest-first. A dense townhouse
+#: cluster (2027 Willow Cir, Centerville MN: 421 comps in 1/2 mile) holds 50+
+#: sales closer than any listing, so a pure nearest-50 cut never drew one --
+#: and the asks are exactly what the rep is looking for. Same total, same bill.
+LISTING_RESERVE = 15
+LIVE_STATES = ("for_sale", "pending", "auction")
+
 #: How many matches make a tier "usable". Below this you are not comping, you are
 #: reading anecdotes, so the ladder loosens instead of presenting 2 pins as an
 #: answer. Five is the smallest set a reviewer can see a middle in.
@@ -2320,7 +2328,7 @@ def get_lead_comps(
 	base["selected_count"] = sum(1 for r in matched if r["selected"])
 
 	base["total_matched"] = len(matched)
-	base["comps"] = matched[:cap]
+	base["comps"] = _cap_board(matched, cap)
 
 	# LAST, and only on the capped set. This is the first point at which we know
 	# which comps a person will actually see, and the promise is that every one of
@@ -2351,6 +2359,22 @@ def get_lead_comps(
 				row.setdefault("sale_history", None)
 				row.setdefault("sale_history_missing", True)
 	return base
+
+
+def _cap_board(matched, cap):
+	"""The `cap` rows to draw: nearest listings first (up to LISTING_RESERVE),
+	then the rest nearest-first. `matched` is already sorted by distance, and so
+	is the result. Picked comps are never dropped for a listing's slot."""
+	if len(matched) <= cap:
+		return list(matched)
+	live = [r for r in matched if r.get("listing_state") in LIVE_STATES]
+	keep = {id(r) for r in live[: min(LISTING_RESERVE, cap)]}
+	keep |= {id(r) for r in matched if r.get("selected")}
+	for r in matched:
+		if len(keep) >= cap:
+			break
+		keep.add(id(r))
+	return [r for r in matched if id(r) in keep]
 
 
 #: Redfin states in which a BatchData purchase is deferred and the page polls.
