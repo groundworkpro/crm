@@ -169,8 +169,11 @@ def _propwarehouse_base():
 
 
 def _redfin_base():
+	"""Redfin through PropWarehouse's `/redfin` passthrough (see `geo._base_url`)."""
 	try:
-		return str(frappe.conf.get("redfin_scraper_url") or "").strip().rstrip("/")
+		from crm.api.geo import _base_url
+
+		return _base_url()
 	except Exception:
 		return ""
 

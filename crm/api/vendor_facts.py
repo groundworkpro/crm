@@ -19,8 +19,9 @@ def _base_url():
 	The Zillow/Realtor endpoints are moving out of redfin-scraper-api into a
 	dedicated propwarehouse-api (see `propwarehouse/EGRESS.md`): the scraper is
 	named, unit-named and database-named for Redfin, and it should not keep
-	growing vendor surface. Only the LOOKUP path moves — `crm.api.geo` keeps
-	pointing at the scraper for /properties, /parcels, /facts, /photos, /url.
+	growing vendor surface. (Since 2026-09-29 `crm.api.geo` sends the Redfin
+	paths -- /properties, /parcels, /facts, /photos, /url -- through
+	PropWarehouse's `/redfin` passthrough too.)
 
 	Resolution order, first non-empty wins:
 
@@ -31,7 +32,7 @@ def _base_url():
 	So this is inert until the config is set, and setting it is the whole
 	cutover. Unsetting it is the whole rollback.
 	"""
-	from crm.api.geo import _base_url as geo_base
+	from crm.api.geo import _direct_url as geo_base
 
 	try:
 		import frappe

@@ -19,6 +19,18 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Redfin calls go through PropWarehouse (2026-09-29)**. Lance: every
+  property-data source through PropWarehouse, Redfin included. `geo._base_url()`
+  (which `redfin._base_url`, `address_resolve._redfin_base` and every Redfin
+  call site use) now returns `<propwarehouse_url>/redfin` — PropWarehouse's
+  passthrough to redfin-scraper-api (propwarehouse-api `redfin_proxy.py`,
+  counters at `/redfin/_stats`). Falls back to the scraper directly
+  (`geo._direct_url()`) when PropWarehouse's `/health` fails (checked at most
+  every 30s, remembered in Redis), when `propwarehouse_url` is unset, or with
+  `redfin_via_propwarehouse: 0` in site_config. No `redfin_scraper_url` still
+  means Redfin is off. `vendor_facts` falls back to `_direct_url` (not the
+  passthrough). Verified live: a PROP-00017 load made 2 listings, 1 properties
+  and 50 history calls, all through PropWarehouse, 0 errors.
 - **Comps: flip warnings and ISTL pin checks from Redfin, not Zillow (2026-09-29)**.
   Lance: switch both to Redfin. `crm/api/redfin_history.py` reads each comp's
   Redfin timeline via the scraper's free `/history` (50 fresh reads per load, 4
