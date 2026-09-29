@@ -31,6 +31,7 @@ time and everything still works.
 
 import io
 import json
+import mimetypes
 import re
 import zipfile
 
@@ -266,6 +267,8 @@ def _shape(f: dict) -> dict:
 		"full": f"https://drive.google.com/thumbnail?id={fid}&sz=w1600",
 		"view": f.get("webViewLink") or f"https://drive.google.com/file/d/{fid}/view",
 		"download": f"https://drive.google.com/uc?export=download&id={fid}",
+		# set when the photo was saved from a text/email (see save_media_to_photos)
+		"source": (f.get("appProperties") or {}).get("crm_source") or "",
 	}
 
 
@@ -279,7 +282,7 @@ def _list_files(token: str, folder_id: str) -> list:
 			"includeItemsFromAllDrives": "true",
 			"supportsAllDrives": "true",
 			"orderBy": "createdTime",
-			"fields": "nextPageToken,files(id,name,mimeType,size,createdTime,webViewLink)",
+			"fields": "nextPageToken,files(id,name,mimeType,size,createdTime,webViewLink,appProperties)",
 			"pageSize": 1000,
 		}
 		if page:
@@ -293,6 +296,49 @@ def _list_files(token: str, folder_id: str) -> list:
 			break
 	# Sub-folders aren't photos; skip them rather than rendering a broken tile.
 	return [_shape(f) for f in files if f.get("mimeType") != FOLDER_MIME]
+
+
+def _upload_bytes(token: str, folder_id: str, name: str, mime: str, data: bytes, source: str = "") -> dict:
+	"""Resumable Drive upload: metadata first, then the bytes to the session URI.
+
+	`source` (see `save_media_to_photos`) is stamped into the file's
+	appProperties so the activity feed can tell which texted/emailed pictures
+	are already in the folder and never saves the same one twice.
+	"""
+	meta = {"name": _sanitize(name or "photo"), "parents": [folder_id]}
+	if source:
+		meta["appProperties"] = {"crm_source": source}
+	try:
+		start = requests.post(
+			DRIVE_UPLOAD,
+			params={
+				"uploadType": "resumable",
+				"supportsAllDrives": "true",
+				"fields": "id,name,mimeType,size,createdTime,webViewLink,appProperties",
+			},
+			headers={**_headers(token, json_body=True), "X-Upload-Content-Type": mime},
+			json=meta,
+			timeout=60,
+		)
+		start.raise_for_status()
+		session_uri = start.headers.get("Location")
+		if not session_uri:
+			frappe.throw(_("Google didn't start the upload."))
+
+		put = requests.put(
+			session_uri,
+			headers={"Content-Type": mime},
+			data=data,
+			timeout=600,
+		)
+		put.raise_for_status()
+		created = put.json()
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(title="Lead photos: upload failed", message=frappe.get_traceback())
+		frappe.throw(_("Upload to Google Drive failed."))
+	return {**created, "mimeType": created.get("mimeType") or mime}
 
 
 # ---------------------------------------------------------------------------
@@ -374,37 +420,10 @@ def upload_lead_photo(lead: str):
 
 	token = _token()
 	folder = _resolve_folder(token, lead, create=True)
-
-	try:
-		# Resumable upload: metadata first, then the bytes to the session URI.
-		start = requests.post(
-			DRIVE_UPLOAD,
-			params={"uploadType": "resumable", "supportsAllDrives": "true"},
-			headers={**_headers(token, json_body=True), "X-Upload-Content-Type": mime},
-			json={"name": _sanitize(upload.filename or "photo"), "parents": [folder["id"]]},
-			timeout=60,
-		)
-		start.raise_for_status()
-		session_uri = start.headers.get("Location")
-		if not session_uri:
-			frappe.throw(_("Google didn't start the upload."))
-
-		put = requests.put(
-			session_uri,
-			headers={"Content-Type": mime},
-			data=data,
-			timeout=600,
-		)
-		put.raise_for_status()
-		created = put.json()
-	except frappe.ValidationError:
-		raise
-	except Exception:
-		frappe.log_error(title="Lead photos: upload failed", message=frappe.get_traceback())
-		frappe.throw(_("Upload to Google Drive failed."))
+	created = _upload_bytes(token, folder["id"], upload.filename or "photo", mime, data)
 
 	_publish(lead)
-	return _shape({**created, "mimeType": created.get("mimeType") or mime})
+	return _shape(created)
 
 
 @frappe.whitelist()
@@ -483,3 +502,133 @@ def download_all_photos(lead: str):
 	frappe.local.response.filename = f"{_sanitize(folder.get('name') or 'photos')}.zip"
 	frappe.local.response.filecontent = buf.getvalue()
 	frappe.local.response.type = "download"
+
+
+# ---------------------------------------------------------------------------
+# Save a texted / emailed picture into the folder
+# ---------------------------------------------------------------------------
+# Hard stop for one fetched attachment — MMS tops out far below this; it only
+# guards against a surprise giant video pinning a worker.
+MAX_MEDIA_BYTES = 200 * 1024 * 1024
+
+# iPhone photos arrive by email as HEIC, which older Pythons don't map.
+mimetypes.add_type("image/heic", ".heic")
+mimetypes.add_type("image/heif", ".heif")
+
+
+def media_source_key(url: str = "", file: str = "") -> str:
+	"""Stable id for one texted/emailed picture, stored on the Drive file.
+
+	Mirrored EXACTLY by `sourceKey()` in frontend/src/composables/leadPhotoSaves.js
+	— change both together. A text picture is keyed by the last path segment of its
+	media URL (the query string is a signature that can rotate); an email picture
+	by its File docname. Drive caps key+value at 124 bytes, hence the slice.
+	"""
+	if file:
+		return f"file:{file}"[:100]
+	path = (url or "").split("?", 1)[0].rstrip("/")
+	return f"quo:{path.rsplit('/', 1)[-1]}"[:100]
+
+
+def _text_media(lead: str, url: str):
+	"""The media entry + message for `url`, only if it was texted on THIS lead.
+
+	We fetch the URL stored on the message, never the one the browser sent, so
+	this endpoint can't be pointed at an arbitrary address.
+	"""
+	want = media_source_key(url=url)
+	base = (url or "").split("?", 1)[0]
+	rows = frappe.db.sql(
+		"""select name, media, message_date, creation from `tabQuo Message`
+		where reference_doctype='CRM Lead' and reference_docname=%s and media like %s""",
+		(lead, f"%{base}%"),
+		as_dict=True,
+	)
+	for r in rows:
+		try:
+			media = json.loads(r.media or "[]")
+		except Exception:
+			continue
+		for m in media or []:
+			if m.get("url") and media_source_key(url=m["url"]) == want:
+				return m, r
+	return None, None
+
+
+def _email_file(lead: str, file: str):
+	"""The File doc, only if it hangs off an email on THIS lead."""
+	f = frappe.db.get_value(
+		"File", file, ["name", "attached_to_doctype", "attached_to_name", "file_name"], as_dict=True
+	)
+	if not f or f.attached_to_doctype != "Communication":
+		return None
+	comm = f.attached_to_name
+	linked = frappe.db.exists(
+		"Communication", {"name": comm, "reference_doctype": "CRM Lead", "reference_name": lead}
+	) or frappe.db.exists(
+		"Communication Link",
+		{"parent": comm, "link_doctype": "CRM Lead", "link_name": lead},
+	)
+	return frappe.get_doc("File", file) if linked else None
+
+
+@frappe.whitelist()
+def save_media_to_photos(lead: str, url: str = "", file: str = ""):
+	"""Copy ONE picture from a text (`url`) or an email (`file`) into the lead's
+	Photos folder. Idempotent: a picture already saved comes back `already=True`.
+
+	One picture per request for the same reason as `upload_lead_photo`; the
+	activity feed's "Save all N photos" button just loops over this.
+	"""
+	_check(lead, "write")
+	if not (url or file):
+		frappe.throw(_("Nothing to save."))
+
+	source = media_source_key(url=url, file=file)
+
+	if file:
+		fdoc = _email_file(lead, file)
+		if not fdoc:
+			frappe.throw(_("That attachment isn't on this lead."), frappe.PermissionError)
+		data = fdoc.get_content()
+		if isinstance(data, str):
+			data = data.encode()
+		name = fdoc.file_name or file
+		mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+	else:
+		media, msg = _text_media(lead, url)
+		if not media:
+			frappe.throw(_("That picture isn't on this lead."), frappe.PermissionError)
+		try:
+			r = requests.get(media["url"], timeout=120, stream=True)
+			r.raise_for_status()
+			buf = io.BytesIO()
+			for chunk in r.iter_content(1024 * 1024):
+				buf.write(chunk)
+				if buf.tell() > MAX_MEDIA_BYTES:
+					frappe.throw(_("That file is too large to copy."))
+			data = buf.getvalue()
+		except frappe.ValidationError:
+			raise
+		except Exception:
+			frappe.log_error(title="Lead photos: text media fetch failed", message=frappe.get_traceback())
+			frappe.throw(_("Couldn't download that picture from the text."))
+		mime = (media.get("type") or r.headers.get("Content-Type") or "").split(";")[0].strip()
+		when = frappe.utils.get_datetime(msg.message_date or msg.creation)
+		ext = source.rsplit(".", 1)[-1] if "." in source[-6:] else (mime.split("/")[-1] or "jpg")
+		name = f"Texted {when:%Y-%m-%d %H%M} {source[4:].rsplit('.', 1)[0][:8]}.{ext}"
+
+	if not mime.startswith(ALLOWED_PREFIXES):
+		frappe.throw(_("Only photos and videos can be saved to Photos."))
+	if not data:
+		frappe.throw(_("That file was empty."))
+
+	token = _token()
+	folder = _resolve_folder(token, lead, create=True)
+	for existing in _list_files(token, folder["id"]):
+		if existing.get("source") == source:
+			return {**existing, "already": True}
+
+	created = _upload_bytes(token, folder["id"], name, mime, data, source=source)
+	_publish(lead)
+	return _shape(created)

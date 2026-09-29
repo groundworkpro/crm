@@ -38,6 +38,69 @@
           {{ __('To') }}: {{ msg.data?.recipients }}
         </div>
         <EmailContent :content="msg.data?.content || ''" />
+        <!-- attachments: pictures as thumbnails that can go to the lead's
+             Photos folder, everything else as a file chip -->
+        <div v-if="msg.data?.attachments?.length" class="mt-2 flex flex-col gap-2">
+          <div v-if="pictures(msg).length" class="flex flex-wrap gap-1.5">
+            <div
+              v-for="a in pictures(msg)"
+              :key="a.name"
+              class="group relative size-24 overflow-hidden rounded-md bg-surface-gray-2"
+            >
+              <a :href="a.file_url" target="_blank" rel="noopener noreferrer">
+                <img
+                  :src="a.file_url"
+                  :alt="a.file_name"
+                  loading="lazy"
+                  class="size-full object-cover"
+                />
+              </a>
+              <span
+                v-if="saves.enabled && saves.isSaved({ file: a.name })"
+                class="pointer-events-none absolute bottom-1 right-1 rounded-full bg-black/60 px-1.5 text-2xs text-white"
+              >
+                ✓ {{ __('Saved') }}
+              </span>
+            </div>
+          </div>
+          <div v-if="otherFiles(msg).length" class="flex flex-wrap gap-2">
+            <AttachmentItem
+              v-for="a in otherFiles(msg)"
+              :key="a.name"
+              :label="a.file_name"
+              :url="a.file_url"
+            />
+          </div>
+          <div v-if="saves.enabled && pictures(msg).length">
+            <template v-for="st in [emailRunState(msg)]" :key="msg.name">
+              <span
+                v-if="st.saved === st.total"
+                class="inline-flex items-center gap-1 rounded-md bg-surface-green-2 px-2.5 py-1 text-xs font-medium text-ink-green-3"
+              >
+                ✓
+                {{
+                  st.total === 1
+                    ? __('Saved to Photos')
+                    : __('{0} photos saved to Photos').format(st.total)
+                }}
+              </span>
+              <span v-else-if="st.pending" class="text-xs text-ink-gray-5">
+                {{ __('Saving {0} of {1}…').format(st.saved + 1, st.total) }}
+              </span>
+              <Button
+                v-else
+                size="sm"
+                variant="solid"
+                :label="
+                  st.total === 1
+                    ? __('Save photo to Photos')
+                    : __('Save all {0} photos to Photos').format(st.total - st.saved)
+                "
+                @click="saves.save(pictures(msg).map((a) => ({ file: a.name })))"
+              />
+            </template>
+          </div>
+        </div>
         <div class="mt-2 flex justify-end">
           <Button
             variant="ghost"
@@ -53,6 +116,8 @@
 
 <script setup>
 import EmailContent from '@/components/Activities/EmailContent.vue'
+import AttachmentItem from '@/components/AttachmentItem.vue'
+import { useLeadPhotoSaves } from '@/composables/leadPhotoSaves'
 import ReplyIcon from '@/components/Icons/ReplyIcon.vue'
 import { formatDate } from '@/utils'
 import { Button } from 'frappe-ui'
@@ -60,8 +125,27 @@ import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   messages: { type: Array, default: () => [] },
+  // CRM Lead name; enables "Save to Photos" on pictures attached to emails
+  lead: { type: String, default: '' },
 })
 const emit = defineEmits(['reply'])
+
+const saves = useLeadPhotoSaves(props.lead)
+
+const isPicture = (a) =>
+  /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(a.file_name || a.file_url || '')
+const pictures = (msg) => (msg.data?.attachments || []).filter(isPicture)
+const otherFiles = (msg) =>
+  (msg.data?.attachments || []).filter((a) => !isPicture(a))
+
+function emailRunState(msg) {
+  const items = pictures(msg).map((a) => ({ file: a.name }))
+  return {
+    total: items.length,
+    saved: items.filter((i) => saves.isSaved(i)).length,
+    pending: items.some((i) => saves.isPending(i)),
+  }
+}
 
 const ordered = computed(() =>
   [...props.messages].sort(

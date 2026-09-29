@@ -4,6 +4,22 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Save texted / emailed pictures to the lead's Photos folder from the activity feed** (2026-09-29) —
+  Lance: pictures people text or email in should be savable straight into the CRM,
+  several at once. Direction A of three mockups. In the lead Activity feed, each run
+  of incoming picture texts (a gap of more than two hours starts a new run) gets one
+  "Save all N photos to Photos" button under its newest message; hovering one picture
+  shows "Save to Photos" for just that one. Emails in the thread view now show their
+  picture attachments as thumbnails with the same button. Pictures go to the lead's
+  Google Drive photo folder (`crm/api/photos.py`), not Frappe's File table.
+  New `save_media_to_photos(lead, url|file)` copies ONE picture per request. It only
+  fetches a URL stored on a `Quo Message` of that lead (it never fetches whatever URL
+  the browser sent), or a File attached to a Communication linked to that lead. Each
+  Drive file gets `appProperties.crm_source` (`quo:<media file name>` / `file:<File name>`),
+  which `get_lead_photos` returns as `source`. That makes saving idempotent and drives
+  the "Saved" badges. `media_source_key` must match `sourceKey()` in
+  `frontend/src/composables/leadPhotoSaves.js`. The upload body moved into
+  `_upload_bytes`, which `upload_lead_photo` shares. Leads only; deals get no button.
 - **Comps by address (no CRM record) + BatchData comps bought once per house through PropWarehouse** (2026-09-29) —
   for Knock's comps panel, and so every system shares one cache. **BatchData**:
   `batchdata_comps.fetch_for_lead` now buys through propwarehouse-api

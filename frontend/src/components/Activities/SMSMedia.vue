@@ -2,13 +2,37 @@
   <div v-if="media?.length" class="flex flex-col gap-1.5">
     <template v-for="(m, i) in media" :key="i">
       <!-- images: inline thumbnail, click opens the pageable lightbox -->
-      <img
-        v-if="isImage(m)"
-        :src="m.url"
-        loading="lazy"
-        class="max-h-64 max-w-full cursor-zoom-in rounded-md object-cover"
-        @click="openAt(m)"
-      />
+      <div v-if="isImage(m)" class="group relative w-fit max-w-full">
+        <img
+          :src="m.url"
+          loading="lazy"
+          class="max-h-64 max-w-full cursor-zoom-in rounded-md object-cover"
+          @click="openAt(m)"
+        />
+        <!-- save to the lead's Photos folder (only when a lead is given) -->
+        <template v-if="saves.enabled">
+          <span
+            v-if="saves.isSaved(m)"
+            class="pointer-events-none absolute bottom-1.5 right-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-white"
+          >
+            ✓ {{ __('Saved') }}
+          </span>
+          <span
+            v-else-if="saves.isPending(m)"
+            class="pointer-events-none absolute bottom-1.5 right-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-white"
+          >
+            {{ __('Saving…') }}
+          </span>
+          <button
+            v-else
+            type="button"
+            class="absolute bottom-1.5 right-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs text-white opacity-0 transition-opacity hover:bg-black/80 group-hover:opacity-100"
+            @click.stop="saves.save([{ url: m.url }])"
+          >
+            {{ __('Save to Photos') }}
+          </button>
+        </template>
+      </div>
       <!-- videos: inline player with controls -->
       <video
         v-else-if="isVideo(m)"
@@ -43,12 +67,17 @@
 <script setup>
 import AttachmentIcon from '@/components/Icons/AttachmentIcon.vue'
 import ImageLightbox from '@/components/Activities/ImageLightbox.vue'
+import { useLeadPhotoSaves } from '@/composables/leadPhotoSaves'
 import { computed, ref } from 'vue'
 
 const props = defineProps({
   // [{ url, type }] — `type` is the MMS mime type from Quo (e.g. image/jpeg)
   media: { type: Array, default: () => [] },
+  // CRM Lead name; when set, each picture gets a "Save to Photos" button
+  lead: { type: String, default: '' },
 })
+
+const saves = useLeadPhotoSaves(props.lead)
 
 function isImage(m) {
   return (m.type || '').startsWith('image/')
