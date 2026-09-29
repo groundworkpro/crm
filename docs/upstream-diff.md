@@ -19,6 +19,18 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Comps: every Zillow call goes through PropWarehouse (2026-09-29)**. The
+  area search (sold / for sale / pending), the per-comp sale-history lookups and
+  the lead's own facts used to call RapidAPI directly from the CRM, so a circle
+  or house another app had already bought was bought again. They now ask
+  propwarehouse-api (`/zillow/search?full=true&include_pending=true`,
+  `/zillow/property`) and share its store. RapidAPI is called directly only when
+  the warehouse is unreachable or too old to have the route; a warehouse failure
+  (its quota floor, Zillow down) is NOT a reason to spend the key directly. The
+  CRM's own Redis caches stay in front, so call volume can only go down.
+  Needs propwarehouse-api `18b780d` (full/include_pending) — deployed first.
+  `crm/api/vendor_facts.py`, `zillow_comps._warehouse_search` /
+  `_property_bodies`, `zillow._fetch`; tests `unit_test_zillow_via_warehouse.py`.
 - **Comps: no 50-comp cap; listings get the paid lookups first** (2026-09-28) —
   `get_lead_comps` drew only the 50 nearest matches, so a dense cluster of sales
   pushed every listing off the board. 2027 Willow Cir, Centerville MN (PROP-00017)

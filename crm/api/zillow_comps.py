@@ -662,12 +662,69 @@ def _search_window(coordinates, status_type, sold_in_last=None, min_price=None, 
 	)
 
 
+def _kind_for(status_type):
+	if status_type == "ForRent":
+		return "rent"
+	if status_type == "ForSale":
+		return "sale"
+	return "sold"
+
+
+def _warehouse_search(coordinates, status_type, sold_in_last=None):
+	"""The same circle through PropWarehouse. -> (owned, rows, complete).
+
+	`owned` False means the warehouse is down or too old to have the route, and
+	the caller should fall back to RapidAPI directly. When it is True the
+	warehouse's answer stands even if it is a failure (quota floor, Zillow
+	down): spending the key directly then would step round the warehouse's
+	quota floor rather than respect it.
+
+	The circle is parsed back out of the `lon lat,diameter` string so the
+	warehouse is asked EXACTLY what the direct path would have asked, integer
+	diameter and all.
+	"""
+	from crm.api import vendor_facts
+
+	try:
+		point, diameter = coordinates.split(",")
+		lng, lat = (float(x) for x in point.split())
+		radius = float(diameter) / 2
+	except (ValueError, AttributeError):
+		return False, None, False
+	owned, env = vendor_facts.payload_or_fallback(
+		vendor_facts.zillow_search(
+			lat, lng, radius, status_type, sold_in_last, include_pending=status_type == "ForSale"
+		)
+	)
+	if not owned:
+		return False, None, False
+	payload = (env or {}).get("payload")
+	if not env.get("ok") or not isinstance(payload, dict):
+		return True, None, False
+	kind = _kind_for(status_type)
+	rows, seen = [], set()
+	for prop in payload.get("results") or []:
+		shaped = _shape_search(prop, kind)
+		if not shaped or shaped.get("zpid") in seen:
+			continue
+		seen.add(shaped["zpid"])
+		rows.append(shaped)
+	return True, rows, not payload.get("capped")
+
+
 def _search(coordinates, status_type, sold_in_last=None):
 	"""All solds/listings in the circle. Price-splits when a window exceeds 800.
+
+	PropWarehouse first (its store is shared with every other app, so a circle
+	anyone already bought is free); RapidAPI directly only when the warehouse
+	is unreachable.
 
 	`complete` is False when we stopped early (quota, call budget, a mid-run
 	error). Those must not be cached for a week or we hide the rest of the circle.
 	"""
+	owned, rows, complete = _warehouse_search(coordinates, status_type, sold_in_last)
+	if owned:
+		return rows, complete
 	rows, complete = _search_window(coordinates, status_type, sold_in_last)
 	if rows is None:
 		return None, False
@@ -842,9 +899,7 @@ def _pin_facts_many(addresses, fetch=True):
 	if not misses or not fetch:
 		return out
 
-	bodies = zillow_api.fetch_many(
-		[("/property", {"address": a}) for a in misses], "Zillow: pin lookup failed"
-	)
+	bodies = _property_bodies(misses)
 	for address, raw in zip(misses, bodies):
 		facts = zillow_api._normalize(raw) if raw else None
 		if raw is None:
@@ -856,6 +911,41 @@ def _pin_facts_many(addresses, fetch=True):
 		# Zillow cannot resolve would otherwise be re-billed on every open.
 		_cache_set(_pin_key(address), facts or {})
 		out[address] = facts
+	return out
+
+
+#: A remembered "Zillow has no such house" from the warehouse. Distinct from
+#: None (the call failed) so the pin cache can store the negative answer.
+_NO_MATCH = {}
+
+
+def _property_bodies(addresses):
+	"""Raw `/property` bodies for many addresses -> [body|_NO_MATCH|None].
+
+	PropWarehouse first, RapidAPI directly only for the addresses the warehouse
+	could not be asked about at all (down, or an old build without the route).
+	A warehouse miss comes back as `_NO_MATCH`, a warehouse failure (quota,
+	Zillow down) as None so it is retried on the next open rather than cached.
+	"""
+	from crm.api import vendor_facts
+
+	out = [None] * len(addresses)
+	direct = []
+	for i, env in enumerate(vendor_facts.zillow_property_many(addresses)):
+		owned, env = vendor_facts.payload_or_fallback(env)
+		if not owned:
+			direct.append(i)
+		elif env.get("ok") and env.get("matched") and env.get("payload"):
+			out[i] = env["payload"]
+		elif env.get("ok"):
+			out[i] = _NO_MATCH
+	if direct:
+		bodies = zillow_api.fetch_many(
+			[("/property", {"address": addresses[i]}) for i in direct],
+			"Zillow: pin lookup failed",
+		)
+		for i, body in zip(direct, bodies):
+			out[i] = body
 	return out
 
 
