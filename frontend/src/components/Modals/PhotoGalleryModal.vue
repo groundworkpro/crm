@@ -263,7 +263,7 @@ async function upload(list) {
   await photos.reload()
 
   if (failed.value)
-    toast.error(__('{0} file(s) failed to upload').format(failed.value))
+    toast.error(__('{0} file(s) failed to upload', [failed.value]))
   else toast.success(__('Photos added'))
 }
 

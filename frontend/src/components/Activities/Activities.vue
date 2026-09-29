@@ -237,7 +237,11 @@
             v-if="activity.activity_type == 'email_thread'"
             class="pb-5 mt-px"
           >
-            <EmailThread :messages="activity.messages" @reply="replyToEmail" />
+            <EmailThread
+              :messages="activity.messages"
+              :lead="photoLead"
+              @reply="replyToEmail"
+            />
           </div>
           <div
             v-else-if="activity.activity_type == 'communication'"
@@ -349,9 +353,54 @@
               <SMSMedia
                 v-if="activity.media?.length"
                 :media="activity.media"
+                :lead="photoLead"
                 :class="activity.message ? 'mb-1.5' : ''"
               />
               <span v-if="activity.message">{{ activity.message }}</span>
+            </div>
+            <!-- one button for a whole run of picture texts (contractors send
+                 one photo per text), shown under the newest message of the run -->
+            <div
+              v-if="photoRuns[activity.name]"
+              class="mt-1.5 flex items-center gap-2 text-xs"
+            >
+              <template v-for="run in [photoRunState(activity.name)]" :key="0">
+                <span
+                  v-if="run.saved === run.total"
+                  class="inline-flex items-center gap-1 rounded-md bg-surface-green-2 px-2.5 py-1 font-medium text-ink-green-3"
+                >
+                  <FeatherIcon name="check" class="size-3.5" />
+                  {{
+                    run.total === 1
+                      ? __('Saved to Photos')
+                      : __('{0} photos saved to Photos', [run.total])
+                  }}
+                </span>
+                <span
+                  v-else-if="run.pending"
+                  class="inline-flex items-center gap-1 rounded-md bg-surface-gray-2 px-2.5 py-1 font-medium text-ink-gray-7"
+                >
+                  <FeatherIcon name="loader" class="size-3.5 animate-spin" />
+                  {{ __('Saving {0} of {1}…', [run.saved + 1, run.total]) }}
+                </span>
+                <Button
+                  v-else
+                  size="sm"
+                  variant="solid"
+                  @click="photoSaves.save(photoRuns[activity.name])"
+                >
+                  <template #prefix>
+                    <FeatherIcon name="download" class="size-3.5" />
+                  </template>
+                  {{
+                    run.saved
+                      ? __('Save {0} more to Photos', [run.total - run.saved])
+                      : run.total === 1
+                        ? __('Save photo to Photos')
+                        : __('Save all {0} photos to Photos', [run.total])
+                  }}
+                </Button>
+              </template>
             </div>
           </div>
           <div
@@ -792,6 +841,10 @@ import WhatsAppBox from '@/components/Activities/WhatsAppBox.vue'
 import SMSArea from '@/components/Activities/SMSArea.vue'
 import TimelineAvatar from '@/components/Activities/TimelineAvatar.vue'
 import SMSMedia from '@/components/Activities/SMSMedia.vue'
+import {
+  useLeadPhotoSaves,
+  isSavable,
+} from '@/composables/leadPhotoSaves'
 import SMSBox from '@/components/Activities/SMSBox.vue'
 import LoadingIndicator from '@/components/Icons/LoadingIndicator.vue'
 import EmptyState from '@/components/ListViews/EmptyState.vue'
@@ -1349,6 +1402,56 @@ const feedItems = computed(() => {
   }
   return out
 })
+
+// --- save texted pictures into the lead's Photos folder -------------------
+// Only a lead has a Photos folder (crm/api/photos.py).
+const photoLead = computed(() =>
+  props.doctype === 'CRM Lead' ? props.docname : '',
+)
+const photoSaves = useLeadPhotoSaves(
+  props.doctype === 'CRM Lead' ? props.docname : '',
+)
+
+// Incoming picture texts (newest first, as the feed reads) form a run until we
+// text back or more than two hours pass; the run's pictures are keyed under its
+// first (newest) message.
+const photoRuns = computed(() => {
+  const runs = {}
+  if (!photoSaves.enabled || title.value !== 'Activity') return runs
+  let head = null
+  let prev = null
+  for (const a of feedItems.value) {
+    const pics =
+      a.activity_type === 'incoming_text' && a.status !== 'scheduled'
+        ? (a.media || []).filter((m) => isSavable(m.type || ''))
+        : []
+    // a reply from us ends the run; a comment, call, status change or a plain
+    // text from them in between does not (Dennis logs notes mid-batch)
+    if (a.activity_type === 'outgoing_text') {
+      head = null
+      prev = null
+      continue
+    }
+    if (!pics.length) continue
+    const gap = prev ? new Date(prev.creation) - new Date(a.creation) : 0
+    if (!head || gap > 2 * 60 * 60 * 1000) {
+      head = a.name
+      runs[head] = []
+    }
+    runs[head].push(...pics.map((m) => ({ url: m.url })))
+    prev = a
+  }
+  return runs
+})
+
+function photoRunState(name) {
+  const items = photoRuns.value[name] || []
+  return {
+    total: items.length,
+    saved: items.filter((i) => photoSaves.isSaved(i)).length,
+    pending: items.some((i) => photoSaves.isPending(i)),
+  }
+}
 
 function sortByCreation(list) {
   return list.sort((a, b) => new Date(a.creation) - new Date(b.creation))
