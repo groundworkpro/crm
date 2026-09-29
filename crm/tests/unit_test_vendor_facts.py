@@ -27,30 +27,30 @@ class BaseUrlResolution(unittest.TestCase):
 
 	def test_unset_falls_back_to_the_scraper(self):
 		# Today's behaviour, and the thing that must not change on deploy.
-		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+		with patch("crm.api.geo._direct_url", return_value="http://scraper:8110"):
 			self.assertEqual(vendor_facts._base_url(), "http://scraper:8110")
 
 	def test_site_config_wins(self):
 		import frappe
 
 		with patch.dict(frappe.conf, {"propwarehouse_url": "http://warehouse:8120"}), \
-			 patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+			 patch("crm.api.geo._direct_url", return_value="http://scraper:8110"):
 			self.assertEqual(vendor_facts._base_url(), "http://warehouse:8120")
 
 	def test_env_var_is_used_when_site_config_is_silent(self):
 		os.environ["PROPWAREHOUSE_URL"] = "http://warehouse-env:8120"
-		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+		with patch("crm.api.geo._direct_url", return_value="http://scraper:8110"):
 			self.assertEqual(vendor_facts._base_url(), "http://warehouse-env:8120")
 
 	def test_trailing_slash_is_stripped(self):
 		# `_get` builds f"{base}{path}", so a trailing slash would double it.
 		os.environ["PROPWAREHOUSE_URL"] = "http://warehouse:8120/"
-		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+		with patch("crm.api.geo._direct_url", return_value="http://scraper:8110"):
 			self.assertEqual(vendor_facts._base_url(), "http://warehouse:8120")
 
 	def test_blank_config_is_not_a_base_url(self):
 		os.environ["PROPWAREHOUSE_URL"] = "   "
-		with patch("crm.api.geo._base_url", return_value="http://scraper:8110"):
+		with patch("crm.api.geo._direct_url", return_value="http://scraper:8110"):
 			self.assertEqual(vendor_facts._base_url(), "http://scraper:8110")
 
 

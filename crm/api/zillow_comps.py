@@ -662,12 +662,69 @@ def _search_window(coordinates, status_type, sold_in_last=None, min_price=None, 
 	)
 
 
+def _kind_for(status_type):
+	if status_type == "ForRent":
+		return "rent"
+	if status_type == "ForSale":
+		return "sale"
+	return "sold"
+
+
+def _warehouse_search(coordinates, status_type, sold_in_last=None):
+	"""The same circle through PropWarehouse. -> (owned, rows, complete).
+
+	`owned` False means the warehouse is down or too old to have the route, and
+	the caller should fall back to RapidAPI directly. When it is True the
+	warehouse's answer stands even if it is a failure (quota floor, Zillow
+	down): spending the key directly then would step round the warehouse's
+	quota floor rather than respect it.
+
+	The circle is parsed back out of the `lon lat,diameter` string so the
+	warehouse is asked EXACTLY what the direct path would have asked, integer
+	diameter and all.
+	"""
+	from crm.api import vendor_facts
+
+	try:
+		point, diameter = coordinates.split(",")
+		lng, lat = (float(x) for x in point.split())
+		radius = float(diameter) / 2
+	except (ValueError, AttributeError):
+		return False, None, False
+	owned, env = vendor_facts.payload_or_fallback(
+		vendor_facts.zillow_search(
+			lat, lng, radius, status_type, sold_in_last, include_pending=status_type == "ForSale"
+		)
+	)
+	if not owned:
+		return False, None, False
+	payload = (env or {}).get("payload")
+	if not env.get("ok") or not isinstance(payload, dict):
+		return True, None, False
+	kind = _kind_for(status_type)
+	rows, seen = [], set()
+	for prop in payload.get("results") or []:
+		shaped = _shape_search(prop, kind)
+		if not shaped or shaped.get("zpid") in seen:
+			continue
+		seen.add(shaped["zpid"])
+		rows.append(shaped)
+	return True, rows, not payload.get("capped")
+
+
 def _search(coordinates, status_type, sold_in_last=None):
 	"""All solds/listings in the circle. Price-splits when a window exceeds 800.
+
+	PropWarehouse first (its store is shared with every other app, so a circle
+	anyone already bought is free); RapidAPI directly only when the warehouse
+	is unreachable.
 
 	`complete` is False when we stopped early (quota, call budget, a mid-run
 	error). Those must not be cached for a week or we hide the rest of the circle.
 	"""
+	owned, rows, complete = _warehouse_search(coordinates, status_type, sold_in_last)
+	if owned:
+		return rows, complete
 	rows, complete = _search_window(coordinates, status_type, sold_in_last)
 	if rows is None:
 		return None, False
@@ -818,7 +875,7 @@ def _pin_facts(address):
 	return _pin_facts_many([address]).get(address)
 
 
-def _pin_facts_many(addresses):
+def _pin_facts_many(addresses, fetch=True):
 	"""Cached `/property` facts for many pins at once. -> {address: facts|None}.
 
 	Three phases, and the split is the point: read every cache entry HERE, fetch
@@ -839,12 +896,10 @@ def _pin_facts_many(addresses):
 			out[address] = hit or None
 		else:
 			misses.append(address)
-	if not misses:
+	if not misses or not fetch:
 		return out
 
-	bodies = zillow_api.fetch_many(
-		[("/property", {"address": a}) for a in misses], "Zillow: pin lookup failed"
-	)
+	bodies = _property_bodies(misses)
 	for address, raw in zip(misses, bodies):
 		facts = zillow_api._normalize(raw) if raw else None
 		if raw is None:
@@ -856,6 +911,41 @@ def _pin_facts_many(addresses):
 		# Zillow cannot resolve would otherwise be re-billed on every open.
 		_cache_set(_pin_key(address), facts or {})
 		out[address] = facts
+	return out
+
+
+#: A remembered "Zillow has no such house" from the warehouse. Distinct from
+#: None (the call failed) so the pin cache can store the negative answer.
+_NO_MATCH = {}
+
+
+def _property_bodies(addresses):
+	"""Raw `/property` bodies for many addresses -> [body|_NO_MATCH|None].
+
+	PropWarehouse first, RapidAPI directly only for the addresses the warehouse
+	could not be asked about at all (down, or an old build without the route).
+	A warehouse miss comes back as `_NO_MATCH`, a warehouse failure (quota,
+	Zillow down) as None so it is retried on the next open rather than cached.
+	"""
+	from crm.api import vendor_facts
+
+	out = [None] * len(addresses)
+	direct = []
+	for i, env in enumerate(vendor_facts.zillow_property_many(addresses)):
+		owned, env = vendor_facts.payload_or_fallback(env)
+		if not owned:
+			direct.append(i)
+		elif env.get("ok") and env.get("matched") and env.get("payload"):
+			out[i] = env["payload"]
+		elif env.get("ok"):
+			out[i] = _NO_MATCH
+	if direct:
+		bodies = zillow_api.fetch_many(
+			[("/property", {"address": addresses[i]}) for i in direct],
+			"Zillow: pin lookup failed",
+		)
+		for i, body in zip(direct, bodies):
+			out[i] = body
 	return out
 
 
@@ -989,8 +1079,12 @@ def _merge_one(existing, incoming, today):
 	return None
 
 
-def refresh_pins(rows, cap=PIN_REFRESH_CAP):
-	"""B: `/property` the nearest ISTL-origin pins. Mutates `rows`. Returns counts."""
+def refresh_pins(rows, cap=PIN_REFRESH_CAP, skip_keys=None):
+	"""B: `/property` the nearest ISTL-origin pins. Mutates `rows`. Returns counts.
+
+	`skip_keys` (street keys): pins Redfin already answered for. Redfin's merge
+	overwrites their price, sale and size anyway, so a Zillow read is waste.
+	"""
 	today = frappe.utils.today()
 	checked = updated = 0
 
@@ -1002,6 +1096,10 @@ def refresh_pins(rows, cap=PIN_REFRESH_CAP):
 			and (not is_adc(row) or qualified_address(row)))
 
 	candidates = [r for r in rows if _needs_zillow_shape(r)]
+	if skip_keys:
+		from crm.api import redfin
+
+		candidates = [r for r in candidates if redfin.street_key(r.get("address")) not in skip_keys]
 	candidates.sort(key=lambda r: r.get("distance_mi") or 99)
 	candidates = candidates[: max(0, int(cap))]
 	# One batch for the whole set, so the nearest 24 pins cost about what two used
@@ -1056,7 +1154,7 @@ def refresh_pins(rows, cap=PIN_REFRESH_CAP):
 	return {"checked": checked, "updated": updated}
 
 
-def attach_sale_history(rows, today=None):
+def attach_sale_history(rows, today=None, cache_only=False, history_only=False):
 	"""Give every row in `rows` its sale history. Mutates them. -> status dict.
 
 	Called with the FINAL, already-filtered and already-capped board, because that
@@ -1083,8 +1181,16 @@ def attach_sale_history(rows, today=None):
 		info["missing"] = len(rows)
 		return info
 
-	facts_by_address = _pin_facts_many([r["address"] for r in rows])
+	facts_by_address = _pin_facts_many([r["address"] for r in rows], fetch=not cache_only)
 	for row in rows:
+		# cache_only (past SALE_HISTORY_BUDGET): an address never looked up is
+		# "not checked", not "no history" -- the UI must not read it as clean.
+		if cache_only and row["address"] not in facts_by_address:
+			row["sale_history"] = None
+			row["sale_history_missing"] = True
+			row["sale_history_unchecked"] = True
+			info["unchecked"] = info.get("unchecked", 0) + 1
+			continue
 		info["checked"] += 1
 		facts = facts_by_address.get(row["address"])
 		# Year/beds/baths/sqft live on this same `/property` payload. Search almost
@@ -1092,7 +1198,9 @@ def attach_sale_history(rows, today=None):
 		# Zillow-origin pins rendered with no year even though we had already paid
 		# for it. Measured on a live board: 0 of 50 Broken Arrow comps had a year;
 		# the subject, from the same endpoint, had 2005.
-		if facts:
+		# history_only: houses Redfin already answered for this load. Its status
+		# is hours old; this cache can be a month old. Take the timeline only.
+		if facts and not history_only:
 			_apply_facts(
 				row,
 				{
@@ -1115,9 +1223,12 @@ def attach_sale_history(rows, today=None):
 		# priceHistory, not our reading of it, so a parser fix costs nothing and the
 		# ages inside are always computed against today rather than against whenever
 		# the entry happened to be written.
-		history = sale_history.parse(
-			(facts or {}).get("price_history"), today, (facts or {}).get("home_status")
-		)
+		status = (facts or {}).get("home_status")
+		if history_only:
+			from crm.api import redfin_history
+
+			status = redfin_history.home_status(row)
+		history = sale_history.parse((facts or {}).get("price_history"), today, status)
 		if not history:
 			# Two different nothings, deliberately collapsed to one for the UI: an
 			# address Zillow cannot resolve, and a house with no recorded history.
@@ -1149,8 +1260,15 @@ def attach_sale_history(rows, today=None):
 	return info
 
 
-def apply(doc, out, lat, lng, radius):
-	"""A then B. Mutates `out`. Returns a small status dict for the UI."""
+def apply(doc, out, lat, lng, radius, area=True, redfin_keys=None):
+	"""A then B. Mutates `out`. Returns a small status dict for the UI.
+
+	`area=False`: Redfin already had enough listings and sales
+	(`redfin_listings.decide`), so Zillow is not asked anything -- neither A,
+	the area search, nor B, the ISTL pin refresh; Redfin's merge corrects those
+	pins itself (`comp_merge.apply_redfin`). `redfin_keys`: street keys Redfin
+	answered for, which B skips when it does run.
+	"""
 	info = {
 		"used": False,
 		"added": 0,
@@ -1178,6 +1296,9 @@ def apply(doc, out, lat, lng, radius):
 	today = frappe.utils.today()
 	self_keys = {merge_key(doc.get("property_address") or ""), merge_key(_comps()._full_address(doc))}
 	self_keys.discard(merge_key(""))
+	if not area:
+		info["reason"] = "redfin_enough"
+		return info
 	area = area_comps(lat, lng, radius)
 	info["location"] = area.get("location") or ""
 	info["cached"] = bool(area.get("cached"))
@@ -1219,7 +1340,7 @@ def apply(doc, out, lat, lng, radius):
 			by_ll[ll] = row
 		info["added"] += 1
 
-	pins = refresh_pins(out)
+	pins = refresh_pins(out, skip_keys=redfin_keys)
 	info["pins_checked"] = pins["checked"]
 	info["updated"] += pins["updated"]
 	info["used"] = bool(info["added"] or info["updated"] or info["sold"] or info["for_sale"] or info["pins_checked"])

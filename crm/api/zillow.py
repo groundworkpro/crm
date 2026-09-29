@@ -433,9 +433,22 @@ def fetch_many(specs, error_title="Zillow: batch request failed", workers=FETCH_
 
 
 def _fetch(address: str):
-	"""One address -> Zillow's raw property blob, or None. Never raises."""
+	"""One address -> Zillow's raw property blob, or None. Never raises.
+
+	PropWarehouse first (shared 30-day store, so a house another app already
+	looked up is free); RapidAPI directly only when the warehouse is down. A
+	warehouse "no such house" is `{}`, which callers already cache as a
+	negative; a warehouse failure (quota floor, Zillow down) is None.
+	"""
 	if not address:
 		return None
+	from crm.api import vendor_facts
+
+	owned, env = vendor_facts.payload_or_fallback(vendor_facts.zillow_property(address=address))
+	if owned:
+		if not env.get("ok"):
+			return None
+		return env.get("payload") if env.get("matched") else {}
 	return _request("/property", {"address": address}, "Zillow: property lookup failed")
 
 
