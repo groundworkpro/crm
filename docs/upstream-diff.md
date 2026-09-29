@@ -19,6 +19,23 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Comps: flip warnings and ISTL pin checks from Redfin, not Zillow (2026-09-29)**.
+  Lance: switch both to Redfin. `crm/api/redfin_history.py` reads each comp's
+  Redfin timeline via the scraper's free `/history` (50 fresh reads per load, 4
+  workers, ~4.5s measured, all direct/no ZenRows; cached 7 days per house),
+  translates Redfin's words into Zillow's priceHistory vocabulary and runs the
+  same `sale_history.parse` flip rule. "Sold (MLS)" + "Sold (Public Records)"
+  within 90 days are ONE sale — left as two, the duplicate hid the real earlier
+  purchase. Houses Redfin knows but did not read this load take Zillow's 30-day
+  cache TIMELINE only (`attach_sale_history(history_only=True)`): that cache's
+  status/size is up to a month old and was flipping Redfin's fresh for-sale
+  count (38 -> 45) and inventing "for rent". Billed Zillow history is now only for
+  houses Redfin has no id for, and only when Redfin was thin. The ISTL pin
+  refresh (Zillow `/property` x12) no longer runs when Redfin is enough —
+  `comp_merge.apply_redfin` already overwrites price/sale/size on every ISTL
+  pin it matches — and when it does run it skips houses Redfin answered for.
+  PROP-00017, 1 mi: 0 Zillow/Realtor/PropWarehouse calls, 32 flips, 131 of 1002
+  unchecked; 2 mi: 0 calls, 179 flips, 5.6-7.9s.
 - **Comps: Redfin first; Zillow and Realtor only fill in (2026-09-29)**. Lance:
   Redfin is the primary comps source. `crm/api/redfin_listings.py` calls the
   scraper's free `/listings` (Redfin's own map endpoint) for on-market homes —

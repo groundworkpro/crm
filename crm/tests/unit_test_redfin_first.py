@@ -99,7 +99,7 @@ class Finish(unittest.TestCase):
 
 
 class ZillowAreaSkipped(unittest.TestCase):
-	def test_enough_redfin_skips_the_area_search_but_not_the_pin_refresh(self):
+	def test_enough_redfin_asks_zillow_nothing(self):
 		import frappe
 
 		doc = frappe._dict(property_address="1 Main St")
@@ -110,9 +110,17 @@ class ZillowAreaSkipped(unittest.TestCase):
 			c.return_value._full_address.return_value = "1 Main St"
 			info = zillow_comps.apply(doc, [], LAT, LNG, 0.5, area=False)
 		area.assert_not_called()
-		pins.assert_called_once()
+		pins.assert_not_called()
 		self.assertEqual(info["reason"], "redfin_enough")
-		self.assertEqual(info["pins_checked"], 2)
+
+
+	def test_thin_redfin_pin_refresh_skips_houses_redfin_knows(self):
+		from crm.api import redfin
+		rows = [{"address": "1 Oak St", "source": "istl", "distance_mi": 0.1},
+				{"address": "2 Elm St", "source": "istl", "distance_mi": 0.2}]
+		with patch.object(zillow_comps, "_pin_facts_many", return_value={}) as facts:
+			zillow_comps.refresh_pins(rows, skip_keys={redfin.street_key("1 Oak Street")})
+		self.assertEqual(facts.call_args[0][0], ["2 Elm St"])
 
 
 if __name__ == "__main__":

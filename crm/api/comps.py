@@ -2122,15 +2122,19 @@ def get_lead_comps(
 	# subject, and refresh the nearest ISTL pins' sale dates, before we count
 	# or filter. Soft: an outage leaves `out` as the pooled index.
 	# Rentals skip the sale circle entirely — ForRent is a different number.
-	# When Redfin already had enough, the AREA search is skipped; the ISTL pin
-	# refresh still runs (it corrects our own stale asks, it is not a source).
+	# When Redfin already had enough, Zillow is not asked at all: Redfin's merge
+	# below corrects the ISTL pins it knows. When Redfin is thin, the ISTL pin
+	# refresh skips the houses Redfin answered for.
 	try:
-		from crm.api import zillow_comps
+		from crm.api import redfin, zillow_comps
 
 		if rental:
 			base["zillow"] = zillow_comps.apply_rentals(doc, out, lat, lng, radius)
 		else:
-			base["zillow"] = zillow_comps.apply(doc, out, lat, lng, radius, area=fill_in)
+			base["zillow"] = zillow_comps.apply(
+				doc, out, lat, lng, radius, area=fill_in,
+				redfin_keys=set(redfin.coverage_index(redfin_listing_features)),
+			)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow refresh failed")
 		base["zillow"] = {"used": False, "reason": "error"}
@@ -2147,13 +2151,15 @@ def get_lead_comps(
 	# to run first because authority overwrites whatever it set.
 	# What the Sources card says about Redfin. Rentals never read the sale store.
 	redfin_meta = None
+	redfin_store_features = []
 	if redfin_istl_job is not None:
 		try:
 			from crm.api import redfin
 
 			features, meta = redfin.finish_istl_coverage(redfin_istl_job)
+			redfin_store_features = list(features or [])
 			redfin_meta = meta or {}
-			base["redfin"] = redfin.apply_istl_comps(out, features)
+			base["redfin"] = redfin.apply_istl_comps(out, redfin_listing_features + redfin_store_features)
 			redfin.maybe_rewarm(lead, meta)
 			if not rental:
 				from crm.api import comp_merge
@@ -2394,13 +2400,29 @@ def get_lead_comps(
 			# Imported again rather than relying on the binding from the refresh block
 			# above: that one lives inside a `try` whose `except` swallows an ImportError,
 			# so the name is not guaranteed to exist down here.
+			from crm.api import redfin, redfin_history
 			from crm.api import zillow_comps as _zc
 
-			paid, free = _history_order(base["comps"], SALE_HISTORY_BUDGET)
-			base["sale_history"] = _zc.attach_sale_history(paid, today)
-			cached = _zc.attach_sale_history(free, today, cache_only=True)
-			for k, v in cached.items():
-				base["sale_history"][k] = base["sale_history"].get(k, 0) + v
+			# Redfin first (free): every house it knows, listings then nearest.
+			ordered, _ = _history_order(base["comps"], len(base["comps"]))
+			index = redfin.coverage_index(redfin_listing_features + redfin_store_features)
+			base["sale_history"], lacking, unread = redfin_history.attach(ordered, today, index)
+			# Zillow only for houses Redfin does not know, and only billed when
+			# Redfin was too thin to carry the board; otherwise its free cache.
+			# Houses Redfin knows but did not read this load: the free cache only.
+			paid, free = _history_order(lacking, SALE_HISTORY_BUDGET if fill_in else 0)
+			if unread:
+				# Zillow's cache pass re-flags what it cannot find itself.
+				base["sale_history"]["unchecked"] -= len(unread)
+				for row in unread:
+					row.pop("sale_history_unchecked", None)
+			for part in (_zc.attach_sale_history(paid, today) if paid else {},
+						 _zc.attach_sale_history(free, today, cache_only=True) if free else {},
+						 _zc.attach_sale_history(unread, today, cache_only=True, history_only=True)
+						 if unread else {}):
+				for k, v in part.items():
+					if k != "source":
+						base["sale_history"][k] = base["sale_history"].get(k, 0) + v
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: sale history failed")
 			base["sale_history"] = {"checked": 0, "with_history": 0, "flips": 0, "missing": len(base["comps"])}

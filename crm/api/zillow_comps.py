@@ -1079,8 +1079,12 @@ def _merge_one(existing, incoming, today):
 	return None
 
 
-def refresh_pins(rows, cap=PIN_REFRESH_CAP):
-	"""B: `/property` the nearest ISTL-origin pins. Mutates `rows`. Returns counts."""
+def refresh_pins(rows, cap=PIN_REFRESH_CAP, skip_keys=None):
+	"""B: `/property` the nearest ISTL-origin pins. Mutates `rows`. Returns counts.
+
+	`skip_keys` (street keys): pins Redfin already answered for. Redfin's merge
+	overwrites their price, sale and size anyway, so a Zillow read is waste.
+	"""
 	today = frappe.utils.today()
 	checked = updated = 0
 
@@ -1092,6 +1096,10 @@ def refresh_pins(rows, cap=PIN_REFRESH_CAP):
 			and (not is_adc(row) or qualified_address(row)))
 
 	candidates = [r for r in rows if _needs_zillow_shape(r)]
+	if skip_keys:
+		from crm.api import redfin
+
+		candidates = [r for r in candidates if redfin.street_key(r.get("address")) not in skip_keys]
 	candidates.sort(key=lambda r: r.get("distance_mi") or 99)
 	candidates = candidates[: max(0, int(cap))]
 	# One batch for the whole set, so the nearest 24 pins cost about what two used
@@ -1146,7 +1154,7 @@ def refresh_pins(rows, cap=PIN_REFRESH_CAP):
 	return {"checked": checked, "updated": updated}
 
 
-def attach_sale_history(rows, today=None, cache_only=False):
+def attach_sale_history(rows, today=None, cache_only=False, history_only=False):
 	"""Give every row in `rows` its sale history. Mutates them. -> status dict.
 
 	Called with the FINAL, already-filtered and already-capped board, because that
@@ -1190,7 +1198,9 @@ def attach_sale_history(rows, today=None, cache_only=False):
 		# Zillow-origin pins rendered with no year even though we had already paid
 		# for it. Measured on a live board: 0 of 50 Broken Arrow comps had a year;
 		# the subject, from the same endpoint, had 2005.
-		if facts:
+		# history_only: houses Redfin already answered for this load. Its status
+		# is hours old; this cache can be a month old. Take the timeline only.
+		if facts and not history_only:
 			_apply_facts(
 				row,
 				{
@@ -1213,9 +1223,12 @@ def attach_sale_history(rows, today=None, cache_only=False):
 		# priceHistory, not our reading of it, so a parser fix costs nothing and the
 		# ages inside are always computed against today rather than against whenever
 		# the entry happened to be written.
-		history = sale_history.parse(
-			(facts or {}).get("price_history"), today, (facts or {}).get("home_status")
-		)
+		status = (facts or {}).get("home_status")
+		if history_only:
+			from crm.api import redfin_history
+
+			status = redfin_history.home_status(row)
+		history = sale_history.parse((facts or {}).get("price_history"), today, status)
 		if not history:
 			# Two different nothings, deliberately collapsed to one for the UI: an
 			# address Zillow cannot resolve, and a house with no recorded history.
@@ -1247,12 +1260,14 @@ def attach_sale_history(rows, today=None, cache_only=False):
 	return info
 
 
-def apply(doc, out, lat, lng, radius, area=True):
+def apply(doc, out, lat, lng, radius, area=True, redfin_keys=None):
 	"""A then B. Mutates `out`. Returns a small status dict for the UI.
 
-	`area=False` skips A, the area search, because Redfin already had enough
-	listings and sales (`redfin_listings.decide`). B, refreshing our own ISTL
-	pins, still runs: it corrects stale asks we already show, it is not a source.
+	`area=False`: Redfin already had enough listings and sales
+	(`redfin_listings.decide`), so Zillow is not asked anything -- neither A,
+	the area search, nor B, the ISTL pin refresh; Redfin's merge corrects those
+	pins itself (`comp_merge.apply_redfin`). `redfin_keys`: street keys Redfin
+	answered for, which B skips when it does run.
 	"""
 	info = {
 		"used": False,
@@ -1282,10 +1297,6 @@ def apply(doc, out, lat, lng, radius, area=True):
 	self_keys = {merge_key(doc.get("property_address") or ""), merge_key(_comps()._full_address(doc))}
 	self_keys.discard(merge_key(""))
 	if not area:
-		pins = refresh_pins(out)
-		info["pins_checked"] = pins["checked"]
-		info["updated"] = pins["updated"]
-		info["used"] = bool(pins["checked"])
 		info["reason"] = "redfin_enough"
 		return info
 	area = area_comps(lat, lng, radius)
@@ -1329,7 +1340,7 @@ def apply(doc, out, lat, lng, radius, area=True):
 			by_ll[ll] = row
 		info["added"] += 1
 
-	pins = refresh_pins(out)
+	pins = refresh_pins(out, skip_keys=redfin_keys)
 	info["pins_checked"] = pins["checked"]
 	info["updated"] += pins["updated"]
 	info["used"] = bool(info["added"] or info["updated"] or info["sold"] or info["for_sale"] or info["pins_checked"])
