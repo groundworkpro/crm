@@ -1752,6 +1752,18 @@ def warm_lead_area(lead):
 		return {"warmed": False, "reason": "no_location"}
 	if zillow_comps.area_is_cached(lat, lng, WARM_RADIUS_MI):
 		return {"warmed": False, "reason": "already_warm"}
+	# Redfin first, here too: no point buying a Zillow circle the comps page
+	# will not ask for. This also warms the Redfin answer the page will read.
+	try:
+		from crm.api import redfin_listings
+
+		homes, lmeta = redfin_listings.finish(redfin_listings.start(lat, lng, WARM_RADIUS_MI))
+		verdict = redfin_listings.decide(homes, lmeta, lat, lng, WARM_RADIUS_MI)
+		if not verdict["fill_in"]:
+			return {"warmed": False, "reason": "redfin_enough",
+					"listings": verdict["listings"], "recent_sales": verdict["recent_sales"]}
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Comps prewarm: Redfin listings failed")
 
 	area = zillow_comps.area_comps(lat, lng, WARM_RADIUS_MI)
 	return {
@@ -2011,6 +2023,7 @@ def get_lead_comps(
 	# (a miss lands in Redis via a background job for the next fetch instead).
 	redfin_check_job = None
 	redfin_istl_job = None
+	redfin_listings_job = None
 	realtor_job = None
 	if subject is not None:
 		try:
@@ -2021,6 +2034,15 @@ def get_lead_comps(
 				redfin_istl_job = redfin.start_istl_coverage(lat, lng, radius)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin check start failed")
+		# Redfin FIRST: its listings, pendings and recent sales decide whether
+		# Zillow and Realtor are asked at all (see `redfin_listings`).
+		if not rental:
+			try:
+				from crm.api import redfin_listings
+
+				redfin_listings_job = redfin_listings.start(lat, lng, radius)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings start failed")
 		# Third AVM for the subject tile, same thread-beside-the-refresh shape.
 		try:
 			from crm.api import apivex
@@ -2079,17 +2101,36 @@ def get_lead_comps(
 				row[key] = str(row[key])
 		out.append(row)
 
+	# Redfin first. Five listings and five recent sales from Redfin is a board;
+	# fewer, or no answer, and Zillow and Realtor fill in. Collected BEFORE the
+	# Zillow refresh because it decides whether that refresh searches the area.
+	redfin_listing_features = []
+	fill_in = True
+	if not rental and subject is not None:
+		try:
+			from crm.api import redfin_listings
+
+			homes, lmeta = redfin_listings.finish(redfin_listings_job)
+			base["redfin_first"] = redfin_listings.decide(homes, lmeta, lat, lng, radius)
+			fill_in = base["redfin_first"]["fill_in"]
+			redfin_listing_features = redfin_listings.features(homes)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings failed")
+			base["redfin_first"] = {"fill_in": True, "reason": "error"}
+
 	# ISTL asks go stale. Check Zillow for newer sales/listings around the
 	# subject, and refresh the nearest ISTL pins' sale dates, before we count
 	# or filter. Soft: an outage leaves `out` as the pooled index.
 	# Rentals skip the sale circle entirely — ForRent is a different number.
+	# When Redfin already had enough, the AREA search is skipped; the ISTL pin
+	# refresh still runs (it corrects our own stale asks, it is not a source).
 	try:
 		from crm.api import zillow_comps
 
 		if rental:
 			base["zillow"] = zillow_comps.apply_rentals(doc, out, lat, lng, radius)
 		else:
-			base["zillow"] = zillow_comps.apply(doc, out, lat, lng, radius)
+			base["zillow"] = zillow_comps.apply(doc, out, lat, lng, radius, area=fill_in)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow refresh failed")
 		base["zillow"] = {"used": False, "reason": "error"}
@@ -2117,13 +2158,26 @@ def get_lead_comps(
 			if not rental:
 				from crm.api import comp_merge
 
+				# Listings first: `apply_redfin` keeps the first copy of an
+				# address, and a house listed today beats its old sale record.
 				base["redfin"]["merge"] = comp_merge.apply_redfin(
-					out, features, lat, lng, radius, today,
+					out, redfin_listing_features + list(features or []), lat, lng, radius, today,
 					self_keys=_self_merge_keys(doc),
 				)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin ISTL overlay failed")
 			redfin_meta = {"error": "overlay"}
+	elif redfin_listing_features:
+		# No store read (no scraper URL for coverage) but listings answered.
+		try:
+			from crm.api import comp_merge
+
+			base["redfin"] = {"merge": comp_merge.apply_redfin(
+				out, redfin_listing_features, lat, lng, radius, today,
+				self_keys=_self_merge_keys(doc),
+			)}
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings merge failed")
 	redfin_status = _redfin_status(redfin_meta, base.get("redfin"), rental, redfin_istl_job)
 
 	# Realtor ADDS houses and nothing else. It is the single biggest contributor
@@ -2131,7 +2185,9 @@ def get_lead_comps(
 	# (outlier on price 45% of the time) -- so we take its inventory and ignore
 	# its opinion about anything already on the board. Rentals are excluded: this
 	# is a recorded-sale and for-sale search, not a ForRent one.
-	if not rental and subject is not None:
+	if not rental and subject is not None and not fill_in:
+		base["realtor"] = {"used": False, "added": 0, "reason": "redfin_enough"}
+	elif not rental and subject is not None:
 		try:
 			from crm.api import comp_merge
 
@@ -2430,7 +2486,10 @@ def _sources(base, redfin_status, rental):
 	tells the page to re-check while something is still on its way.
 	"""
 	z = base.get("zillow") or {}
-	if z.get("reason") in ("not_configured", "no_subject"):
+	if z.get("reason") == "redfin_enough":
+		zillow = {"state": "off", "reason": "redfin_enough",
+				  "pins_checked": z.get("pins_checked") or 0}
+	elif z.get("reason") in ("not_configured", "no_subject"):
 		zillow = {"state": "off", "reason": z.get("reason")}
 	elif z.get("reason") == "error":
 		zillow = {"state": "error"}
@@ -2450,8 +2509,8 @@ def _sources(base, redfin_status, rental):
 		realtor = {"state": "off", "reason": "rentals"}
 	elif r is None:
 		realtor = {"state": "off", "reason": "not_configured"}
-	elif r.get("reason") == "not_configured":
-		realtor = {"state": "off", "reason": "not_configured"}
+	elif r.get("reason") in ("not_configured", "redfin_enough"):
+		realtor = {"state": "off", "reason": r.get("reason")}
 	elif r.get("reason") and r.get("reason") != "no_zip" and not r.get("added"):
 		realtor = {"state": "error"}
 	else:
@@ -2486,6 +2545,10 @@ def _sources(base, redfin_status, rental):
 	else:
 		batch = {"state": "skipped"}
 
+	rf = base.get("redfin_first")
+	if rf and isinstance(redfin_status, dict):
+		redfin_status = dict(redfin_status, listings=rf.get("listings"),
+							 recent_sales=rf.get("recent_sales"))
 	return {
 		"zillow": zillow,
 		"redfin": redfin_status,

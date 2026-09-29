@@ -1247,8 +1247,13 @@ def attach_sale_history(rows, today=None, cache_only=False):
 	return info
 
 
-def apply(doc, out, lat, lng, radius):
-	"""A then B. Mutates `out`. Returns a small status dict for the UI."""
+def apply(doc, out, lat, lng, radius, area=True):
+	"""A then B. Mutates `out`. Returns a small status dict for the UI.
+
+	`area=False` skips A, the area search, because Redfin already had enough
+	listings and sales (`redfin_listings.decide`). B, refreshing our own ISTL
+	pins, still runs: it corrects stale asks we already show, it is not a source.
+	"""
 	info = {
 		"used": False,
 		"added": 0,
@@ -1276,6 +1281,13 @@ def apply(doc, out, lat, lng, radius):
 	today = frappe.utils.today()
 	self_keys = {merge_key(doc.get("property_address") or ""), merge_key(_comps()._full_address(doc))}
 	self_keys.discard(merge_key(""))
+	if not area:
+		pins = refresh_pins(out)
+		info["pins_checked"] = pins["checked"]
+		info["updated"] = pins["updated"]
+		info["used"] = bool(pins["checked"])
+		info["reason"] = "redfin_enough"
+		return info
 	area = area_comps(lat, lng, radius)
 	info["location"] = area.get("location") or ""
 	info["cached"] = bool(area.get("cached"))

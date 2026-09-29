@@ -19,6 +19,22 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Comps: Redfin first; Zillow and Realtor only fill in (2026-09-29)**. Lance:
+  Redfin is the primary comps source. `crm/api/redfin_listings.py` calls the
+  scraper's free `/listings` (Redfin's own map endpoint) for on-market homes —
+  active, coming soon, contingent, PENDING — and last-12-months solds, cached 6h
+  in Redis. The stored Redfin sweep only ever held sales, so listings and
+  pendings used to come from Zillow alone. The Zillow AREA search and the Realtor
+  search now run only when Redfin has fewer than 5 listings OR fewer than 5
+  recent sales in the circle, or did not answer / answered half. The Zillow ISTL
+  pin refresh still runs (it fixes our own stale asks). The Today-board prewarm
+  applies the same rule, so it no longer buys Zillow circles the page won't read.
+  Redfin listings merge through `comp_merge.apply_redfin`, listings ahead of the
+  store's old sales so a relisted house boards as the listing. Sources card:
+  Redfin shows "N listings · M recent sales"; skipped sources say "Not needed".
+  Measured on PROP-00017: 1/2 mi 4 listings (Zillow fills in), 1 mi 42 listings
+  incl. 4 pending, 2 mi 99 incl. 22 pending (both skip Zillow/Realtor). BatchData
+  gate unchanged. Tests `unit_test_redfin_first.py`.
 - **Comps: every Zillow call goes through PropWarehouse (2026-09-29)**. The
   area search (sold / for sale / pending), the per-comp sale-history lookups and
   the lead's own facts used to call RapidAPI directly from the CRM, so a circle

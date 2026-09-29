@@ -161,6 +161,7 @@ const OFF = {
   rentals: () => __('Not used for rentals'),
   not_configured: () => __('Not set up'),
   no_subject: () => __('No map point for this property'),
+  redfin_enough: () => __('Not needed — Redfin had 5+ listings and 5+ recent sales'),
 }
 
 function zillowRow(s) {
@@ -183,7 +184,9 @@ function zillowRow(s) {
 
 function redfinRow(s) {
   const r = { key: 'redfin', name: 'Redfin' }
-  const added = s.added ? __('+{0} homes', [s.added]) : __('Nothing new beyond the others')
+  let added = s.added ? __('+{0} homes', [s.added]) : __('Nothing new beyond the others')
+  if (s.listings != null || s.recent_sales != null)
+    added = __('{0} listings · {1} recent sales', [s.listings || 0, s.recent_sales || 0]) + ' · ' + added
   switch (s.state) {
     case 'ready':
       return {
