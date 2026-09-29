@@ -96,11 +96,11 @@ export function useLeadPhotoSaves(lead) {
     const ok = todo.length - failed
     if (failed)
       toast.error(
-        __('{0} of {1} could not be saved to Photos').format(failed, todo.length),
+        __('{0} of {1} could not be saved to Photos', [failed, todo.length]),
       )
     else
       toast.success(
-        ok === 1 ? __('Saved to Photos') : __('{0} saved to Photos').format(ok),
+        ok === 1 ? __('Saved to Photos') : __('{0} saved to Photos', [ok]),
       )
   }
 

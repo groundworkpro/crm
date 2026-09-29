@@ -2,7 +2,7 @@
   <div v-if="media?.length" class="flex flex-col gap-1.5">
     <template v-for="(m, i) in media" :key="i">
       <!-- images: inline thumbnail, click opens the pageable lightbox -->
-      <div v-if="isImage(m)" class="group relative w-fit max-w-full">
+      <div v-if="isImage(m)" class="group relative min-h-16 min-w-16 max-w-64">
         <img
           :src="m.url"
           loading="lazy"

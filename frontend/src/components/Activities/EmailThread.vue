@@ -81,11 +81,11 @@
                 {{
                   st.total === 1
                     ? __('Saved to Photos')
-                    : __('{0} photos saved to Photos').format(st.total)
+                    : __('{0} photos saved to Photos', [st.total])
                 }}
               </span>
               <span v-else-if="st.pending" class="text-xs text-ink-gray-5">
-                {{ __('Saving {0} of {1}…').format(st.saved + 1, st.total) }}
+                {{ __('Saving {0} of {1}…', [st.saved + 1, st.total]) }}
               </span>
               <Button
                 v-else
@@ -94,7 +94,7 @@
                 :label="
                   st.total === 1
                     ? __('Save photo to Photos')
-                    : __('Save all {0} photos to Photos').format(st.total - st.saved)
+                    : __('Save all {0} photos to Photos', [st.total - st.saved])
                 "
                 @click="saves.save(pictures(msg).map((a) => ({ file: a.name })))"
               />

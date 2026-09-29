@@ -373,7 +373,7 @@
                   {{
                     run.total === 1
                       ? __('Saved to Photos')
-                      : __('{0} photos saved to Photos').format(run.total)
+                      : __('{0} photos saved to Photos', [run.total])
                   }}
                 </span>
                 <span
@@ -381,7 +381,7 @@
                   class="inline-flex items-center gap-1 rounded-md bg-surface-gray-2 px-2.5 py-1 font-medium text-ink-gray-7"
                 >
                   <FeatherIcon name="loader" class="size-3.5 animate-spin" />
-                  {{ __('Saving {0} of {1}…').format(run.saved + 1, run.total) }}
+                  {{ __('Saving {0} of {1}…', [run.saved + 1, run.total]) }}
                 </span>
                 <Button
                   v-else
@@ -394,10 +394,10 @@
                   </template>
                   {{
                     run.saved
-                      ? __('Save {0} more to Photos').format(run.total - run.saved)
+                      ? __('Save {0} more to Photos', [run.total - run.saved])
                       : run.total === 1
                         ? __('Save photo to Photos')
-                        : __('Save all {0} photos to Photos').format(run.total)
+                        : __('Save all {0} photos to Photos', [run.total])
                   }}
                 </Button>
               </template>
@@ -1412,9 +1412,9 @@ const photoSaves = useLeadPhotoSaves(
   props.doctype === 'CRM Lead' ? props.docname : '',
 )
 
-// Consecutive incoming picture texts (newest first, as the feed reads) form a
-// run; the run's pictures are keyed under its first (newest) message. A gap of
-// more than two hours starts a new run.
+// Incoming picture texts (newest first, as the feed reads) form a run until we
+// text back or more than two hours pass; the run's pictures are keyed under its
+// first (newest) message.
 const photoRuns = computed(() => {
   const runs = {}
   if (!photoSaves.enabled || title.value !== 'Activity') return runs
@@ -1425,11 +1425,14 @@ const photoRuns = computed(() => {
       a.activity_type === 'incoming_text' && a.status !== 'scheduled'
         ? (a.media || []).filter((m) => isSavable(m.type || ''))
         : []
-    if (!pics.length) {
+    // a reply from us ends the run; a comment, call, status change or a plain
+    // text from them in between does not (Dennis logs notes mid-batch)
+    if (a.activity_type === 'outgoing_text') {
       head = null
       prev = null
       continue
     }
+    if (!pics.length) continue
     const gap = prev ? new Date(prev.creation) - new Date(a.creation) : 0
     if (!head || gap > 2 * 60 * 60 * 1000) {
       head = a.name
