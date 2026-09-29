@@ -31,8 +31,17 @@ Caching, including the empty answer
 -----------------------------------
 Same rule the Zillow cache learned the hard way: **a miss is cached too.** An
 address BatchData cannot match would otherwise be re-billed on every modal open.
-Stored on the lead with `update_modified=False`, because a cached lookup is not a
-human edit.
+
+WHERE: PropWarehouse (`GET /batchdata/comps`), keyed on the ADDRESS, since
+2026-09-29. It used to live on the CRM Lead (`batchdata_comps`), which made a
+purchase belong to one record in one system — Knock, Radar, LeadMarket and a
+CRM Property for the same house could not see it and would buy it again.
+
+The lead field is now READ-ONLY: a lead that paid before the move keeps its
+comps until that answer ages out, and nothing writes it again. The one
+exception is the old direct path below, used only when the warehouse cannot
+answer at all (unreachable, or it has no BatchData key) — the same
+`payload_or_fallback` contract as the Zillow and Realtor lookups.
 """
 
 import json
@@ -101,7 +110,73 @@ def _cache_supported() -> bool:
 
 def available() -> bool:
 	"""True when this fallback can actually run. Callers degrade quietly."""
-	return bool(_api_key())
+	if _api_key():
+		return True
+	try:
+		from crm.api import vendor_facts
+
+		return bool(vendor_facts._base_url())
+	except Exception:
+		return False
+
+
+def _query(doc):
+	"""(street, city, state, zip) for a subject, or None when it cannot be comped."""
+	street = (doc.get("property_address") or "").split(",")[0].strip()
+	city = (doc.get("property_city") or "").strip()
+	state = (doc.get("property_state") or "").strip()
+	zipc = str(doc.get("property_zip") or "").strip()
+	if not street or not (zipc or (city and state)):
+		return None
+	return street, city, state, zipc
+
+
+def _warehouse(doc, spend, force=False):
+	"""The warehouse envelope for this subject's address, memoized per request.
+
+	`cached_at` then `fetch_for_lead` is the normal pair on one map open; the
+	memo keeps that to one store read plus, at most, one purchase.
+	"""
+	q = _query(doc)
+	if not q:
+		return None
+	memo = getattr(frappe.local, "batchdata_warehouse", None)
+	if memo is None:
+		memo = {}
+		frappe.local.batchdata_warehouse = memo
+	k = tuple(p.lower() for p in q)
+	bought = memo.get(k + (True,))
+	if bought is not None and not force:
+		return bought
+	if not spend and k + (False,) in memo:
+		return memo[k + (False,)]
+	from crm.api import vendor_facts
+
+	env = vendor_facts.batchdata_comps(*q, take=DEFAULT_TAKE, spend=spend, force=force, caller="crm")
+	if env is not None:
+		memo[k + (bool(spend),)] = env
+	return env
+
+
+def _epoch(iso):
+	try:
+		return frappe.utils.get_datetime(iso).timestamp()
+	except Exception:
+		return None
+
+
+def _shape_all(rows):
+	comps = [_shape(r, i) for i, r in enumerate(rows or []) if isinstance(r, dict)]
+	# Only rows we can actually place on a map and price are worth showing; the
+	# rest still cost us, which is why the window is applied server-side.
+	return [c for c in comps if c["lat"] is not None and c["lng"] is not None and c["price"]]
+
+
+def _warehouse_comps(env):
+	"""Shaped comps from an owned envelope; [] for a miss or a failure."""
+	if not env or not env.get("ok") or not env.get("matched"):
+		return []
+	return _shape_all((env.get("payload") or {}).get("properties"))
 
 
 # ---------------------------------------------------------------------------------
@@ -126,24 +201,32 @@ def _cached(doc):
 
 
 def cached_comps(doc):
-	"""Comps already bought for this lead, or []. Never calls the API.
+	"""Comps already bought for this address, or []. Never calls the API.
 
-	For boards that do not NEED the fallback: once a lead has paid for recorded
+	For boards that do not NEED the fallback: once a house has paid for recorded
 	sales they stay on it, even after a vendor starts returning its own priced
 	solds. Without this, the paid rows silently vanished the moment one Redfin
-	sale appeared (Myesha Moore, Wichita KS, 2026-09-28).
+	sale appeared (Myesha Moore, Wichita KS, 2026-09-28). Bought by ANY system:
+	the warehouse row is shared.
 	"""
 	hit = _cached(doc)
-	return (hit or {}).get("comps") or []
+	if hit is not None:
+		return hit.get("comps") or []
+	return _warehouse_comps(_warehouse(doc, spend=False))
 
 
 def cached_at(doc):
 	"""Epoch the saved answer was bought, or None. Free; never calls the API."""
 	hit = _cached(doc)
-	try:
-		return float(hit["t"]) if hit and hit.get("t") else None
-	except (TypeError, ValueError):
-		return None
+	if hit is not None:
+		try:
+			return float(hit["t"]) if hit.get("t") else None
+		except (TypeError, ValueError):
+			return None
+	env = _warehouse(doc, spend=False)
+	if env and env.get("ok") and env.get("source") == "store" and env.get("fetched_at"):
+		return _epoch(env["fetched_at"])
+	return None
 
 
 def _store(doc, comps):
@@ -256,6 +339,38 @@ def fetch_for_lead(doc, take=DEFAULT_TAKE, force=False):
 		if hit is not None:
 			return hit.get("comps") or []
 
+	from crm.api import vendor_facts
+
+	owned, env = vendor_facts.payload_or_fallback(_warehouse(doc, spend=True, force=force))
+	if owned:
+		# Only on a live answer: the warehouse remembers the error for 15 minutes,
+		# and every map open in that window would otherwise alert again.
+		if env.get("error") == "insufficient_balance" and env.get("source") == "live":
+			_report_wallet_empty(env.get("error"))
+		return _warehouse_comps(env)
+	if not _api_key():
+		return []
+	return _fetch_direct(doc, take)
+
+
+def _report_wallet_empty(detail):
+	frappe.log_error(str(detail or ""), "BatchData comps: WALLET EMPTY - top up to re-enable")
+	# The Error Log is where this went to die: 24 of these accumulated over a
+	# week while reps' tax pulls failed and nobody knew. Tell a person.
+	try:
+		from crm.api import batchdata_wallet
+
+		batchdata_wallet.report_wallet_empty("comps fallback")
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "BatchData comps: alert failed")
+
+
+def _fetch_direct(doc, take=DEFAULT_TAKE):
+	"""The pre-warehouse path: BatchData straight from the CRM, cached on the lead.
+
+	Only when the warehouse cannot answer at all. Kept so an outage there does not
+	blank ND-state maps, not as a second home for the data.
+	"""
 	street = (doc.get("property_address") or "").split(",")[0].strip()
 	city = (doc.get("property_city") or "").strip()
 	state = (doc.get("property_state") or "").strip()
@@ -288,15 +403,7 @@ def fetch_for_lead(doc, take=DEFAULT_TAKE, force=False):
 		# human responses: an empty wallet is an ops problem, a scope problem is a
 		# token problem. Say which.
 		if e.code == 403 and "insufficient balance" in detail.lower():
-			frappe.log_error(detail, "BatchData comps: WALLET EMPTY - top up to re-enable")
-			# The Error Log is where this went to die: 24 of these accumulated over a
-			# week while reps' tax pulls failed and nobody knew. Tell a person.
-			try:
-				from crm.api import batchdata_wallet
-
-				batchdata_wallet.report_wallet_empty("comps fallback")
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), "BatchData comps: alert failed")
+			_report_wallet_empty(detail)
 		else:
 			frappe.log_error(detail, "BatchData comps: HTTP {0}".format(e.code))
 		return []
@@ -305,10 +412,7 @@ def fetch_for_lead(doc, take=DEFAULT_TAKE, force=False):
 		return []
 
 	rows = ((raw.get("results") or {}).get("properties")) or []
-	comps = [_shape(r, i) for i, r in enumerate(rows)]
-	# Only rows we can actually place on a map and price are worth showing; the
-	# rest still cost us, which is why the window is applied server-side.
-	comps = [c for c in comps if c["lat"] is not None and c["lng"] is not None and c["price"]]
+	comps = _shape_all(rows)
 
 	# Cached even when empty — otherwise an unmatched address is re-billed on every
 	# single modal open.

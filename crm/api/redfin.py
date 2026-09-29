@@ -766,6 +766,25 @@ def maybe_rewarm(lead, meta):
 		frappe.cache().set_value(throttle, 1, expires_in_sec=120)
 	except Exception:
 		pass
+	if str(lead or "").startswith("ADDR-"):
+		# Comps by address: no record for a background job to load, so warm the
+		# point the request already has.
+		from crm.api import address_comps
+
+		lat, lng = address_comps.point_for(lead)
+		if lat is not None:
+			try:
+				frappe.enqueue(
+					"crm.api.geo.warm_point",
+					queue="long",
+					job_name=f"geo-warm-comps-{lead}",
+					enqueue_after_commit=True,
+					lat=lat,
+					lng=lng,
+				)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Redfin: rewarm ISTL coverage failed")
+		return
 	try:
 		frappe.enqueue(
 			"crm.api.geo.warm_lead",

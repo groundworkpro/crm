@@ -4,6 +4,24 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps by address (no CRM record) + BatchData comps bought once per house through PropWarehouse** (2026-09-29) —
+  for Knock's comps panel, and so every system shares one cache. **BatchData**:
+  `batchdata_comps.fetch_for_lead` now buys through propwarehouse-api
+  `GET /batchdata/comps` (new `vendor_facts.batchdata_comps`), keyed on the ADDRESS,
+  store-first (hit 90d, miss 14d); `cached_comps`/`cached_at` read that store for free
+  (`spend=false`), memoized per request. Nothing new is written to the lead's
+  `batchdata_comps`; a lead that paid before the move keeps its saved answer until it
+  ages out. The old direct BatchData call is kept only for when the warehouse cannot
+  answer (unreachable / no `BATCHDATA_COMPS_API_KEY` there), per `payload_or_fallback`.
+  Wallet-empty alerts fire on a live answer only. `batchdata_wallet.app_spend_between`
+  adds the warehouse's exact `GET /spend` ledger (whole estate) to the old per-lead
+  stamps. **Address**: new `crm/api/address_comps.get_address_comps(address, city,
+  state, zip, lat, lng, beds, baths, sqft, year_built, …, comp_state)` runs the
+  unchanged `get_lead_comps` against an unsaved CRM Lead named `ADDR-<sha1 of the
+  address>`, registered for the request (`comps._load_subject` returns it); ticks and
+  hides come in as `comp_state` and are never stored. `get_comp_details` accepts
+  `ADDR-` subjects; `redfin.maybe_rewarm` warms their point via new
+  `geo.warm_point`.
 - **Contractors directory + "who covers this" badge on Photos & Lockbox cards** (2026-09-28) —
   requested by Exe. New custom doctype **CRM Contractor** (created by
   `frappe-crm-deploy/scripts/setup_contractors.py`): name, company, phone, email,

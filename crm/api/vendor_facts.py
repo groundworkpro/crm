@@ -144,3 +144,37 @@ def payload_or_fallback(envelope):
 	if envelope.get("ok") is False and envelope.get("error") == "not_configured":
 		return False, None
 	return True, envelope
+
+
+def batchdata_comps(street, city="", state="", zip_code="", take=5, spend=True, force=False,
+					caller="crm"):
+	"""BatchData recorded-sale comps through the warehouse. Envelope, or None.
+
+	Bought once per ADDRESS for the whole estate (CRM, Knock, Radar, LeadMarket):
+	whoever opens the house first pays, everyone after reads the row. The CRM used
+	to keep this answer on the CRM Lead, where no other system could see it.
+
+	`spend=False` never bills — a store read for boards that already have their
+	own priced sales. `payload.properties` is BatchData's raw rows; shaping stays
+	with each caller. Same `zip`-not-`zip_code` trap as `realtor_search`.
+	"""
+	street = str(street or "").strip()
+	if not street:
+		return None
+	params = {
+		"street": street,
+		"city": str(city or "").strip(),
+		"state": str(state or "").strip(),
+		"zip": str(zip_code or "").strip()[:10],
+		"take": int(take or 5),
+		"spend": "true" if spend else "false",
+		"caller": caller,
+	}
+	if force:
+		params["force"] = "true"
+	return _get("/batchdata/comps", params)
+
+
+def vendor_spend(start, end, vendor="batchdata"):
+	"""{calls, rows, cost_usd} billed through the warehouse between two dates, or None."""
+	return _get("/spend", {"start": str(start), "end": str(end), "vendor": vendor})

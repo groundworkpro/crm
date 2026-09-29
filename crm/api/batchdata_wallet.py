@@ -231,6 +231,21 @@ def app_spend_between(start, end):
 			out["comps_leads"] = int(row[0].n or 0)
 			out["comps_cost"] = out["comps_leads"] * COMPS_FALLBACK_COST
 
+	# Since 2026-09-29 comps are bought through PropWarehouse, keyed on the
+	# address, and its `vendor_spend` ledger is EXACT (rows x $0.03). The lead
+	# stamps above only cover purchases made before the move, so the two never
+	# count the same purchase. This is the whole estate's comps spend — Knock or
+	# Radar opening a house pays for the CRM too.
+	try:
+		from crm.api import vendor_facts
+
+		wh = vendor_facts.vendor_spend(start, end) or {}
+		if wh.get("calls") is not None:
+			out["comps_leads"] += int(wh.get("calls") or 0)
+			out["comps_cost"] += float(wh.get("cost_usd") or 0)
+	except Exception:
+		pass
+
 	out["total"] = round(out["tax_cost"] + out["comps_cost"], 2)
 	return out
 

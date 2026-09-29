@@ -206,7 +206,18 @@ def subject_doctype(name) -> str:
 
 
 def _load_subject(name):
-	"""The subject doc for a lead or scratch-property name; throws if absent."""
+	"""The subject doc for a lead or scratch-property name; throws if absent.
+
+	An `ADDR-` name is an in-memory subject registered for this request by
+	`address_comps.get_address_comps` — comps for a house with no CRM record.
+	"""
+	from crm.api import address_comps
+
+	if address_comps.is_address_subject(name):
+		doc = address_comps.transient_subject(name)
+		if doc is None:
+			frappe.throw(_("Address subject {0} is not open.").format(name), frappe.DoesNotExistError)
+		return doc
 	dt = subject_doctype(name)
 	if not frappe.db.exists(dt, name):
 		frappe.throw(_("{0} {1} does not exist.").format(dt, name), frappe.DoesNotExistError)
@@ -1643,12 +1654,15 @@ def get_comp_details(lead, comp, address=None, lat=None, lng=None, city=None, st
 	30 days. Access remains sales-role gated and the lead anchor must be real.
 	"""
 	_guard()
-	if not frappe.db.exists(subject_doctype(lead), lead):
+	# An `ADDR-` subject (comps by address, no record) has no row to check; the
+	# caller always sends the pin's address, which is all the detail ladder needs.
+	address_subject = str(lead or "").startswith("ADDR-")
+	if not address_subject and not frappe.db.exists(subject_doctype(lead), lead):
 		frappe.throw(_("Lead {0} does not exist.").format(lead), frappe.DoesNotExistError)
 	if not _available():
 		return {"available": False, "comp": None, "details": None, "photos": []}
 
-	if str(comp).startswith(DETAIL_PIN_PREFIXES):
+	if str(comp).startswith(DETAIL_PIN_PREFIXES) or (address_subject and str(comp).startswith("batchdata::")):
 		# Area-search / Redfin / Realtor pins are not CRM Comp rows. Zillow pins
 		# are looked up by zpid inside _shape_detail; the others have no zpid, so
 		# the caller's address is the only route — a hollow zpid shell, a Redfin

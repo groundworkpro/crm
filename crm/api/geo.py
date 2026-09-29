@@ -164,6 +164,23 @@ def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1, prior
 		return {"ok": False, "reason": "warm request failed", "lead": lead}
 
 
+def warm_point(lat, lng, radius_m=None, priority="new_lead"):
+	"""`warm_lead` for a bare point: comps by address, where there is no record
+	to resolve or move. Same service call, same best-effort contract."""
+	if not _enabled():
+		return {"ok": False, "reason": "redfin_scraper_url not configured"}
+	try:
+		body = {"lat": float(lat), "lng": float(lng), "radius_m": float(radius_m or DEFAULT_RADIUS_M)}
+		r = requests.post(f"{_base_url()}/warm", json={**body, "priority": priority}, timeout=TIMEOUT)
+		if getattr(r, "status_code", 200) == 422:
+			r = requests.post(f"{_base_url()}/warm", json=body, timeout=TIMEOUT)
+		r.raise_for_status()
+		return {"ok": True, "lat": lat, "lng": lng, **(r.json() or {})}
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "geo: warm point failed")
+		return {"ok": False, "reason": "warm request failed"}
+
+
 def on_lead_insert(doc, method=None):
 	"""CRM Lead after_insert — warm this lead's neighbourhood in the background.
 
