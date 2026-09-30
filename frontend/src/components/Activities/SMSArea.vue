@@ -103,6 +103,15 @@
                   : 'text-ink-gray-5'
               "
             >
+              <!-- Texted from Knock: name it, and open the conversation there. -->
+              <a
+                v-if="sms.knock_url"
+                :href="sms.knock_url"
+                target="_blank"
+                rel="noopener"
+                class="text-2xs underline underline-offset-2 hover:opacity-80"
+                :title="__('Sent through Knock. Open this conversation in Knock')"
+              >Knock ↗</a>
               <Tooltip :text="formatDate(sms.creation, 'ddd, MMM D, YYYY')">
                 <div class="text-2xs">
                   {{ formatDate(sms.creation, 'h:mm a') }}

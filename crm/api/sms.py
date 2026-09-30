@@ -93,8 +93,22 @@ def _shape(rows):
 	(it speaks the WhatsApp message vocabulary: type / message / creation)."""
 	senders = _sender_map()
 	out = []
+	users = _user_names({m.get("sent_by") for m in rows if m.get("sent_by")})
 	for m in rows:
-		sender = senders.get(_last10(m.get("from"))) if m.direction == "Outgoing" else None
+		outgoing = m.direction == "Outgoing"
+		sender = senders.get(_last10(m.get("from"))) if outgoing else None
+		knock_url = m.get("knock_url") or None
+		# Knock's numbers aren't Quo lines: name the teammate who sent it, or say
+		# it was Knock's AI (an automated text with no teammate behind it).
+		sender_id = sender.name if sender else (m.get("sent_by") if outgoing else None)
+		if sender:
+			sender_name = sender.full_name
+		elif outgoing and m.get("sent_by"):
+			sender_name = users.get(m.get("sent_by")) or m.get("sent_by")
+		elif outgoing and knock_url:
+			sender_name = "Knock AI" if m.get("activity_source") == "Sequence" else "Knock"
+		else:
+			sender_name = None
 		out.append(
 			{
 				"name": m.name,
@@ -107,11 +121,31 @@ def _shape(rows):
 				"creation": m.message_date or m.creation,
 				"reference_doctype": m.reference_doctype,
 				"reference_name": m.reference_docname,
-				"sender": sender.name if sender else None,
-				"sender_name": sender.full_name if sender else None,
+				"sender": sender_id,
+				"sender_name": sender_name,
+				"knock_url": knock_url,
 			}
 		)
 	return out
+
+
+def _user_names(users):
+	if not users:
+		return {}
+	return {
+		u.name: u.full_name
+		for u in frappe.get_all("User", filters={"name": ["in", list(users)]}, fields=["name", "full_name"])
+	}
+
+
+def _message_fields():
+	"""Columns to read. The Knock ones exist only once the ops setup script ran."""
+	fields = [
+		"name", "direction", "from", "to", "content", "media", "status",
+		"message_date", "creation", "reference_doctype", "reference_docname",
+	]
+	meta = frappe.get_meta("Quo Message")
+	return fields + [f for f in ("sent_by", "activity_source", "knock_url") if meta.has_field(f)]
 
 
 def on_quo_message_insert(doc, method=None):
@@ -154,19 +188,7 @@ def get_sms_messages(reference_doctype: str, reference_name: str):
 			validate_access("CRM Lead", lead)
 			targets.append(("CRM Lead", lead))
 
-	fields = [
-		"name",
-		"direction",
-		"from",
-		"to",
-		"content",
-		"media",
-		"status",
-		"message_date",
-		"creation",
-		"reference_doctype",
-		"reference_docname",
-	]
+	fields = _message_fields()
 	rows = []
 	for rd, rn in targets:
 		rows += frappe.get_all(
