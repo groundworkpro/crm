@@ -4,6 +4,15 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comp gallery: "Listed Mon YYYY" replaces the photo-file date** (2026-10-01) — Lance:
+  "why doesn't the photo age show up anymore?" It effectively never did: Redfin,
+  Zillow and Realtor all strip the camera timestamp from their images (0 of 5,652
+  cached lookups on prod had one; Redfin's CDN was not even on the fetch list). The
+  chip now shows the house's most recent "Listed for sale/rent" date from Zillow's
+  `price_history` (already in every detail response), falling back to the comp's
+  `listed_date`. MLS photos go to all three sites, so it applies whichever site won
+  the gallery. Removed `crm/api/photo_exif.py`, `get_photo_date`, and their test.
+
 - **Comp gallery looks Zillow up by full address, not street only** (2026-09-30) —
   Exe/Dennis: a comp card opened as a same-numbered house in another state
   (1635 Oregon Ave S, St Louis Park MN showed 1635 Oregon Ave, Steubenville OH,
