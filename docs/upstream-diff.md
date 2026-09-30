@@ -8,7 +8,8 @@ entries for an area (grep it) before touching that area.
   "why doesn't the photo age show up anymore?" It effectively never did: Redfin,
   Zillow and Realtor all strip the camera timestamp from their images (0 of 5,652
   cached lookups on prod had one; Redfin's CDN was not even on the fetch list). The
-  chip now shows the house's most recent "Listed for sale/rent" date from Zillow's
+  chip now shows the house's most recent listing, labelled "Listed for rent Mar 2024"
+  or "Listed for sale Mar 2024" so rental-listing photos are called out, from Zillow's
   `price_history` (already in every detail response), falling back to the comp's
   `listed_date`. MLS photos go to all three sites, so it applies whichever site won
   the gallery. Removed `crm/api/photo_exif.py`, `get_photo_date`, and their test.

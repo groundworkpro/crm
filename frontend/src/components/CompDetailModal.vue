@@ -558,25 +558,35 @@ const isStaticStreetView = computed(
 // age shown is the house's most recent "Listed for sale/rent" event. MLS photos
 // are shot for a listing and syndicated to all three sites, so this dates them
 // whichever rung won the gallery. Zillow's history rides every detail response.
-const listingPhotoDate = computed(() => {
-  const dates = []
+// Newest listing event, kept with its KIND: a rental listing's photos can be
+// newer (or older) than the last sale listing's, and a rep reading condition
+// needs to know which one he is looking at. Zillow priceHistory's `event` is
+// "Listed for sale" / "Listed for rent"; `postingIsRental` backs up the text.
+const latestListing = computed(() => {
+  const events = []
   for (const e of details.value?.price_history || []) {
-    if (/^listed/i.test(String(e?.event || '').trim()) && e?.date) dates.push(String(e.date))
+    const kind = String(e?.event || '').trim().toLowerCase()
+    if (!kind.startsWith('listed') || !e?.date) continue
+    const t = Date.parse(String(e.date).slice(0, 10))
+    if (!Number.isFinite(t)) continue
+    events.push({ t, rental: kind.includes('rent') || e.postingIsRental === true })
   }
-  if (props.comp?.listed_date) dates.push(String(props.comp.listed_date))
-  const times = dates.map((d) => Date.parse(d.slice(0, 10))).filter(Number.isFinite)
-  if (!times.length) return ''
-  return new Date(Math.max(...times)).toLocaleDateString('en-US', {
+  // CRM Comp's listed_date is a sale listing; only used when Zillow has none newer.
+  const own = Date.parse(String(props.comp?.listed_date || '').slice(0, 10))
+  if (Number.isFinite(own)) events.push({ t: own, rental: false })
+  if (!events.length) return null
+  return events.reduce((a, b) => (b.t > a.t ? b : a))
+})
+const photoDateText = computed(() => {
+  const l = latestListing.value
+  if (!l || isStaticStreetView.value) return ''
+  const when = new Date(l.t).toLocaleDateString('en-US', {
     month: 'short',
     year: 'numeric',
     timeZone: 'UTC',
   })
+  return l.rental ? __('Listed for rent {0}', [when]) : __('Listed for sale {0}', [when])
 })
-const photoDateText = computed(() =>
-  listingPhotoDate.value && !isStaticStreetView.value
-    ? __('Listed {0}', [listingPhotoDate.value])
-    : '',
-)
 
 watch(photoSrc, () => {
   heroLoaded.value = false
