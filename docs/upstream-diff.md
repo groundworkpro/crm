@@ -4,6 +4,16 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comp gallery looks Zillow up by full address, not street only** (2026-09-30) —
+  Exe/Dennis: a comp card opened as a same-numbered house in another state
+  (1635 Oregon Ave S, St Louis Park MN showed 1635 Oregon Ave, Steubenville OH,
+  its price, facts and photos). Redfin/Realtor pins keep the street alone in
+  `address`, and `_zillow_detail` sent just that to Zillow — which became common
+  once Redfin turned primary (2026-09-29). Now `_zillow_lookup_address` adds
+  city, state and zip, and `_locality_mismatch` throws away any Zillow answer in
+  another state (or another city and zip). Cache: Zillow detail v1 -> v2, gallery
+  v4 -> v5 with a migration that drops only wrong-town galleries (20 of 536 on
+  prod). Tests: `unit_test_comp_detail_pins.py`.
 - **Knock texts are Quo Messages, linked back to Knock** (2026-09-30) —
   `crm.api.knock.sync` now files each Knock text as a **Quo Message** (the
   doctype the Text Messages tab, kanban counts and the Today board's "last

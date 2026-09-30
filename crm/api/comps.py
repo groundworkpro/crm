@@ -107,7 +107,7 @@ DEFAULT_WITHIN_DAYS = 365
 #: opens the same house. A failed/partial lookup gets a short retry window.
 DETAIL_CACHE_SECONDS = 30 * 24 * 60 * 60
 DETAIL_RETRY_SECONDS = 60 * 60
-DETAIL_CACHE_VERSION = 4  # v4 asks the next provider while the gallery has < 10
+DETAIL_CACHE_VERSION = 5  # v5 drops galleries Zillow resolved to another town
 #: The two BILLED calls behind a gallery (`/property` + `/photos`) are cached on
 #: their own, for the full month, the moment Zillow ANSWERS -- even when the
 #: answer is one leftover frame. The thin-gallery retry above exists so the
@@ -116,7 +116,7 @@ DETAIL_CACHE_VERSION = 4  # v4 asks the next provider while the gallery has < 10
 #: mostly one-photo houses, so that was most galleries, every hour, forever.
 #: Only a FAILED call (no body at all) gets the short window. Shares the
 #: `crm:comp-detail` prefix so `persistent_cache_keys` already keeps it.
-DETAIL_ZILLOW_CACHE_VERSION = 1
+DETAIL_ZILLOW_CACHE_VERSION = 2  # v2: street+city+state lookups (v1 sent the street only)
 #: Older gallery generations that can be served as the current one without a
 #: refetch. {from_version: fn(cached) -> cached | None}; None refuses. A gallery
 #: already at 10 photos answered the new ladder; a shorter one was frozen before
@@ -124,6 +124,9 @@ DETAIL_ZILLOW_CACHE_VERSION = 1
 DETAIL_MIGRATIONS = {
 	2: lambda c: c if len((c or {}).get("photos") or []) > 1 else None,
 	3: lambda c: c if len((c or {}).get("photos") or []) >= 10 else None,
+	# v4 looked Redfin/Realtor pins up on Zillow by STREET ONLY, so some cached
+	# galleries are a same-numbered house in another state. Keep the rest.
+	4: lambda c: None if _locality_mismatch((c or {}).get("comp"), (c or {}).get("details")) else c,
 }
 
 #: Ask the next photo provider while the gallery is still shorter than this.
@@ -1300,8 +1303,13 @@ def _zillow_detail(row, zpid):
 
 	raw = photo_raw = None
 	answered = False
+	# Street + city/state/zip. Redfin/Realtor pins carry the street alone in
+	# `address`; sent bare, Zillow picked a same-numbered house anywhere in the
+	# country (Exe, 2026-09-30: 1635 Oregon Ave S, St Louis Park MN opened as
+	# 1635 Oregon Ave, Steubenville OH, with its price and photos).
+	lookup = _zillow_lookup_address(row)
 	owned, env = vendor_facts.payload_or_fallback(
-		vendor_facts.zillow_property(address=row.get("address"), zpid=zpid, photos=True)
+		vendor_facts.zillow_property(address=lookup, zpid=zpid, photos=True)
 	)
 	if owned:
 		raw = (env or {}).get("payload")
@@ -1312,17 +1320,21 @@ def _zillow_detail(row, zpid):
 		raw = zillow_api._request("/property", {"zpid": zpid}, "Zillow: zpid lookup failed")
 		answered = raw is not None
 	else:
-		raw = zillow_api.property_details(row.get("address"))
+		raw = zillow_api.property_details(lookup)
 		answered = raw is not None
 	details = zillow_api.normalize_detail(raw) if raw else None
 	# Zillow's /property returns an EMPTY SHELL (every field null, even zpid) for
 	# some listings its own /search happily returned — observed on a pending Philly
 	# row, by zpid AND by address. When the zpid path came back hollow and we know
 	# the address, one address retry is worth the spend before giving up on Zillow.
-	if not owned and not details and zpid and (row.get("address") or "").strip():
-		raw = zillow_api.property_details(row.get("address"))
+	if not owned and not details and zpid and lookup:
+		raw = zillow_api.property_details(lookup)
 		answered = answered or raw is not None
 		details = zillow_api.normalize_detail(raw) if raw else None
+	# Belt and braces: an address Zillow still resolved to another town is not
+	# this house. Treat it as a miss rather than show someone else's price.
+	if details and _locality_mismatch(row, details):
+		details, raw, photo_raw = None, None, None
 	if not owned:
 		photo_raw = zillow_api.property_photos(details.get("zpid")) if details else None
 	photos = zillow_api.photo_urls(photo_raw)
@@ -1339,6 +1351,41 @@ def _zillow_detail(row, zpid):
 	except Exception:
 		pass
 	return details, photos
+
+
+def _zillow_lookup_address(row):
+	"""`street, city, ST zip` for a Zillow address lookup.
+
+	CRM Comp rows already store the full line; provider pins (redfin::,
+	realtor::, batchdata::) keep locality in separate fields.
+	"""
+	street = str((row or {}).get("address") or "").strip()
+	if not street or "," in street:
+		return street
+	city = str(row.get("city") or "").strip()
+	tail = " ".join(p for p in (str(row.get("state") or "").strip(), str(row.get("zip") or "").strip()) if p)
+	return ", ".join(p for p in (street, city, tail) if p)
+
+
+def _locality_mismatch(row, details):
+	"""True when Zillow's house is plainly in a different place than the comp.
+
+	State differs -> different house. Same state, zip AND city both differ ->
+	different house too (a zip or a city spelling alone can legitimately drift).
+	Missing fields on either side never count as a mismatch.
+	"""
+	if not row or not details:
+		return False
+
+	def norm(v):
+		return re.sub(r"[^a-z0-9]", "", str(v or "").lower())
+
+	rs, ds = norm(row.get("state")), norm(details.get("state"))
+	if rs and ds and rs != ds:
+		return True
+	rz, dz = norm(row.get("zip"))[:5], norm(details.get("zip"))[:5]
+	rc, dc = norm(row.get("city")), norm(details.get("city"))
+	return bool(rz and dz and rz != dz and rc and dc and rc != dc)
 
 
 def _detail_address(row, details=None):
