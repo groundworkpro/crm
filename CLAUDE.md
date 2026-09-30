@@ -56,7 +56,7 @@ to prod. Production must never be the first place a UI change is exercised.
   execute` / `bench console` on the prod backend; roll back anything that writes:
 
   ```bash
-  ssh ovh-groundwork "cd /opt/frappe-crm && docker compose exec -T backend \
+  ssh ovh-groundwork "cd /opt/frappe-crm && sudo docker compose exec -T backend \
     bench --site crm.groundworkpro.com execute <dotted.path.func> --kwargs '{...}'"
   ```
 
