@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Day dividers in the SMS thread** (2026-09-30) — Lance: "something seems very
+  odd on the texting order." The order was right, but bubbles showed only the time,
+  so a thread spanning days read as scrambled (3:05 pm above 9:32 am). `SMSArea.vue`
+  (lead SMS tab and the `/texts` inbox) now draws a divider with the date
+  (Today / Yesterday / Tomorrow / "Thu, Sep 17", plus the year if not this year)
+  wherever the day changes, and a new day restarts the sender-name run.
+
 - **Save texted / emailed pictures to the lead's Photos folder from the activity feed** (2026-09-29) —
   Lance: pictures people text or email in should be savable straight into the CRM,
   several at once. Direction A of three mockups. In the lead Activity feed, each run
