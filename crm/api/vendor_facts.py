@@ -19,8 +19,9 @@ def _base_url():
 	The Zillow/Realtor endpoints are moving out of redfin-scraper-api into a
 	dedicated propwarehouse-api (see `propwarehouse/EGRESS.md`): the scraper is
 	named, unit-named and database-named for Redfin, and it should not keep
-	growing vendor surface. Only the LOOKUP path moves — `crm.api.geo` keeps
-	pointing at the scraper for /properties, /parcels, /facts, /photos, /url.
+	growing vendor surface. (Since 2026-09-29 `crm.api.geo` sends the Redfin
+	paths -- /properties, /parcels, /facts, /photos, /url -- through
+	PropWarehouse's `/redfin` passthrough too.)
 
 	Resolution order, first non-empty wins:
 
@@ -31,7 +32,7 @@ def _base_url():
 	So this is inert until the config is set, and setting it is the whole
 	cutover. Unsetting it is the whole rollback.
 	"""
-	from crm.api.geo import _base_url as geo_base
+	from crm.api.geo import _direct_url as geo_base
 
 	try:
 		import frappe
@@ -49,15 +50,24 @@ def _base_url():
 	return configured or geo_base()
 
 
-def _get(path, params):
-	"""Envelope dict, or None if the warehouse is unreachable / does not have the route."""
-	base = _base_url()
+#: A whole-market search can be ~40 vendor calls behind the warehouse's 7/s
+#: limiter, so it gets longer than a single-house lookup.
+SEARCH_TIMEOUT = 90
+
+
+def _get(path, params, timeout=TIMEOUT, base=None):
+	"""Envelope dict, or None if the warehouse is unreachable / does not have the route.
+
+	Pass `base` from a worker thread: `_base_url` reads `frappe.conf`, which a
+	thread with no site cannot do. Resolve it once on the calling thread.
+	"""
+	base = base if base is not None else _base_url()
 	if not base:
 		return None
 	import requests
 
 	try:
-		r = requests.get(f"{base}{path}", params=params, timeout=TIMEOUT)
+		r = requests.get(f"{base}{path}", params=params, timeout=timeout)
 	except Exception:
 		return None
 	if r.status_code == 404:
@@ -83,6 +93,51 @@ def zillow_property(address=None, zpid=None, photos=False):
 	if not params:
 		return None
 	return _get("/zillow/property", params)
+
+
+def zillow_property_many(addresses, workers=4):
+	"""`/zillow/property` for many addresses at once -> [envelope|None], same order.
+
+	The warehouse answers from its 30-day store first, so a repeat address
+	across leads is never billed twice. Threads do HTTP only; the base URL is
+	resolved here, on the calling thread (see `_get`).
+	"""
+	addresses = list(addresses or [])
+	if not addresses:
+		return []
+	base = _base_url()
+	if not base:
+		return [None] * len(addresses)
+	from concurrent.futures import ThreadPoolExecutor
+
+	def one(a):
+		return _get("/zillow/property", {"address": a}, base=base) if a else None
+
+	with ThreadPoolExecutor(max_workers=max(1, min(workers, len(addresses)))) as pool:
+		return list(pool.map(one, addresses))
+
+
+def zillow_search(lat, lng, radius_mi, status_type, sold_in_last=None, include_pending=False):
+	"""Whole-market Zillow circle search through the warehouse. Envelope, or None.
+
+	`full=true` is what makes this the same question the CRM used to ask
+	RapidAPI directly: every page, and a price split past Zillow's 800-row
+	ceiling. `radius_mi` is a RADIUS; the warehouse doubles it for Zillow.
+	"""
+	if lat is None or lng is None or not radius_mi:
+		return None
+	params = {
+		"lat": lat,
+		"lng": lng,
+		"radius_mi": radius_mi,
+		"status_type": status_type,
+		"full": "true",
+	}
+	if sold_in_last:
+		params["sold_in_last"] = sold_in_last
+	if include_pending:
+		params["include_pending"] = "true"
+	return _get("/zillow/search", params, timeout=SEARCH_TIMEOUT)
 
 
 def zillow_photos(zpid):

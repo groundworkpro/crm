@@ -60,6 +60,76 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Redfin calls go through PropWarehouse (2026-09-29)**. Lance: every
+  property-data source through PropWarehouse, Redfin included. `geo._base_url()`
+  (which `redfin._base_url`, `address_resolve._redfin_base` and every Redfin
+  call site use) now returns `<propwarehouse_url>/redfin` — PropWarehouse's
+  passthrough to redfin-scraper-api (propwarehouse-api `redfin_proxy.py`,
+  counters at `/redfin/_stats`). Falls back to the scraper directly
+  (`geo._direct_url()`) when PropWarehouse's `/health` fails (checked at most
+  every 30s, remembered in Redis), when `propwarehouse_url` is unset, or with
+  `redfin_via_propwarehouse: 0` in site_config. No `redfin_scraper_url` still
+  means Redfin is off. `vendor_facts` falls back to `_direct_url` (not the
+  passthrough). Verified live: a PROP-00017 load made 2 listings, 1 properties
+  and 50 history calls, all through PropWarehouse, 0 errors.
+- **Comps: flip warnings and ISTL pin checks from Redfin, not Zillow (2026-09-29)**.
+  Lance: switch both to Redfin. `crm/api/redfin_history.py` reads each comp's
+  Redfin timeline via the scraper's free `/history` (50 fresh reads per load, 4
+  workers, ~4.5s measured, all direct/no ZenRows; cached 7 days per house),
+  translates Redfin's words into Zillow's priceHistory vocabulary and runs the
+  same `sale_history.parse` flip rule. "Sold (MLS)" + "Sold (Public Records)"
+  within 90 days are ONE sale — left as two, the duplicate hid the real earlier
+  purchase. Houses Redfin knows but did not read this load take Zillow's 30-day
+  cache TIMELINE only (`attach_sale_history(history_only=True)`): that cache's
+  status/size is up to a month old and was flipping Redfin's fresh for-sale
+  count (38 -> 45) and inventing "for rent". Billed Zillow history is now only for
+  houses Redfin has no id for, and only when Redfin was thin. The ISTL pin
+  refresh (Zillow `/property` x12) no longer runs when Redfin is enough —
+  `comp_merge.apply_redfin` already overwrites price/sale/size on every ISTL
+  pin it matches — and when it does run it skips houses Redfin answered for.
+  PROP-00017, 1 mi: 0 Zillow/Realtor/PropWarehouse calls, 32 flips, 131 of 1002
+  unchecked; 2 mi: 0 calls, 179 flips, 5.6-7.9s.
+- **Comps: Redfin first; Zillow and Realtor only fill in (2026-09-29)**. Lance:
+  Redfin is the primary comps source. `crm/api/redfin_listings.py` calls the
+  scraper's free `/listings` (Redfin's own map endpoint) for on-market homes —
+  active, coming soon, contingent, PENDING — and last-12-months solds, cached 6h
+  in Redis. The stored Redfin sweep only ever held sales, so listings and
+  pendings used to come from Zillow alone. The Zillow AREA search and the Realtor
+  search now run only when Redfin has fewer than 5 listings OR fewer than 5
+  recent sales in the circle, or did not answer / answered half. The Zillow ISTL
+  pin refresh still runs (it fixes our own stale asks). The Today-board prewarm
+  applies the same rule, so it no longer buys Zillow circles the page won't read.
+  Redfin listings merge through `comp_merge.apply_redfin`, listings ahead of the
+  store's old sales so a relisted house boards as the listing. Sources card:
+  Redfin shows "N listings · M recent sales"; skipped sources say "Not needed".
+  Measured on PROP-00017: 1/2 mi 4 listings (Zillow fills in), 1 mi 42 listings
+  incl. 4 pending, 2 mi 99 incl. 22 pending (both skip Zillow/Realtor). BatchData
+  gate unchanged. Tests `unit_test_redfin_first.py`.
+- **Comps: every Zillow call goes through PropWarehouse (2026-09-29)**. The
+  area search (sold / for sale / pending), the per-comp sale-history lookups and
+  the lead's own facts used to call RapidAPI directly from the CRM, so a circle
+  or house another app had already bought was bought again. They now ask
+  propwarehouse-api (`/zillow/search?full=true&include_pending=true`,
+  `/zillow/property`) and share its store. RapidAPI is called directly only when
+  the warehouse is unreachable or too old to have the route; a warehouse failure
+  (its quota floor, Zillow down) is NOT a reason to spend the key directly. The
+  CRM's own Redis caches stay in front, so call volume can only go down.
+  Needs propwarehouse-api `18b780d` (full/include_pending) — deployed first.
+  `crm/api/vendor_facts.py`, `zillow_comps._warehouse_search` /
+  `_property_bodies`, `zillow._fetch`; tests `unit_test_zillow_via_warehouse.py`.
+- **Comps: no 50-comp cap; listings get the paid lookups first** (2026-09-28) —
+  `get_lead_comps` drew only the 50 nearest matches, so a dense cluster of sales
+  pushed every listing off the board. 2027 Willow Cir, Centerville MN (PROP-00017)
+  has 421 comps within ½ mile and showed 0 of its 8 for-sale listings, even with
+  every filter cleared. Now every matched comp is returned (`limit` still works if a
+  caller passes it). The Zillow sale-history spend is still capped at
+  `SALE_HISTORY_BUDGET` (50) billed lookups per load. `_history_order` gives those
+  lookups to live listings first (for sale, pending, auction), then picked comps,
+  then the nearest sales. Every other comp reads the free 30-day pin cache
+  (`attach_sale_history(cache_only=True)`), or is marked `sale_history_unchecked`
+  if that cache has nothing. Board size: ½ mile ≈ 421 comps, 1 MB, 1s; 2 miles ≈
+  3,400 comps, 8.8 MB, 11s.
+
 - **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
   lead due after today: an Active enrollment in a sequence with `then_enroll`

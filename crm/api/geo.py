@@ -29,9 +29,57 @@ DEFAULT_RADIUS_M = 1609.344 * 2  # 2 miles — the desk's outer ring
 TIMEOUT = 10
 
 
-def _base_url():
+#: How long "PropWarehouse is up / down" is believed before asking again.
+WAREHOUSE_CHECK_S = 30
+WAREHOUSE_CHECK_TIMEOUT = 1.5
+
+
+def _direct_url():
+	"""The Redfin scraper's own address, bypassing PropWarehouse."""
 	url = frappe.conf.get("redfin_scraper_url") or frappe.conf.get("geo_service_url") or ""
 	return url.strip().rstrip("/")
+
+
+def _base_url():
+	"""Where every Redfin call goes: PropWarehouse's `/redfin` passthrough.
+
+	Lance, 2026-09-29: every property-data source comes through PropWarehouse,
+	Redfin included. PropWarehouse forwards `/redfin/<path>` to the scraper
+	unchanged, so every caller keeps building `f"{base}/listings"` etc.
+
+	Falls back to the scraper directly when PropWarehouse is not configured,
+	is switched off for Redfin (`redfin_via_propwarehouse: 0`), or is down --
+	Redfin is free, so going around a dead front door costs nothing. Only
+	used when the direct URL is configured too, so an unset
+	`redfin_scraper_url` still means "Redfin is off".
+	"""
+	direct = _direct_url()
+	if not direct:
+		return ""
+	warehouse = str(frappe.conf.get("propwarehouse_url") or "").strip().rstrip("/")
+	if not warehouse or not frappe.utils.cint(frappe.conf.get("redfin_via_propwarehouse", 1)):
+		return direct
+	return f"{warehouse}/redfin" if _warehouse_up(warehouse) else direct
+
+
+def _warehouse_up(warehouse):
+	"""PropWarehouse's own /health, remembered for WAREHOUSE_CHECK_S."""
+	key = "crm:propwarehouse-up"
+	try:
+		hit = frappe.cache().get_value(key)
+	except Exception:
+		hit = None
+	if hit in ("1", "0", 1, 0):
+		return str(hit) == "1"
+	try:
+		up = requests.get(f"{warehouse}/health", timeout=WAREHOUSE_CHECK_TIMEOUT).status_code == 200
+	except Exception:
+		up = False
+	try:
+		frappe.cache().set_value(key, "1" if up else "0", expires_in_sec=WAREHOUSE_CHECK_S)
+	except Exception:
+		pass
+	return up
 
 
 def _enabled():
