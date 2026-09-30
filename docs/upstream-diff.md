@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Knock text mirror endpoint** (2026-09-30) — new `crm.api.knock.sync` (POST,
+  API-key auth, never sends a text). Knock pushes each owned thread; the CRM finds
+  the lead by an anchor Comment, an explicit id, or a normalized phone + property
+  match (ambiguous or different-property matches refuse, no duplicate lead), sets
+  only `lead_owner`, and adds each text once as an SMS `Communication` with a
+  deterministic name. A per-thread lock and Knock's revision number reject stale
+  or overlapping snapshots. Tests: `crm/tests/unit_test_knock_sync.py`.
 - **Day dividers in the SMS thread** (2026-09-30) — Lance: "something seems very
   odd on the texting order." The order was right, but bubbles showed only the time,
   so a thread spanning days read as scrambled (3:05 pm above 9:32 am). `SMSArea.vue`
