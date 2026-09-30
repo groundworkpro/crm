@@ -4,6 +4,20 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Knock texts are Quo Messages, linked back to Knock** (2026-09-30) —
+  `crm.api.knock.sync` now files each Knock text as a **Quo Message** (the
+  doctype the Text Messages tab, kanban counts and the Today board's "last
+  contact" read), not a Communication (nothing read those, so Knock-texted
+  leads showed "never contacted"). Rows: `id` `knock-text-<hash>` (retry-safe),
+  `knock_url` (new Data/URL field, added by the ops setup script) linking the
+  Knock conversation, `sent_by` the teammate + `activity_source` Manual, or
+  Sequence for Knock's AI (so team activity counts only human texts),
+  `undelivered` when Knock logged a failure. The owner changes only when Knock
+  names one (a person has the thread); a lead is created only when Knock sends
+  `create` ("Send to CRM"). A later sync fills a missing `message_date`,
+  nothing else. `sms.get_sms_messages` returns `knock_url` and names the sender
+  from `sent_by` (or "Knock AI"); `SMSArea.vue` and the Activity feed show
+  "Knock ↗" on those texts.
 - **Knock text mirror endpoint** (2026-09-30) — new `crm.api.knock.sync` (POST,
   API-key auth, never sends a text). Knock pushes each owned thread; the CRM finds
   the lead by an anchor Comment, an explicit id, or a normalized phone + property
