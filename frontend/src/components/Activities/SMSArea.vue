@@ -1,13 +1,23 @@
 <template>
   <div class="pb-3">
+    <template v-for="(sms, i) in messages" :key="sms.name">
+    <!-- day divider: the bubbles only show a time, so without this a thread
+         spanning several days reads as out of order -->
     <div
-      v-for="(sms, i) in messages"
-      :key="sms.name"
+      v-if="startsDay(i)"
+      class="sms-day-divider flex items-center gap-3 text-xs text-ink-gray-5"
+      :class="i == 0 ? 'mb-3' : 'mb-3 mt-5'"
+    >
+      <div class="flex-1 border-t border-outline-gray-2" />
+      <span>{{ dayLabel(sms.creation) }}</span>
+      <div class="flex-1 border-t border-outline-gray-2" />
+    </div>
+    <div
       class="activity group flex gap-2"
       :class="[
         sms.type == 'Outgoing' ? 'flex-row-reverse' : '',
         startsRun(i) ? 'mt-3' : 'mt-0.5',
-        i == 0 ? '!mt-0' : '',
+        startsDay(i) ? '!mt-0' : '',
       ]"
     >
       <!-- who sent it: lead avatar on the left, teammate avatar on the right,
@@ -113,6 +123,7 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -122,7 +133,7 @@ import DoubleCheckIcon from '@/components/Icons/DoubleCheckIcon.vue'
 import SMSMedia from '@/components/Activities/SMSMedia.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 import { formatDate } from '@/utils'
-import { Tooltip, Badge, Avatar, FeatherIcon, call, toast } from 'frappe-ui'
+import { Tooltip, Badge, Avatar, FeatherIcon, call, toast, dayjsLocal } from 'frappe-ui'
 import { ref } from 'vue'
 
 const props = defineProps({
@@ -152,7 +163,30 @@ async function cancelScheduled(sms) {
 // a "run" = consecutive messages from the same person (same direction + same
 // sending teammate); the name shows above a run, the avatar at its end
 function sameAuthor(a, b) {
-  return a && b && a.type == b.type && a.sender == b.sender
+  return (
+    a && b && a.type == b.type && a.sender == b.sender && sameDay(a, b)
+  )
+}
+
+function dayKey(sms) {
+  return sms ? dayjsLocal(sms.creation).format('YYYY-MM-DD') : ''
+}
+
+function sameDay(a, b) {
+  return dayKey(a) == dayKey(b)
+}
+
+function startsDay(i) {
+  return !sameDay(props.messages[i - 1], props.messages[i])
+}
+
+function dayLabel(date) {
+  const d = dayjsLocal(date)
+  const today = dayjsLocal()
+  if (d.isSame(today, 'day')) return __('Today')
+  if (d.isSame(today.subtract(1, 'day'), 'day')) return __('Yesterday')
+  if (d.isSame(today.add(1, 'day'), 'day')) return __('Tomorrow')
+  return d.format(d.isSame(today, 'year') ? 'ddd, MMM D' : 'ddd, MMM D, YYYY')
 }
 
 function startsRun(i) {
