@@ -4,6 +4,17 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comp gallery no longer waits on Redfin /photos** (2026-09-30) — Dennis:
+  comp pictures "pretty slow". Since the 2026-09-22 Redfin -> Zillow -> Realtor
+  ladder, `_shape_detail` called Redfin's `/photos` SERIALLY after Zillow: 3-15s
+  per cold open, 489 15s ReadTimeouts in the prior week, and Redfin won 1 of
+  ~730 cached galleries. It now starts on a thread before Zillow
+  (`_start_redfin_gallery`, pure `requests`, config read on the request thread)
+  and is joined `REDFIN_GALLERY_BUDGET` (1.5s) past Zillow; a late answer is
+  dropped. The `/url` join now counts its 1s from Zillow too instead of
+  stacking. Ladder order unchanged. Measured on prod, three cold comps: 15.1s
+  -> 3.0-3.5s, identical photos. Tests: `unit_test_comp_redfin_url.py`.
+
 - **Day dividers in the SMS thread** (2026-09-30) — Lance: "something seems very
   odd on the texting order." The order was right, but bubbles showed only the time,
   so a thread spanning days read as scrambled (3:05 pm above 9:32 am). `SMSArea.vue`

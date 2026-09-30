@@ -59,6 +59,7 @@ import json
 import math
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -1385,12 +1386,18 @@ def _shape_detail(row, zpid=None):
 	# answer is written into the cached entry by a background job, so the second
 	# open has the link and the first one has its photos.
 	url_job = _start_redfin_url(_detail_address(row), row.get("lat"), row.get("lng"))
+	# Redfin's /photos gets the same treatment (2026-09-30, Dennis: "pretty
+	# slow"). Run SERIALLY after Zillow it cost 3-15s on every cold open — 489
+	# 15s ReadTimeouts in the week before — and won the gallery on 1 of ~730
+	# cached comps. Started here, joined with REDFIN_GALLERY_BUDGET past Zillow.
+	gallery_job = _start_redfin_gallery(_detail_address(row), row.get("lat"), row.get("lng"))
 	# The FACTS blob stays Zillow-first and is fetched unconditionally: Redfin's
 	# /facts carries `listing_remarks` but no HOA, parking, heating, cooling or
 	# price history, and `CompDetailModal.vue` reads all of those. Photos and
 	# facts therefore cascade INDEPENDENTLY — this call is the facts half, and
 	# its photos are merely the last rung of the ladder below.
 	details, zillow_photos = _zillow_detail(row, zpid)
+	after_zillow = time.monotonic()
 	# Dedupe BEFORE the thin-gallery check: a photo-less home whose "gallery" is
 	# two sizes of the same synthesized Street View frame is really ONE photo, and
 	# counting it as two suppressed the fallbacks that could do better.
@@ -1420,7 +1427,7 @@ def _shape_detail(row, zpid=None):
 	# gets the better gallery, because a photo cannot invalidate a saved
 	# determination or move a comp off the board. Do not "consistently" gate this
 	# too; it would withhold a strictly better gallery for no safety gain.
-	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
+	rf = _finish_redfin_gallery(gallery_job, addr, lat, lng)
 	photos = rf.get("photos") or []
 	# /photos carries the matched row's observed listing path, so on the happy
 	# path the link arrives with the gallery and the /url thread is never joined.
@@ -1441,7 +1448,10 @@ def _shape_detail(row, zpid=None):
 	# Only wait on the /url thread when Redfin's gallery did not already answer
 	# with the link — an unmatched house has no observed path to carry.
 	if not redfin_url:
-		redfin_url, url_pending = _finish_redfin_url(url_job, addr, lat, lng)
+		# Both threads started before Zillow, so the link's budget counts from
+		# there too rather than stacking on top of the gallery's wait.
+		left = REDFIN_URL_BUDGET - (time.monotonic() - after_zillow)
+		redfin_url, url_pending = _finish_redfin_url(url_job, addr, lat, lng, budget=left)
 
 	comp = dict(row)
 	if is_adc(comp) and details:
@@ -1474,6 +1484,50 @@ def _shape_detail(row, zpid=None):
 #: link is a courtesy; the photos are the click. Same shape as the subject's
 #: `finish_subject_record` budget.
 REDFIN_URL_BUDGET = 1.0
+
+#: How long past the Zillow calls a gallery open waits for Redfin's /photos.
+#: The service answers a warm address in ~0.4s and a cold one in 3-15s; a late
+#: answer is dropped (Zillow/Realtor already have the pictures) rather than
+#: holding the rep's click hostage.
+REDFIN_GALLERY_BUDGET = 1.5
+
+
+def _start_redfin_gallery(address, lat, lng):
+	"""Start Redfin /photos on a thread, or None (no point / no service).
+	Same thread rules as `_start_redfin_url`: config read here, pure requests
+	in the thread, every exception swallowed."""
+	from crm.api import redfin
+
+	base = redfin._base_url()
+	point = redfin._point(address, lat, lng)
+	if not base or not point:
+		return None
+	addr, plat, plng = point
+	holder = {}
+
+	def _run():
+		try:
+			holder["gallery"] = redfin._fetch_gallery(base, addr, plat, plng, 60)
+		except Exception as e:  # noqa: BLE001 -- thread must never raise
+			holder["error"] = str(e)
+
+	thread = threading.Thread(target=_run, daemon=True)
+	thread.start()
+	return {"thread": thread, "holder": holder}
+
+
+def _finish_redfin_gallery(job, addr, lat, lng, budget=None):
+	"""-> {"photos", "url"}. A row with no point of its own starts the lookup
+	now with the Zillow-derived point, under the same budget."""
+	empty = {"photos": [], "url": None}
+	if job is None:
+		job = _start_redfin_gallery(addr, lat, lng)
+		if job is None:
+			return empty
+	job["thread"].join(timeout=max(0.05, float(REDFIN_GALLERY_BUDGET if budget is None else budget)))
+	if job["thread"].is_alive():
+		return empty
+	return job["holder"].get("gallery") or empty
 
 
 def _start_redfin_url(address, lat, lng):
