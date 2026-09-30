@@ -3002,6 +3002,8 @@ entries for an area (grep it) before touching that area.
   Enter/blur saves via `updateField('acq_price', n)`, Esc reverts; the
   `doc.acq_price` watcher skips overwriting the draft while focused. **Dispo**
   side-panel section = `dispo_price` (Currency, leads the section),
+  `dispo_partner` (Select: New Western / KeyGlee / ezREIdispo / Mr. House / Titanium Dispo / In-house / Novation /
+  Other — added 2026-10, which partner is marketing the deal),
   `inspection_end_date`/`closing_date` (Date), buyer assigned as at-a-glance
   fields (`buyer_name`/`buyer_phone` (Phone)/`buyer_email` (Email)/
   `buyer_entity`/`buyer_em_amount` (Currency)/`buyer_inspection_end_date`
