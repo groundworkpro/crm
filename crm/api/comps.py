@@ -1775,14 +1775,6 @@ def get_comp_details(lead, comp, address=None, lat=None, lng=None, city=None, st
 	return result
 
 
-@frappe.whitelist()
-def get_photo_date(url=None):
-	"""DateTimeOriginal for one gallery JPEG. The pictures themselves do not wait."""
-	_guard()
-	from crm.api.photo_exif import date_for_url
-
-	return {"exif": date_for_url(url)}
-
 
 #: The radius the client actually opens with (`CompsView`'s `radius` ref). Warming
 #: any other circle would populate a cache key nobody reads.

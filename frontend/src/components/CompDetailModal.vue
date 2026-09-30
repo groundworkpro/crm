@@ -187,10 +187,10 @@
                 </div>
               </template>
               <div
-                v-if="!photoPending && (photoDateText || photoDateLoading)"
+                v-if="!photoPending && photoDateText"
                 class="absolute bottom-3 left-3 rounded-full bg-black/60 px-2.5 py-1 text-xs text-white"
               >
-                {{ photoDateText || __('Dating…') }}
+                {{ photoDateText }}
               </div>
             </div>
 
@@ -369,7 +369,7 @@ import { COMP_CONDITION_TYPES, compsDetailUrl, compColor, compFit, compState, co
 import { copyToClipboard } from '@/utils'
 import { propertySearchAddress, providerLink, zillowUrl } from '@/utils/propertyLinks'
 import { Badge, Button, Dialog, FeatherIcon, call } from 'frappe-ui'
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 const emit = defineEmits(['use', 'street', 'setType', 'saveSqft'])
 
@@ -553,47 +553,29 @@ const photos = computed(() => {
 const isStaticStreetView = computed(
   () => !!streetViewPhotoUrl.value && photos.value[photoIndex.value] === streetViewPhotoUrl.value,
 )
-const photoDateByUrl = reactive({})
-const photoDateState = reactive({})
-function canDatePhoto(url) {
-  if (!url) return false
-  if (url.includes('maps.googleapis.com') || url.includes('imgix.net')) return false
-  if (url.includes('crm.api.streetview.comp_streetview')) return false
-  return true
-}
-function photoDateLabel(iso) {
-  if (!iso) return ''
-  const d = Date.parse(iso)
-  if (!Number.isFinite(d)) return ''
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
-}
-function askPhotoDate(url) {
-  if (!canDatePhoto(url) || photoDateState[url]) return
-  photoDateState[url] = 'loading'
-  call('crm.api.comps.get_photo_date', { url })
-    .then((r) => {
-      photoDateByUrl[url] = r?.exif || ''
-    })
-    .catch(() => {
-      photoDateByUrl[url] = ''
-    })
-    .finally(() => {
-      photoDateState[url] = 'done'
-    })
-}
-const photoDateText = computed(() =>
-  photoDateLabel(photoDateByUrl[photos.value[photoIndex.value]]),
-)
-const photoDateLoading = computed(() => {
-  const url = photos.value[photoIndex.value]
-  return canDatePhoto(url) && photoDateState[url] === 'loading'
+// Listing date, not photo date. Every photo CDN we use (Redfin, Zillow, Realtor)
+// strips the camera's EXIF timestamp — 0 of 5,652 lookups ever found one — so the
+// age shown is the house's most recent "Listed for sale/rent" event. MLS photos
+// are shot for a listing and syndicated to all three sites, so this dates them
+// whichever rung won the gallery. Zillow's history rides every detail response.
+const listingPhotoDate = computed(() => {
+  const dates = []
+  for (const e of details.value?.price_history || []) {
+    if (/^listed/i.test(String(e?.event || '').trim()) && e?.date) dates.push(String(e.date))
+  }
+  if (props.comp?.listed_date) dates.push(String(props.comp.listed_date))
+  const times = dates.map((d) => Date.parse(d.slice(0, 10))).filter(Number.isFinite)
+  if (!times.length) return ''
+  return new Date(Math.max(...times)).toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
 })
-watch(
-  () => [photos.value[photoIndex.value], photos.value[photoIndex.value + 1]],
-  (urls) => {
-    for (const url of urls) askPhotoDate(url)
-  },
-  { immediate: true },
+const photoDateText = computed(() =>
+  listingPhotoDate.value && !isStaticStreetView.value
+    ? __('Listed {0}', [listingPhotoDate.value])
+    : '',
 )
 
 watch(photoSrc, () => {
