@@ -394,16 +394,21 @@ def create_docuseal_agreement(
 			}))
 	else:
 		# The live Purchase Agreement template carries: Agreement Date, Seller
-		# Name(s), Property Address, Sale Price, Due Diligence Days, Earnest Money,
-		# Closing Days, Offer Expires Days, Additional Terms, Signer Name, Title
+		# Name(s), Property Address, Sale Price, Access Days, Due Diligence Days,
+		# Earnest Money, Offer Expires Days, Additional Terms, Signer Name, Title
 		# (+ the signature/date fields). Keys below that the template doesn't have
 		# (County / APN / Governing State / Occupancy / Personal Property /
 		# Disclosed Defects) are ignored by DocuSeal and kept only so an older
 		# template revision would still prefill.
 		#
-		# Sale Price, Closing Days and Offer Expires Days are deliberately NOT
-		# prefilled: they are per-deal terms with no safe default, and each is a
-		# REQUIRED field, so the rep must enter them before they can sign.
+		# Since the 2026-09-30 rebuild, inspection and closing share ONE window
+		# ("Due Diligence Days", counted from the day the seller first lets us in)
+		# and "Closing Days" no longer exists; "Access Days" is how long the seller
+		# has to give us a way in after signing.
+		#
+		# Sale Price and Offer Expires Days are deliberately NOT prefilled: they
+		# are per-deal terms with no safe default, and each is a REQUIRED field,
+		# so the rep must enter them before they can sign.
 		buyer_values = _clean({
 			# from the lead
 			"Seller Name(s)": sellers_joined,
@@ -415,6 +420,7 @@ def create_docuseal_agreement(
 			# standard defaults
 			"Agreement Date": frappe.utils.nowdate(),
 			"Earnest Money": "100",
+			"Access Days": "3",
 			"Due Diligence Days": "30",
 			"Occupancy": _OCCUPANCY_DEFAULT,
 			"Personal Property": "None.",

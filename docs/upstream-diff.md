@@ -4,6 +4,26 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Purchase Agreement: one inspect-and-close window, assignment spelled out** (2026-09-30) —
+  Lance's Labora "Contract tweaks": the inspection clock should start when the
+  seller lets us in (not at signing), closing should land about when inspection
+  ends, and the contract should say outright that it is assignable. Google Doc
+  `1dFP9Rmh…` edited via the Docs API (backup copy `1gqjaBmd…`), new templates
+  built by `tmp/build_psa_templates_v3.py` (old ones left unarchived, same as v2).
+  - New "HOW THE TIMELINE WORKS": seller gives access within **`Access Days`**
+    (new required blank, CRM prefills 3); we inspect AND close within
+    **`Due Diligence Days`** counted from first access (prefill still 30); a
+    title problem on the seller's side extends the window — cancellation right
+    included — to 7 days after title is clear. **`Closing Days` is gone.**
+  - Earnest money now goes to title within 3 business days after first access
+    and is refundable if we cancel before closing (was: non-refundable, wired
+    after the inspection period).
+  - "What we're doing" lists the three exits (assignment, same-day double
+    close, short hold); new ASSIGNMENT paragraph; buyer is "Groundwork Ventures
+    Inc. and/or assigns" on page 1 and the signature block.
+  - The body no longer fits one page, so the forced page break before the
+    signature page was removed: still 2 pages, signatures now mid-page 2.
+
 - **Day dividers in the SMS thread** (2026-09-30) — Lance: "something seems very
   odd on the texting order." The order was right, but bubbles showed only the time,
   so a thread spanning days read as scrambled (3:05 pm above 9:32 am). `SMSArea.vue`
