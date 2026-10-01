@@ -24,6 +24,68 @@ entries for an area (grep it) before touching that area.
   - The body no longer fits one page, so the forced page break before the
     signature page was removed: still 2 pages, signatures now mid-page 2.
 
+||||||| 6217dc563
+- **Knock AI handoffs land on the owner's Today board** (2026-10-01) — Lance:
+  a handoff to Germán (Dee Draeger) never showed on his board. The sync only
+  changed `lead_owner`; the lead was a parked import (`import_hidden`), had no
+  task, and an owner change doesn't refresh the board. `crm.api.knock.sync` now
+  takes an optional `handoff` {at, call_at, why}: it unhides the lead, books one
+  High "Call <first>" CRM Task for the owner due at the seller's requested time
+  (`call_at`, from Knock's AI) or now, and queues a board sync. Idempotent per
+  handoff via `handoff_at` on the thread's anchor comment. Tests:
+  `unit_test_knock_sync.py` (Handoff).
+
+- **Comp gallery: "Listed Mon YYYY" replaces the photo-file date** (2026-10-01) — Lance:
+  "why doesn't the photo age show up anymore?" It effectively never did: Redfin,
+  Zillow and Realtor all strip the camera timestamp from their images (0 of 5,652
+  cached lookups on prod had one; Redfin's CDN was not even on the fetch list). The
+  chip now shows the house's most recent listing, labelled "Listed for rent Mar 2024"
+  or "Listed for sale Mar 2024" so rental-listing photos are called out, from Zillow's
+  `price_history` (already in every detail response), falling back to the comp's
+  `listed_date`. MLS photos go to all three sites, so it applies whichever site won
+  the gallery. Removed `crm/api/photo_exif.py`, `get_photo_date`, and their test.
+
+- **Comp gallery looks Zillow up by full address, not street only** (2026-09-30) —
+  Exe/Dennis: a comp card opened as a same-numbered house in another state
+  (1635 Oregon Ave S, St Louis Park MN showed 1635 Oregon Ave, Steubenville OH,
+  its price, facts and photos). Redfin/Realtor pins keep the street alone in
+  `address`, and `_zillow_detail` sent just that to Zillow — which became common
+  once Redfin turned primary (2026-09-29). Now `_zillow_lookup_address` adds
+  city, state and zip, and `_locality_mismatch` throws away any Zillow answer in
+  another state (or another city and zip). Cache: Zillow detail v1 -> v2, gallery
+  v4 -> v5 with a migration that drops only wrong-town galleries (20 of 536 on
+  prod). Tests: `unit_test_comp_detail_pins.py`.
+- **Knock texts are Quo Messages, linked back to Knock** (2026-09-30) —
+  `crm.api.knock.sync` now files each Knock text as a **Quo Message** (the
+  doctype the Text Messages tab, kanban counts and the Today board's "last
+  contact" read), not a Communication (nothing read those, so Knock-texted
+  leads showed "never contacted"). Rows: `id` `knock-text-<hash>` (retry-safe),
+  `knock_url` (new Data/URL field, added by the ops setup script) linking the
+  Knock conversation, `sent_by` the teammate + `activity_source` Manual, or
+  Sequence for Knock's AI (so team activity counts only human texts),
+  `undelivered` when Knock logged a failure. The owner changes only when Knock
+  names one (a person has the thread); a lead is created only when Knock sends
+  `create` ("Send to CRM"). A later sync fills a missing `message_date`,
+  nothing else. `sms.get_sms_messages` returns `knock_url` and names the sender
+  from `sent_by` (or "Knock AI"); `SMSArea.vue` and the Activity feed show
+  "Knock ↗" on those texts.
+- **Knock text mirror endpoint** (2026-09-30) — new `crm.api.knock.sync` (POST,
+  API-key auth, never sends a text). Knock pushes each owned thread; the CRM finds
+  the lead by an anchor Comment, an explicit id, or a normalized phone + property
+  match (ambiguous or different-property matches refuse, no duplicate lead), sets
+  only `lead_owner`, and adds each text once as an SMS `Communication` with a
+  deterministic name. A per-thread lock and Knock's revision number reject stale
+  or overlapping snapshots. Tests: `crm/tests/unit_test_knock_sync.py`.
+- **Comp gallery no longer waits on Redfin /photos** (2026-09-30) — Dennis:
+  comp pictures "pretty slow". Since the 2026-09-22 Redfin -> Zillow -> Realtor
+  ladder, `_shape_detail` called Redfin's `/photos` SERIALLY after Zillow: 3-15s
+  per cold open, 489 15s ReadTimeouts in the prior week, and Redfin won 1 of
+  ~730 cached galleries. It now starts on a thread before Zillow
+  (`_start_redfin_gallery`, pure `requests`, config read on the request thread)
+  and is joined `REDFIN_GALLERY_BUDGET` (1.5s) past Zillow; a late answer is
+  dropped. The `/url` join now counts its 1s from Zillow too instead of
+  stacking. Ladder order unchanged. Measured on prod, three cold comps: 15.1s
+  -> 3.0-3.5s, identical photos. Tests: `unit_test_comp_redfin_url.py`.
 - **Day dividers in the SMS thread** (2026-09-30) — Lance: "something seems very
   odd on the texting order." The order was right, but bubbles showed only the time,
   so a thread spanning days read as scrambled (3:05 pm above 9:32 am). `SMSArea.vue`
@@ -80,6 +142,76 @@ entries for an area (grep it) before touching that area.
   nobody, gray when the county is outside any metro. New page `/contractors`
   (`Contractors.vue`, `ContractorModal.vue`, sidebar link) with a `?metro=` filter.
   Everything returns empty until the doctype exists, so the app can ship first.
+- **Redfin calls go through PropWarehouse (2026-09-29)**. Lance: every
+  property-data source through PropWarehouse, Redfin included. `geo._base_url()`
+  (which `redfin._base_url`, `address_resolve._redfin_base` and every Redfin
+  call site use) now returns `<propwarehouse_url>/redfin` — PropWarehouse's
+  passthrough to redfin-scraper-api (propwarehouse-api `redfin_proxy.py`,
+  counters at `/redfin/_stats`). Falls back to the scraper directly
+  (`geo._direct_url()`) when PropWarehouse's `/health` fails (checked at most
+  every 30s, remembered in Redis), when `propwarehouse_url` is unset, or with
+  `redfin_via_propwarehouse: 0` in site_config. No `redfin_scraper_url` still
+  means Redfin is off. `vendor_facts` falls back to `_direct_url` (not the
+  passthrough). Verified live: a PROP-00017 load made 2 listings, 1 properties
+  and 50 history calls, all through PropWarehouse, 0 errors.
+- **Comps: flip warnings and ISTL pin checks from Redfin, not Zillow (2026-09-29)**.
+  Lance: switch both to Redfin. `crm/api/redfin_history.py` reads each comp's
+  Redfin timeline via the scraper's free `/history` (50 fresh reads per load, 4
+  workers, ~4.5s measured, all direct/no ZenRows; cached 7 days per house),
+  translates Redfin's words into Zillow's priceHistory vocabulary and runs the
+  same `sale_history.parse` flip rule. "Sold (MLS)" + "Sold (Public Records)"
+  within 90 days are ONE sale — left as two, the duplicate hid the real earlier
+  purchase. Houses Redfin knows but did not read this load take Zillow's 30-day
+  cache TIMELINE only (`attach_sale_history(history_only=True)`): that cache's
+  status/size is up to a month old and was flipping Redfin's fresh for-sale
+  count (38 -> 45) and inventing "for rent". Billed Zillow history is now only for
+  houses Redfin has no id for, and only when Redfin was thin. The ISTL pin
+  refresh (Zillow `/property` x12) no longer runs when Redfin is enough —
+  `comp_merge.apply_redfin` already overwrites price/sale/size on every ISTL
+  pin it matches — and when it does run it skips houses Redfin answered for.
+  PROP-00017, 1 mi: 0 Zillow/Realtor/PropWarehouse calls, 32 flips, 131 of 1002
+  unchecked; 2 mi: 0 calls, 179 flips, 5.6-7.9s.
+- **Comps: Redfin first; Zillow and Realtor only fill in (2026-09-29)**. Lance:
+  Redfin is the primary comps source. `crm/api/redfin_listings.py` calls the
+  scraper's free `/listings` (Redfin's own map endpoint) for on-market homes —
+  active, coming soon, contingent, PENDING — and last-12-months solds, cached 6h
+  in Redis. The stored Redfin sweep only ever held sales, so listings and
+  pendings used to come from Zillow alone. The Zillow AREA search and the Realtor
+  search now run only when Redfin has fewer than 5 listings OR fewer than 5
+  recent sales in the circle, or did not answer / answered half. The Zillow ISTL
+  pin refresh still runs (it fixes our own stale asks). The Today-board prewarm
+  applies the same rule, so it no longer buys Zillow circles the page won't read.
+  Redfin listings merge through `comp_merge.apply_redfin`, listings ahead of the
+  store's old sales so a relisted house boards as the listing. Sources card:
+  Redfin shows "N listings · M recent sales"; skipped sources say "Not needed".
+  Measured on PROP-00017: 1/2 mi 4 listings (Zillow fills in), 1 mi 42 listings
+  incl. 4 pending, 2 mi 99 incl. 22 pending (both skip Zillow/Realtor). BatchData
+  gate unchanged. Tests `unit_test_redfin_first.py`.
+- **Comps: every Zillow call goes through PropWarehouse (2026-09-29)**. The
+  area search (sold / for sale / pending), the per-comp sale-history lookups and
+  the lead's own facts used to call RapidAPI directly from the CRM, so a circle
+  or house another app had already bought was bought again. They now ask
+  propwarehouse-api (`/zillow/search?full=true&include_pending=true`,
+  `/zillow/property`) and share its store. RapidAPI is called directly only when
+  the warehouse is unreachable or too old to have the route; a warehouse failure
+  (its quota floor, Zillow down) is NOT a reason to spend the key directly. The
+  CRM's own Redis caches stay in front, so call volume can only go down.
+  Needs propwarehouse-api `18b780d` (full/include_pending) — deployed first.
+  `crm/api/vendor_facts.py`, `zillow_comps._warehouse_search` /
+  `_property_bodies`, `zillow._fetch`; tests `unit_test_zillow_via_warehouse.py`.
+- **Comps: no 50-comp cap; listings get the paid lookups first** (2026-09-28) —
+  `get_lead_comps` drew only the 50 nearest matches, so a dense cluster of sales
+  pushed every listing off the board. 2027 Willow Cir, Centerville MN (PROP-00017)
+  has 421 comps within ½ mile and showed 0 of its 8 for-sale listings, even with
+  every filter cleared. Now every matched comp is returned (`limit` still works if a
+  caller passes it). The Zillow sale-history spend is still capped at
+  `SALE_HISTORY_BUDGET` (50) billed lookups per load. `_history_order` gives those
+  lookups to live listings first (for sale, pending, auction), then picked comps,
+  then the nearest sales. Every other comp reads the free 30-day pin cache
+  (`attach_sale_history(cache_only=True)`), or is marked `sale_history_unchecked`
+  if that cache has nothing. Board size: ½ mile ≈ 421 comps, 1 MB, 1s; 2 miles ≈
+  3,400 comps, 8.8 MB, 11s.
+
 - **Sequences: a booked follow-up ends New Lead 10-Day and hands off to Long-Term** (2026-09-25) —
   new `crm/api/sequence_booking.py`. When a rep creates (or moves later) a task on a
   lead due after today: an Active enrollment in a sequence with `then_enroll`
@@ -2911,6 +3043,8 @@ entries for an area (grep it) before touching that area.
   Enter/blur saves via `updateField('acq_price', n)`, Esc reverts; the
   `doc.acq_price` watcher skips overwriting the draft while focused. **Dispo**
   side-panel section = `dispo_price` (Currency, leads the section),
+  `dispo_partner` (Select: New Western / KeyGlee / ezREIdispo / Mr. House / Titanium Dispo / In-house / Novation /
+  Other — added 2026-10, which partner is marketing the deal),
   `inspection_end_date`/`closing_date` (Date), buyer assigned as at-a-glance
   fields (`buyer_name`/`buyer_phone` (Phone)/`buyer_email` (Email)/
   `buyer_entity`/`buyer_em_amount` (Currency)/`buyer_inspection_end_date`

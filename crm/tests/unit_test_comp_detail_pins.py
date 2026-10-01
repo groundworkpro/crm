@@ -64,3 +64,54 @@ class DetailPinRows(unittest.TestCase):
 			 patch.object(comps, "_detail_cached", return_value=None):
 			comps.get_comp_details("CRM-LEAD-1", "5-main-st-abcd")
 		shim.db.get_value.assert_called()
+
+
+class ZillowLookupLocality(unittest.TestCase):
+	"""Exe, 2026-09-30: a Redfin pin at 1635 Oregon Ave S, St Louis Park MN
+	opened as 1635 Oregon Ave, Steubenville OH — Zillow got the street only."""
+
+	def test_pin_street_gets_city_state_zip(self):
+		row = comps._caller_pin_row("redfin::50038980", "1635 Oregon Ave S", 44.9, -93.3,
+			"Saint Louis Park", "MN", "55426")
+		self.assertEqual(comps._zillow_lookup_address(row), "1635 Oregon Ave S, Saint Louis Park, MN 55426")
+
+	def test_full_crm_comp_line_is_left_alone(self):
+		row = {"address": "1611 Oregon Ave S, Saint Louis Park, MN 55426", "city": "Saint Louis Park", "state": "MN"}
+		self.assertEqual(comps._zillow_lookup_address(row), row["address"])
+
+	def test_other_state_is_a_mismatch(self):
+		row = {"city": "Rockford", "state": "IL", "zip": "61108"}
+		self.assertTrue(comps._locality_mismatch(row, {"city": "West Palm Beach", "state": "FL", "zip": "33407"}))
+		self.assertFalse(comps._locality_mismatch(row, {"city": "Rockford", "state": "IL", "zip": "61108"}))
+		# Same town, spelled differently, or a missing field: not a mismatch.
+		self.assertFalse(comps._locality_mismatch({"city": "St. Louis Park", "state": "MN", "zip": "55426"},
+			{"city": "Saint Louis Park", "state": "MN", "zip": "55426"}))
+		self.assertFalse(comps._locality_mismatch({"state": ""}, {"state": "OH"}))
+
+	def test_zillow_detail_sends_full_address_and_drops_wrong_town(self):
+		from crm.api import vendor_facts
+		shim.cache_store = {}
+		sent = []
+
+		def prop(address=None, zpid=None, photos=False):
+			sent.append(address)
+			return {"payload": {"zpid": 1}, "photos": {"photos": [1]}}
+
+		wrong = {"zpid": "1", "address": "1635 Oregon Ave", "city": "Steubenville", "state": "OH", "zip": "43952", "price": 55000}
+		row = {"name": "redfin::50038980", "address": "1635 Oregon Ave S", "city": "Saint Louis Park", "state": "MN", "zip": "55426"}
+		with patch.object(vendor_facts, "zillow_property", side_effect=prop), \
+			 patch.object(vendor_facts, "payload_or_fallback", side_effect=lambda env: (True, env)), \
+			 patch("crm.api.zillow.normalize_detail", return_value=wrong), \
+			 patch("crm.api.zillow.photo_urls", side_effect=lambda r: ["https://x/1.jpg"] if r else []):
+			details, photos = comps._zillow_detail(row, None)
+		self.assertEqual(sent, ["1635 Oregon Ave S, Saint Louis Park, MN 55426"])
+		self.assertIsNone(details)
+		self.assertEqual(photos, [])
+
+	def test_cached_wrong_town_gallery_is_not_carried_forward(self):
+		bad = {"comp": {"city": "Saint Louis Park", "state": "MN"}, "details": {"city": "Steubenville", "state": "OH"},
+			"photos": ["a"] * 12}
+		good = {"comp": {"city": "Rockford", "state": "IL"}, "details": {"city": "Rockford", "state": "IL"},
+			"photos": ["a"] * 12}
+		self.assertIsNone(comps.DETAIL_MIGRATIONS[4](bad))
+		self.assertIs(comps.DETAIL_MIGRATIONS[4](good), good)

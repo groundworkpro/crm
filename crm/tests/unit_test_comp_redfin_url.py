@@ -101,7 +101,7 @@ class PhotoLadder(unittest.TestCase):
 
 		with patch.object(redfin, "_base_url", return_value="http://svc"), \
 			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
-			 patch.object(redfin, "redfin_gallery",
+			 patch.object(redfin, "_fetch_gallery",
 			              return_value=gallery(redfin_photos, redfin_url)), \
 			 patch.object(apivex, "realtor_photo_urls", return_value=list(realtor)), \
 			 patch.object(comps, "_zillow_detail",
@@ -141,7 +141,7 @@ class PhotoLadder(unittest.TestCase):
 		realtor = unittest.mock.Mock(return_value=["x1"] * 20)
 		with patch.object(redfin, "_base_url", return_value="http://svc"), \
 			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
-			 patch.object(redfin, "redfin_gallery",
+			 patch.object(redfin, "_fetch_gallery",
 						  return_value=gallery([f"r{i}" for i in range(10)])), \
 			 patch.object(apivex, "realtor_photo_urls", realtor), \
 			 patch.object(comps, "_zillow_detail",
@@ -180,7 +180,7 @@ class RedfinUrlFromTheGallery(unittest.TestCase):
 		from crm.api import apivex
 
 		with patch.object(redfin, "_base_url", return_value="http://svc"), \
-			 patch.object(redfin, "redfin_gallery",
+			 patch.object(redfin, "_fetch_gallery",
 			              return_value=gallery(["r1", "r2"], "https://redfin/from-gallery")), \
 			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
 			 patch.object(comps, "_finish_redfin_url") as finish, \
@@ -203,7 +203,7 @@ class RedfinUrlFromTheGallery(unittest.TestCase):
 
 		with patch.object(redfin, "_base_url", return_value="http://svc"), \
 			 patch.object(redfin, "_fetch_listing_url", side_effect=slow), \
-			 patch.object(redfin, "redfin_gallery", return_value=gallery([], None)), \
+			 patch.object(redfin, "_fetch_gallery", return_value=gallery([], None)), \
 			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
 			 patch.object(comps, "REDFIN_URL_BUDGET", 0.1), \
 			 patch.object(comps, "_zillow_detail",
@@ -215,6 +215,74 @@ class RedfinUrlFromTheGallery(unittest.TestCase):
 		self.assertIsNone(result["redfin_url"])
 		self.assertTrue(result["redfin_url_pending"])
 		self.assertEqual(result["redfin_url_point"][1:], [45.0, -93.0])
+
+
+class RedfinGalleryBudget(unittest.TestCase):
+	"""A slow Redfin /photos must not hold the gallery hostage (2026-09-30).
+
+	It used to run serially after Zillow: 3-15s per cold open, frequently a 15s
+	timeout, for a rung that won 1 of ~730 cached galleries."""
+
+	def test_slow_redfin_does_not_block_zillow_photos(self):
+		from crm.api import apivex
+
+		release = threading.Event()
+
+		def slow(*a):
+			release.wait(5)
+			return gallery([f"r{i}" for i in range(30)], "https://redfin/late")
+
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
+			 patch.object(redfin, "_fetch_gallery", side_effect=slow), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
+			 patch.object(comps, "REDFIN_GALLERY_BUDGET", 0.1), \
+			 patch.object(comps, "_zillow_detail",
+			              return_value=({"address": "5 Main St"}, [f"z{i}" for i in range(12)])):
+			t = time.time()
+			out = comps._shape_detail(row())
+			elapsed = time.time() - t
+		release.set()
+		self.assertLess(elapsed, 1.5)
+		self.assertEqual(out["photo_source"], "zillow")
+		self.assertEqual(len(out["photos"]), 12)
+
+	def test_redfin_runs_alongside_zillow_not_after(self):
+		"""Redfin taking as long as Zillow costs ~one wait, not two."""
+		from crm.api import apivex
+
+		def redfin_slow(*a):
+			time.sleep(0.4)
+			return gallery([f"r{i}" for i in range(12)])
+
+		def zillow_slow(*a):
+			time.sleep(0.4)
+			return {"address": "5 Main St"}, []
+
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
+			 patch.object(redfin, "_fetch_gallery", side_effect=redfin_slow), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
+			 patch.object(comps, "_zillow_detail", side_effect=zillow_slow):
+			t = time.time()
+			out = comps._shape_detail(row())
+			elapsed = time.time() - t
+		self.assertEqual(out["photo_source"], "redfin")
+		self.assertLess(elapsed, 0.7)
+
+	def test_row_without_point_uses_zillow_point(self):
+		from crm.api import apivex
+
+		fetch = unittest.mock.Mock(return_value=gallery(["r1", "r2"]))
+		with patch.object(redfin, "_base_url", return_value="http://svc"), \
+			 patch.object(redfin, "_fetch_listing_url", return_value=None), \
+			 patch.object(redfin, "_fetch_gallery", fetch), \
+			 patch.object(apivex, "realtor_photo_urls", return_value=[]), \
+			 patch.object(comps, "_zillow_detail",
+			              return_value=({"address": "5 Main St", "lat": 44.0, "lng": -92.0}, [])):
+			out = comps._shape_detail({"name": "zillow::2", "address": "5 Main St"})
+		self.assertEqual(out["photo_source"], "redfin")
+		self.assertEqual(fetch.call_args[0][2:4], (44.0, -92.0))
 
 
 if __name__ == "__main__":

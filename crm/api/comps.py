@@ -59,6 +59,7 @@ import json
 import math
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -73,25 +74,23 @@ SALES_ROLES = ("System Manager", "Sales Manager", "Sales User")
 #: walks out (0.5 → 1 → 2 → 5) until it has a usable set; this 2-mile default is
 #: only for older callers that omit the argument entirely.
 DEFAULT_RADIUS_MI = 2.0
-#: Hard cap on returned pins, and since gw366 it is a DATA-COMPLETENESS promise
-#: rather than only a rendering limit: every comp that reaches the map gets its
-#: full sale history fetched (`_attach_sale_history`), so the board can be read
-#: as "everything shown here, we know everything about". A two-tier board -- some
-#: pins carrying a flip warning and some silently lacking one -- would be worse
-#: than no warning at all, because absence would look like evidence of no flip.
+#: How many comps get a BILLED Zillow sale-history lookup per board load. The
+#: board itself is NOT capped (Lance, 2026-09-28): it used to show only the 50
+#: nearest, and a dense cluster of sales (2027 Willow Cir, Centerville MN: 421
+#: comps in 1/2 mile) pushed every for-sale and pending listing off the map.
+#: Now every matched comp is drawn; this number only bounds the spend.
 #:
 #: 50 is a SPEND decision, measured. Sale history is one billed RapidAPI call per
 #: comp on a key shared with istl-buyer's ZIP job. At 25 leads/day against the
 #: 57,000/cycle plan, ~53 comps/lead is what the budget affords once istl-buyer's
-#: ~10,500 is reserved; every comp in a 1/2-mile circle (mean 126, and 253 in
-#: Indianapolis) would need roughly double the plan. Raising this is a one-line
-#: dial, but it is a bill, so turn it deliberately.
+#: ~10,500 is reserved. Raising it is a one-line dial, but it is a bill.
 #:
-#: It is applied AFTER filtering, never before -- capping first would take the 50
-#: nearest and then filter those, hiding better-fitting comps slightly further
-#: out. The tier ladder still runs over the whole filtered set, so what lands on
-#: the board is unchanged; only how many of them are drawn.
-MAX_COMPS = 50
+#: WHO gets the budget is `_history_order`: live listings first (for sale,
+#: pending, auction -- the asks the rep is looking for), then picked comps, then
+#: the nearest sales. Every other comp still gets its history if the 30-day pin
+#: cache holds it (free); otherwise it is marked `sale_history_unchecked`.
+SALE_HISTORY_BUDGET = 50
+LIVE_STATES = ("for_sale", "pending", "auction")
 
 #: How many matches make a tier "usable". Below this you are not comping, you are
 #: reading anecdotes, so the ladder loosens instead of presenting 2 pins as an
@@ -108,7 +107,7 @@ DEFAULT_WITHIN_DAYS = 365
 #: opens the same house. A failed/partial lookup gets a short retry window.
 DETAIL_CACHE_SECONDS = 30 * 24 * 60 * 60
 DETAIL_RETRY_SECONDS = 60 * 60
-DETAIL_CACHE_VERSION = 4  # v4 asks the next provider while the gallery has < 10
+DETAIL_CACHE_VERSION = 5  # v5 drops galleries Zillow resolved to another town
 #: The two BILLED calls behind a gallery (`/property` + `/photos`) are cached on
 #: their own, for the full month, the moment Zillow ANSWERS -- even when the
 #: answer is one leftover frame. The thin-gallery retry above exists so the
@@ -117,7 +116,7 @@ DETAIL_CACHE_VERSION = 4  # v4 asks the next provider while the gallery has < 10
 #: mostly one-photo houses, so that was most galleries, every hour, forever.
 #: Only a FAILED call (no body at all) gets the short window. Shares the
 #: `crm:comp-detail` prefix so `persistent_cache_keys` already keeps it.
-DETAIL_ZILLOW_CACHE_VERSION = 1
+DETAIL_ZILLOW_CACHE_VERSION = 2  # v2: street+city+state lookups (v1 sent the street only)
 #: Older gallery generations that can be served as the current one without a
 #: refetch. {from_version: fn(cached) -> cached | None}; None refuses. A gallery
 #: already at 10 photos answered the new ladder; a shorter one was frozen before
@@ -125,6 +124,9 @@ DETAIL_ZILLOW_CACHE_VERSION = 1
 DETAIL_MIGRATIONS = {
 	2: lambda c: c if len((c or {}).get("photos") or []) > 1 else None,
 	3: lambda c: c if len((c or {}).get("photos") or []) >= 10 else None,
+	# v4 looked Redfin/Realtor pins up on Zillow by STREET ONLY, so some cached
+	# galleries are a same-numbered house in another state. Keep the rest.
+	4: lambda c: None if _locality_mismatch((c or {}).get("comp"), (c or {}).get("details")) else c,
 }
 
 #: Ask the next photo provider while the gallery is still shorter than this.
@@ -1301,8 +1303,13 @@ def _zillow_detail(row, zpid):
 
 	raw = photo_raw = None
 	answered = False
+	# Street + city/state/zip. Redfin/Realtor pins carry the street alone in
+	# `address`; sent bare, Zillow picked a same-numbered house anywhere in the
+	# country (Exe, 2026-09-30: 1635 Oregon Ave S, St Louis Park MN opened as
+	# 1635 Oregon Ave, Steubenville OH, with its price and photos).
+	lookup = _zillow_lookup_address(row)
 	owned, env = vendor_facts.payload_or_fallback(
-		vendor_facts.zillow_property(address=row.get("address"), zpid=zpid, photos=True)
+		vendor_facts.zillow_property(address=lookup, zpid=zpid, photos=True)
 	)
 	if owned:
 		raw = (env or {}).get("payload")
@@ -1313,17 +1320,21 @@ def _zillow_detail(row, zpid):
 		raw = zillow_api._request("/property", {"zpid": zpid}, "Zillow: zpid lookup failed")
 		answered = raw is not None
 	else:
-		raw = zillow_api.property_details(row.get("address"))
+		raw = zillow_api.property_details(lookup)
 		answered = raw is not None
 	details = zillow_api.normalize_detail(raw) if raw else None
 	# Zillow's /property returns an EMPTY SHELL (every field null, even zpid) for
 	# some listings its own /search happily returned — observed on a pending Philly
 	# row, by zpid AND by address. When the zpid path came back hollow and we know
 	# the address, one address retry is worth the spend before giving up on Zillow.
-	if not owned and not details and zpid and (row.get("address") or "").strip():
-		raw = zillow_api.property_details(row.get("address"))
+	if not owned and not details and zpid and lookup:
+		raw = zillow_api.property_details(lookup)
 		answered = answered or raw is not None
 		details = zillow_api.normalize_detail(raw) if raw else None
+	# Belt and braces: an address Zillow still resolved to another town is not
+	# this house. Treat it as a miss rather than show someone else's price.
+	if details and _locality_mismatch(row, details):
+		details, raw, photo_raw = None, None, None
 	if not owned:
 		photo_raw = zillow_api.property_photos(details.get("zpid")) if details else None
 	photos = zillow_api.photo_urls(photo_raw)
@@ -1340,6 +1351,41 @@ def _zillow_detail(row, zpid):
 	except Exception:
 		pass
 	return details, photos
+
+
+def _zillow_lookup_address(row):
+	"""`street, city, ST zip` for a Zillow address lookup.
+
+	CRM Comp rows already store the full line; provider pins (redfin::,
+	realtor::, batchdata::) keep locality in separate fields.
+	"""
+	street = str((row or {}).get("address") or "").strip()
+	if not street or "," in street:
+		return street
+	city = str(row.get("city") or "").strip()
+	tail = " ".join(p for p in (str(row.get("state") or "").strip(), str(row.get("zip") or "").strip()) if p)
+	return ", ".join(p for p in (street, city, tail) if p)
+
+
+def _locality_mismatch(row, details):
+	"""True when Zillow's house is plainly in a different place than the comp.
+
+	State differs -> different house. Same state, zip AND city both differ ->
+	different house too (a zip or a city spelling alone can legitimately drift).
+	Missing fields on either side never count as a mismatch.
+	"""
+	if not row or not details:
+		return False
+
+	def norm(v):
+		return re.sub(r"[^a-z0-9]", "", str(v or "").lower())
+
+	rs, ds = norm(row.get("state")), norm(details.get("state"))
+	if rs and ds and rs != ds:
+		return True
+	rz, dz = norm(row.get("zip"))[:5], norm(details.get("zip"))[:5]
+	rc, dc = norm(row.get("city")), norm(details.get("city"))
+	return bool(rz and dz and rz != dz and rc and dc and rc != dc)
 
 
 def _detail_address(row, details=None):
@@ -1387,12 +1433,18 @@ def _shape_detail(row, zpid=None):
 	# answer is written into the cached entry by a background job, so the second
 	# open has the link and the first one has its photos.
 	url_job = _start_redfin_url(_detail_address(row), row.get("lat"), row.get("lng"))
+	# Redfin's /photos gets the same treatment (2026-09-30, Dennis: "pretty
+	# slow"). Run SERIALLY after Zillow it cost 3-15s on every cold open — 489
+	# 15s ReadTimeouts in the week before — and won the gallery on 1 of ~730
+	# cached comps. Started here, joined with REDFIN_GALLERY_BUDGET past Zillow.
+	gallery_job = _start_redfin_gallery(_detail_address(row), row.get("lat"), row.get("lng"))
 	# The FACTS blob stays Zillow-first and is fetched unconditionally: Redfin's
 	# /facts carries `listing_remarks` but no HOA, parking, heating, cooling or
 	# price history, and `CompDetailModal.vue` reads all of those. Photos and
 	# facts therefore cascade INDEPENDENTLY — this call is the facts half, and
 	# its photos are merely the last rung of the ladder below.
 	details, zillow_photos = _zillow_detail(row, zpid)
+	after_zillow = time.monotonic()
 	# Dedupe BEFORE the thin-gallery check: a photo-less home whose "gallery" is
 	# two sizes of the same synthesized Street View frame is really ONE photo, and
 	# counting it as two suppressed the fallbacks that could do better.
@@ -1422,7 +1474,7 @@ def _shape_detail(row, zpid=None):
 	# gets the better gallery, because a photo cannot invalidate a saved
 	# determination or move a comp off the board. Do not "consistently" gate this
 	# too; it would withhold a strictly better gallery for no safety gain.
-	rf = redfin.redfin_gallery(addr, lat=lat, lng=lng)
+	rf = _finish_redfin_gallery(gallery_job, addr, lat, lng)
 	photos = rf.get("photos") or []
 	# /photos carries the matched row's observed listing path, so on the happy
 	# path the link arrives with the gallery and the /url thread is never joined.
@@ -1443,7 +1495,10 @@ def _shape_detail(row, zpid=None):
 	# Only wait on the /url thread when Redfin's gallery did not already answer
 	# with the link — an unmatched house has no observed path to carry.
 	if not redfin_url:
-		redfin_url, url_pending = _finish_redfin_url(url_job, addr, lat, lng)
+		# Both threads started before Zillow, so the link's budget counts from
+		# there too rather than stacking on top of the gallery's wait.
+		left = REDFIN_URL_BUDGET - (time.monotonic() - after_zillow)
+		redfin_url, url_pending = _finish_redfin_url(url_job, addr, lat, lng, budget=left)
 
 	comp = dict(row)
 	if is_adc(comp) and details:
@@ -1476,6 +1531,50 @@ def _shape_detail(row, zpid=None):
 #: link is a courtesy; the photos are the click. Same shape as the subject's
 #: `finish_subject_record` budget.
 REDFIN_URL_BUDGET = 1.0
+
+#: How long past the Zillow calls a gallery open waits for Redfin's /photos.
+#: The service answers a warm address in ~0.4s and a cold one in 3-15s; a late
+#: answer is dropped (Zillow/Realtor already have the pictures) rather than
+#: holding the rep's click hostage.
+REDFIN_GALLERY_BUDGET = 1.5
+
+
+def _start_redfin_gallery(address, lat, lng):
+	"""Start Redfin /photos on a thread, or None (no point / no service).
+	Same thread rules as `_start_redfin_url`: config read here, pure requests
+	in the thread, every exception swallowed."""
+	from crm.api import redfin
+
+	base = redfin._base_url()
+	point = redfin._point(address, lat, lng)
+	if not base or not point:
+		return None
+	addr, plat, plng = point
+	holder = {}
+
+	def _run():
+		try:
+			holder["gallery"] = redfin._fetch_gallery(base, addr, plat, plng, 60)
+		except Exception as e:  # noqa: BLE001 -- thread must never raise
+			holder["error"] = str(e)
+
+	thread = threading.Thread(target=_run, daemon=True)
+	thread.start()
+	return {"thread": thread, "holder": holder}
+
+
+def _finish_redfin_gallery(job, addr, lat, lng, budget=None):
+	"""-> {"photos", "url"}. A row with no point of its own starts the lookup
+	now with the Zillow-derived point, under the same budget."""
+	empty = {"photos": [], "url": None}
+	if job is None:
+		job = _start_redfin_gallery(addr, lat, lng)
+		if job is None:
+			return empty
+	job["thread"].join(timeout=max(0.05, float(REDFIN_GALLERY_BUDGET if budget is None else budget)))
+	if job["thread"].is_alive():
+		return empty
+	return job["holder"].get("gallery") or empty
 
 
 def _start_redfin_url(address, lat, lng):
@@ -1723,14 +1822,6 @@ def get_comp_details(lead, comp, address=None, lat=None, lng=None, city=None, st
 	return result
 
 
-@frappe.whitelist()
-def get_photo_date(url=None):
-	"""DateTimeOriginal for one gallery JPEG. The pictures themselves do not wait."""
-	_guard()
-	from crm.api.photo_exif import date_for_url
-
-	return {"exif": date_for_url(url)}
-
 
 #: The radius the client actually opens with (`CompsView`'s `radius` ref). Warming
 #: any other circle would populate a cache key nobody reads.
@@ -1768,6 +1859,18 @@ def warm_lead_area(lead):
 		return {"warmed": False, "reason": "no_location"}
 	if zillow_comps.area_is_cached(lat, lng, WARM_RADIUS_MI):
 		return {"warmed": False, "reason": "already_warm"}
+	# Redfin first, here too: no point buying a Zillow circle the comps page
+	# will not ask for. This also warms the Redfin answer the page will read.
+	try:
+		from crm.api import redfin_listings
+
+		homes, lmeta = redfin_listings.finish(redfin_listings.start(lat, lng, WARM_RADIUS_MI))
+		verdict = redfin_listings.decide(homes, lmeta, lat, lng, WARM_RADIUS_MI)
+		if not verdict["fill_in"]:
+			return {"warmed": False, "reason": "redfin_enough",
+					"listings": verdict["listings"], "recent_sales": verdict["recent_sales"]}
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Comps prewarm: Redfin listings failed")
 
 	area = zillow_comps.area_comps(lat, lng, WARM_RADIUS_MI)
 	return {
@@ -1941,10 +2044,11 @@ def get_lead_comps(
 		radius = max(0.25, min(10.0, float(radius_mi or DEFAULT_RADIUS_MI)))
 	except (TypeError, ValueError):
 		radius = DEFAULT_RADIUS_MI
+	# No cap unless a caller asks for one (see SALE_HISTORY_BUDGET).
 	try:
-		cap = max(1, min(MAX_COMPS, int(limit or MAX_COMPS)))
+		cap = max(1, int(limit)) if limit else None
 	except (TypeError, ValueError):
-		cap = MAX_COMPS
+		cap = None
 
 	lat, lng, cached = _subject_point(doc)
 	subject = {"lat": lat, "lng": lng} if lat is not None else None
@@ -2026,6 +2130,7 @@ def get_lead_comps(
 	# (a miss lands in Redis via a background job for the next fetch instead).
 	redfin_check_job = None
 	redfin_istl_job = None
+	redfin_listings_job = None
 	realtor_job = None
 	if subject is not None:
 		try:
@@ -2036,6 +2141,15 @@ def get_lead_comps(
 				redfin_istl_job = redfin.start_istl_coverage(lat, lng, radius)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin check start failed")
+		# Redfin FIRST: its listings, pendings and recent sales decide whether
+		# Zillow and Realtor are asked at all (see `redfin_listings`).
+		if not rental:
+			try:
+				from crm.api import redfin_listings
+
+				redfin_listings_job = redfin_listings.start(lat, lng, radius)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings start failed")
 		# Third AVM for the subject tile, same thread-beside-the-refresh shape.
 		try:
 			from crm.api import apivex
@@ -2094,17 +2208,40 @@ def get_lead_comps(
 				row[key] = str(row[key])
 		out.append(row)
 
+	# Redfin first. Five listings and five recent sales from Redfin is a board;
+	# fewer, or no answer, and Zillow and Realtor fill in. Collected BEFORE the
+	# Zillow refresh because it decides whether that refresh searches the area.
+	redfin_listing_features = []
+	fill_in = True
+	if not rental and subject is not None:
+		try:
+			from crm.api import redfin_listings
+
+			homes, lmeta = redfin_listings.finish(redfin_listings_job)
+			base["redfin_first"] = redfin_listings.decide(homes, lmeta, lat, lng, radius)
+			fill_in = base["redfin_first"]["fill_in"]
+			redfin_listing_features = redfin_listings.features(homes)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings failed")
+			base["redfin_first"] = {"fill_in": True, "reason": "error"}
+
 	# ISTL asks go stale. Check Zillow for newer sales/listings around the
 	# subject, and refresh the nearest ISTL pins' sale dates, before we count
 	# or filter. Soft: an outage leaves `out` as the pooled index.
 	# Rentals skip the sale circle entirely — ForRent is a different number.
+	# When Redfin already had enough, Zillow is not asked at all: Redfin's merge
+	# below corrects the ISTL pins it knows. When Redfin is thin, the ISTL pin
+	# refresh skips the houses Redfin answered for.
 	try:
-		from crm.api import zillow_comps
+		from crm.api import redfin, zillow_comps
 
 		if rental:
 			base["zillow"] = zillow_comps.apply_rentals(doc, out, lat, lng, radius)
 		else:
-			base["zillow"] = zillow_comps.apply(doc, out, lat, lng, radius)
+			base["zillow"] = zillow_comps.apply(
+				doc, out, lat, lng, radius, area=fill_in,
+				redfin_keys=set(redfin.coverage_index(redfin_listing_features)),
+			)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow refresh failed")
 		base["zillow"] = {"used": False, "reason": "error"}
@@ -2121,24 +2258,39 @@ def get_lead_comps(
 	# to run first because authority overwrites whatever it set.
 	# What the Sources card says about Redfin. Rentals never read the sale store.
 	redfin_meta = None
+	redfin_store_features = []
 	if redfin_istl_job is not None:
 		try:
 			from crm.api import redfin
 
 			features, meta = redfin.finish_istl_coverage(redfin_istl_job)
+			redfin_store_features = list(features or [])
 			redfin_meta = meta or {}
-			base["redfin"] = redfin.apply_istl_comps(out, features)
+			base["redfin"] = redfin.apply_istl_comps(out, redfin_listing_features + redfin_store_features)
 			redfin.maybe_rewarm(lead, meta)
 			if not rental:
 				from crm.api import comp_merge
 
+				# Listings first: `apply_redfin` keeps the first copy of an
+				# address, and a house listed today beats its old sale record.
 				base["redfin"]["merge"] = comp_merge.apply_redfin(
-					out, features, lat, lng, radius, today,
+					out, redfin_listing_features + list(features or []), lat, lng, radius, today,
 					self_keys=_self_merge_keys(doc),
 				)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin ISTL overlay failed")
 			redfin_meta = {"error": "overlay"}
+	elif redfin_listing_features:
+		# No store read (no scraper URL for coverage) but listings answered.
+		try:
+			from crm.api import comp_merge
+
+			base["redfin"] = {"merge": comp_merge.apply_redfin(
+				out, redfin_listing_features, lat, lng, radius, today,
+				self_keys=_self_merge_keys(doc),
+			)}
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Redfin listings merge failed")
 	redfin_status = _redfin_status(redfin_meta, base.get("redfin"), rental, redfin_istl_job)
 
 	# Realtor ADDS houses and nothing else. It is the single biggest contributor
@@ -2146,7 +2298,9 @@ def get_lead_comps(
 	# (outlier on price 45% of the time) -- so we take its inventory and ignore
 	# its opinion about anything already on the board. Rentals are excluded: this
 	# is a recorded-sale and for-sale search, not a ForRent one.
-	if not rental and subject is not None:
+	if not rental and subject is not None and not fill_in:
+		base["realtor"] = {"used": False, "added": 0, "reason": "redfin_enough"}
+	elif not rental and subject is not None:
 		try:
 			from crm.api import comp_merge
 
@@ -2282,7 +2436,7 @@ def get_lead_comps(
 	# touching the ladder, the counts, or what gets underwritten.
 	out = [r for r in out if not r["hidden"]]
 	if int(include_hidden or 0):
-		base["discarded"] = sorted(hidden_here, key=lambda r: r["distance_mi"])[:cap]
+		base["discarded"] = sorted(hidden_here, key=lambda r: r["distance_mi"])
 
 	explicit = _coerce_filters(filters)
 	if explicit is not None:
@@ -2334,13 +2488,11 @@ def get_lead_comps(
 	base["selected_count"] = sum(1 for r in matched if r["selected"])
 
 	base["total_matched"] = len(matched)
-	base["comps"] = matched[:cap]
+	base["comps"] = matched[:cap] if cap else matched
 
-	# LAST, and only on the capped set. This is the first point at which we know
-	# which comps a person will actually see, and the promise is that every one of
-	# them has complete information -- so this must not run before the filter (it
-	# would bill for comps nobody looks at) nor before the cap (same, and far
-	# worse: a 1/2-mile circle holds 126 comps on average and 253 in Indianapolis).
+	# LAST, on the final board: the first point at which we know which comps a
+	# person will actually see. Billed lookups go to `_history_order`'s first
+	# SALE_HISTORY_BUDGET rows (listings first); the rest read the free cache.
 	#
 	# Best-effort by construction: `attach_sale_history` marks a row it could not
 	# resolve rather than raising, because a comps map that renders without flip
@@ -2355,9 +2507,29 @@ def get_lead_comps(
 			# Imported again rather than relying on the binding from the refresh block
 			# above: that one lives inside a `try` whose `except` swallows an ImportError,
 			# so the name is not guaranteed to exist down here.
+			from crm.api import redfin, redfin_history
 			from crm.api import zillow_comps as _zc
 
-			base["sale_history"] = _zc.attach_sale_history(base["comps"], today)
+			# Redfin first (free): every house it knows, listings then nearest.
+			ordered, _ = _history_order(base["comps"], len(base["comps"]))
+			index = redfin.coverage_index(redfin_listing_features + redfin_store_features)
+			base["sale_history"], lacking, unread = redfin_history.attach(ordered, today, index)
+			# Zillow only for houses Redfin does not know, and only billed when
+			# Redfin was too thin to carry the board; otherwise its free cache.
+			# Houses Redfin knows but did not read this load: the free cache only.
+			paid, free = _history_order(lacking, SALE_HISTORY_BUDGET if fill_in else 0)
+			if unread:
+				# Zillow's cache pass re-flags what it cannot find itself.
+				base["sale_history"]["unchecked"] -= len(unread)
+				for row in unread:
+					row.pop("sale_history_unchecked", None)
+			for part in (_zc.attach_sale_history(paid, today) if paid else {},
+						 _zc.attach_sale_history(free, today, cache_only=True) if free else {},
+						 _zc.attach_sale_history(unread, today, cache_only=True, history_only=True)
+						 if unread else {}):
+				for k, v in part.items():
+					if k != "source":
+						base["sale_history"][k] = base["sale_history"].get(k, 0) + v
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: sale history failed")
 			base["sale_history"] = {"checked": 0, "with_history": 0, "flips": 0, "missing": len(base["comps"])}
@@ -2365,6 +2537,24 @@ def get_lead_comps(
 				row.setdefault("sale_history", None)
 				row.setdefault("sale_history_missing", True)
 	return base
+
+
+def _history_order(rows, budget):
+	"""Split the board into (billed, cache-only) sale-history lookups.
+
+	Billed, in order: live listings nearest-first, then picked comps, then the
+	nearest sales -- until `budget` rows. Everything else is cache-only.
+	`rows` is sorted by distance, so "nearest-first" is just list order."""
+	live = [r for r in rows if r.get("listing_state") in LIVE_STATES]
+	picked = [r for r in rows if r.get("selected")]
+	order, seen = [], set()
+	for r in live + picked + list(rows):
+		if len(order) >= budget:
+			break
+		if id(r) not in seen:
+			seen.add(id(r))
+			order.append(r)
+	return order, [r for r in rows if id(r) not in seen]
 
 
 #: Redfin states in which a BatchData purchase is deferred and the page polls.
@@ -2425,7 +2615,10 @@ def _sources(base, redfin_status, rental):
 	tells the page to re-check while something is still on its way.
 	"""
 	z = base.get("zillow") or {}
-	if z.get("reason") in ("not_configured", "no_subject"):
+	if z.get("reason") == "redfin_enough":
+		zillow = {"state": "off", "reason": "redfin_enough",
+				  "pins_checked": z.get("pins_checked") or 0}
+	elif z.get("reason") in ("not_configured", "no_subject"):
 		zillow = {"state": "off", "reason": z.get("reason")}
 	elif z.get("reason") == "error":
 		zillow = {"state": "error"}
@@ -2445,8 +2638,8 @@ def _sources(base, redfin_status, rental):
 		realtor = {"state": "off", "reason": "rentals"}
 	elif r is None:
 		realtor = {"state": "off", "reason": "not_configured"}
-	elif r.get("reason") == "not_configured":
-		realtor = {"state": "off", "reason": "not_configured"}
+	elif r.get("reason") in ("not_configured", "redfin_enough"):
+		realtor = {"state": "off", "reason": r.get("reason")}
 	elif r.get("reason") and r.get("reason") != "no_zip" and not r.get("added"):
 		realtor = {"state": "error"}
 	else:
@@ -2481,6 +2674,10 @@ def _sources(base, redfin_status, rental):
 	else:
 		batch = {"state": "skipped"}
 
+	rf = base.get("redfin_first")
+	if rf and isinstance(redfin_status, dict):
+		redfin_status = dict(redfin_status, listings=rf.get("listings"),
+							 recent_sales=rf.get("recent_sales"))
 	return {
 		"zillow": zillow,
 		"redfin": redfin_status,

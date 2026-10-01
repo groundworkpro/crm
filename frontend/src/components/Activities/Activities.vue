@@ -339,6 +339,17 @@
               <Tooltip :text="formatDate(activity.creation)">
                 <span>{{ shortTime(activity.creation) }}</span>
               </Tooltip>
+              <!-- Texted from Knock: open the conversation there. -->
+              <template v-if="activity.knock_url">
+                <span>·</span>
+                <a
+                  :href="activity.knock_url"
+                  target="_blank"
+                  rel="noopener"
+                  class="underline underline-offset-2 hover:text-ink-gray-8"
+                  :title="__('Sent through Knock. Open this conversation in Knock')"
+                >Knock ↗</a>
+              </template>
             </div>
             <div
               class="max-w-[78%] whitespace-pre-wrap rounded-lg px-2.5 py-1.5 text-sm"
@@ -1239,6 +1250,7 @@ function get_text_activities() {
     status: m.status,
     sender: m.sender,
     sender_name: m.sender_name,
+    knock_url: m.knock_url,
   }))
 }
 

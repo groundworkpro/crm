@@ -187,10 +187,10 @@
                 </div>
               </template>
               <div
-                v-if="!photoPending && (photoDateText || photoDateLoading)"
+                v-if="!photoPending && photoDateText"
                 class="absolute bottom-3 left-3 rounded-full bg-black/60 px-2.5 py-1 text-xs text-white"
               >
-                {{ photoDateText || __('Dating…') }}
+                {{ photoDateText }}
               </div>
             </div>
 
@@ -369,7 +369,7 @@ import { COMP_CONDITION_TYPES, compsDetailUrl, compColor, compFit, compState, co
 import { copyToClipboard } from '@/utils'
 import { propertySearchAddress, providerLink, zillowUrl } from '@/utils/propertyLinks'
 import { Badge, Button, Dialog, FeatherIcon, call } from 'frappe-ui'
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 const emit = defineEmits(['use', 'street', 'setType', 'saveSqft'])
 
@@ -553,48 +553,40 @@ const photos = computed(() => {
 const isStaticStreetView = computed(
   () => !!streetViewPhotoUrl.value && photos.value[photoIndex.value] === streetViewPhotoUrl.value,
 )
-const photoDateByUrl = reactive({})
-const photoDateState = reactive({})
-function canDatePhoto(url) {
-  if (!url) return false
-  if (url.includes('maps.googleapis.com') || url.includes('imgix.net')) return false
-  if (url.includes('crm.api.streetview.comp_streetview')) return false
-  return true
-}
-function photoDateLabel(iso) {
-  if (!iso) return ''
-  const d = Date.parse(iso)
-  if (!Number.isFinite(d)) return ''
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
-}
-function askPhotoDate(url) {
-  if (!canDatePhoto(url) || photoDateState[url]) return
-  photoDateState[url] = 'loading'
-  call('crm.api.comps.get_photo_date', { url })
-    .then((r) => {
-      photoDateByUrl[url] = r?.exif || ''
-    })
-    .catch(() => {
-      photoDateByUrl[url] = ''
-    })
-    .finally(() => {
-      photoDateState[url] = 'done'
-    })
-}
-const photoDateText = computed(() =>
-  photoDateLabel(photoDateByUrl[photos.value[photoIndex.value]]),
-)
-const photoDateLoading = computed(() => {
-  const url = photos.value[photoIndex.value]
-  return canDatePhoto(url) && photoDateState[url] === 'loading'
+// Listing date, not photo date. Every photo CDN we use (Redfin, Zillow, Realtor)
+// strips the camera's EXIF timestamp — 0 of 5,652 lookups ever found one — so the
+// age shown is the house's most recent "Listed for sale/rent" event. MLS photos
+// are shot for a listing and syndicated to all three sites, so this dates them
+// whichever rung won the gallery. Zillow's history rides every detail response.
+// Newest listing event, kept with its KIND: a rental listing's photos can be
+// newer (or older) than the last sale listing's, and a rep reading condition
+// needs to know which one he is looking at. Zillow priceHistory's `event` is
+// "Listed for sale" / "Listed for rent"; `postingIsRental` backs up the text.
+const latestListing = computed(() => {
+  const events = []
+  for (const e of details.value?.price_history || []) {
+    const kind = String(e?.event || '').trim().toLowerCase()
+    if (!kind.startsWith('listed') || !e?.date) continue
+    const t = Date.parse(String(e.date).slice(0, 10))
+    if (!Number.isFinite(t)) continue
+    events.push({ t, rental: kind.includes('rent') || e.postingIsRental === true })
+  }
+  // CRM Comp's listed_date is a sale listing; only used when Zillow has none newer.
+  const own = Date.parse(String(props.comp?.listed_date || '').slice(0, 10))
+  if (Number.isFinite(own)) events.push({ t: own, rental: false })
+  if (!events.length) return null
+  return events.reduce((a, b) => (b.t > a.t ? b : a))
 })
-watch(
-  () => [photos.value[photoIndex.value], photos.value[photoIndex.value + 1]],
-  (urls) => {
-    for (const url of urls) askPhotoDate(url)
-  },
-  { immediate: true },
-)
+const photoDateText = computed(() => {
+  const l = latestListing.value
+  if (!l || isStaticStreetView.value) return ''
+  const when = new Date(l.t).toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+  return l.rental ? __('Listed for rent {0}', [when]) : __('Listed for sale {0}', [when])
+})
 
 watch(photoSrc, () => {
   heroLoaded.value = false
