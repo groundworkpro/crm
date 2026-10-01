@@ -309,5 +309,71 @@ class Sync(unittest.TestCase):
 		self.assertEqual(self.crm.of("CRM Lead"), [])
 
 
+class Handoff(unittest.TestCase):
+	"""An AI handoff puts the seller on the new owner's Today board: the parked
+	lead is unhidden and one call is booked, at the seller's time if they gave one."""
+
+	setUp = Sync.setUp
+	tearDown = Sync.tearDown
+
+	def sync(self, revision, **kw):
+		from unittest import mock
+
+		board = mock.MagicMock()
+		with mock.patch.dict("sys.modules", {"crm.api.today_board": board}):
+			out = knock.sync(thread(revision, crm_id="CRM-LEAD-2026-00458", **kw))
+		self.refreshed = board.enqueue_today_sync.called
+		return out
+
+	def tasks(self):
+		return self.crm.of("CRM Task")
+
+	def test_payload_checks_the_handoff(self):
+		for bad in ({"at": 0}, {"at": True}, {"at": 5, "call_at": -1}, {"at": 5, "why": 3}, "soon"):
+			with self.assertRaises(ValueError, msg=bad):
+				knock.parse_payload(thread(handoff=bad))
+		h = knock.parse_payload(thread(handoff={"at": 5, "why": " call 8:15 "})).handoff
+		self.assertEqual((h.at, h.call_at, h.why), (5, 0, "call 8:15"))
+		self.assertIsNone(knock.parse_payload(thread()).handoff)
+
+	def test_books_the_call_once_at_the_sellers_time_and_unhides_the_lead(self):
+		shim.db.columns = {"CRM Lead": {"import_hidden"}}
+		try:
+			lead = self.crm.lead("CRM-LEAD-2026-00458")
+			lead.import_hidden = 1
+			# 1790000000 = 09:13:20 Chicago on 2026-09-21.
+			h = {"at": 1789990000, "call_at": 1790000000, "why": "wants a call 9 to 11"}
+			out = self.sync(1, handoff=h)
+			self.assertTrue(out["booked"] and self.refreshed)
+			shim.db.set_value.assert_called_with("CRM Lead", lead.name, "import_hidden", 0, update_modified=False)
+			[task] = self.tasks()
+			self.assertEqual((task.assigned_to, task.reference_docname, task.status), (EXE, lead.name, "Todo"))
+			self.assertEqual(task.due_date, datetime(2026, 9, 21, 9, 13, 20))
+			self.assertEqual((task.title, task.description), ("Call Pat · asked for this time", "wants a call 9 to 11"))
+			# A retry or a later snapshot carrying the same handoff books nothing more.
+			self.assertFalse(self.sync(2, handoff=h)["booked"])
+			self.assertEqual(len(self.tasks()), 1)
+			# The next handoff is a new call.
+			self.assertTrue(self.sync(3, handoff={"at": 1790100000})["booked"])
+			self.assertEqual(len(self.tasks()), 2)
+		finally:
+			shim.db.columns = {}
+
+	def test_no_time_means_call_now(self):
+		self.crm.lead("CRM-LEAD-2026-00458")
+		before = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None, microsecond=0)
+		self.sync(1, handoff={"at": 1790000000})
+		[task] = self.tasks()
+		self.assertGreaterEqual(task.due_date, before)
+		self.assertEqual(task.title, "Call Pat · Knock handoff")
+
+	def test_nothing_is_booked_without_an_owner(self):
+		self.crm.lead("CRM-LEAD-2026-00458", owner="")
+		out = self.sync(1, owner_email="", handoff={"at": 1790000000})
+		self.assertFalse(out["booked"] or self.refreshed)
+		self.assertEqual(self.tasks(), [])
+
+
+
 if __name__ == "__main__":
 	unittest.main()

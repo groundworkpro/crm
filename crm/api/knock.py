@@ -12,6 +12,10 @@ apart by `knock_url` (the link back to the Knock conversation) and `id`
   AI's is Sequence (automated, so team activity counts only human texts).
 * The CRM owner follows Knock only when Knock sends one (a person has the
   thread). Nothing else on the lead changes: no status, notes or `_assign`.
+* An AI handoff (`handoff`: at, call_at, why) puts the seller on the new
+  owner's Today board: a parked import lead is unhidden and one CRM Task
+  "Call <first>" is booked for the owner, due when the seller asked to be
+  called (else now). `handoff_at` on the anchor keeps it to one per handoff.
 * A CRM lead is created only when Knock says `create` (an explicit "Send to
   CRM"). Otherwise the thread must already be a CRM lead, or it's refused.
 * Serialized per Knock thread; Knock's global revision rejects older snapshots.
@@ -43,6 +47,16 @@ class Text:
 
 
 @dataclass(frozen=True)
+class Handoff:
+	"""Knock's AI handed the thread to a person. `at` (unix) names this
+	handoff, so a retry or a later snapshot never books a second call;
+	`call_at` (unix, 0 = none) is the time the seller asked to be called."""
+	at: int
+	call_at: int = 0
+	why: str = ""
+
+
+@dataclass(frozen=True)
 class Thread:
 	id: str
 	revision: int
@@ -59,6 +73,7 @@ class Thread:
 	create: bool = False
 	knock_url: str = ""
 	line: str = ""
+	handoff: Handoff | None = None
 
 
 def stable_name(kind, thread, message=""):
@@ -122,9 +137,52 @@ def parse_payload(payload):
 			raise ValueError("sender_email must be a Groundwork teammate or empty")
 		texts.append(Text(m["id"], m["body"], m["speaker"], received, stamp, m["at"],
 			flag(m, "failed"), sender, flag(m, "automated")))
+	handoff = p.get("handoff")
+	if handoff is not None:
+		if not isinstance(handoff, dict):
+			raise ValueError("handoff must be an object")
+		at, call_at, why = handoff.get("at"), handoff.get("call_at", 0), handoff.get("why", "")
+		if any(isinstance(v, bool) or not isinstance(v, int) for v in (at, call_at)) or at < 1 or call_at < 0:
+			raise ValueError("handoff needs a unix at and a unix call_at (0 for none)")
+		if not isinstance(why, str):
+			raise ValueError("handoff why must be text")
+		handoff = Handoff(at, call_at, why.strip()[:2000])
 	return Thread(id, revision, phone, owner, string("crm_id"), string("first_name"), string("last_name"),
 		string("address"), string("city"), string("state"), string("zip"), tuple(texts),
-		create, knock_url, line)
+		create, knock_url, line, handoff)
+
+
+def handoff_task(thread, lead, owner, tz, now):
+	"""The CRM Task that puts a handed-off seller on the owner's Today board:
+	due at the time the seller asked to be called, else now. Pure apart from `tz`."""
+	h = thread.handoff
+	due = now
+	if h.call_at:
+		due = datetime.fromtimestamp(h.call_at, timezone.utc).astimezone(tz).replace(tzinfo=None)
+	who = thread.first or "the seller"
+	return {
+		"doctype": "CRM Task",
+		"title": f"Call {who} · " + ("asked for this time" if h.call_at else "Knock handoff"),
+		"description": h.why,
+		"status": "Todo",
+		"priority": "High",
+		"assigned_to": owner,
+		"due_date": due,
+		"reference_doctype": "CRM Lead",
+		"reference_docname": lead,
+	}
+
+
+def _take_handoff(thread, doc, meta, tz):
+	"""Unhide a parked lead and book the owner's call, once per handoff."""
+	h = thread.handoff
+	if not h or not doc.lead_owner or int(meta.get("handoff_at", 0)) >= h.at:
+		return False
+	if frappe.db.has_column("CRM Lead", "import_hidden") and doc.get("import_hidden"):
+		frappe.db.set_value("CRM Lead", doc.name, "import_hidden", 0, update_modified=False)
+	now = datetime.now(tz).replace(tzinfo=None, microsecond=0)
+	frappe.get_doc(handoff_task(thread, doc.name, doc.lead_owner, tz, now)).insert(ignore_permissions=True)
+	return True
 
 
 def message_row(thread, lead, t, has_link, tz):
@@ -226,6 +284,7 @@ def sync(payload):
 				doc.save()  # never _assign, statuses, unrelated notes or property facts
 			senders = {t.sender_email for t in thread.texts if t.sender_email}
 			enabled = {u for u in senders if frappe.db.get_value("User", u, "enabled")}
+			booked = _take_handoff(thread, doc, meta, tz)
 			added = dated = 0
 			for t in thread.texts:
 				row = message_row(thread, doc.name, t, has_link, tz)
@@ -242,14 +301,24 @@ def sync(payload):
 					continue
 				frappe.get_doc(row).insert(ignore_permissions=True)
 				added += 1
-			meta = json.dumps({"revision": thread.revision, "knock_id": thread.id, "knock_url": thread.knock_url})
+			handoff_at = max(int(meta.get("handoff_at", 0)), thread.handoff.at if booked else 0)
+			meta = {"revision": thread.revision, "knock_id": thread.id, "knock_url": thread.knock_url}
+			if handoff_at:
+				meta["handoff_at"] = handoff_at
+			meta = json.dumps(meta)
 			if anchor:
 				anchor.content = meta
 				anchor.save(ignore_permissions=True)
 			else:
 				frappe.get_doc({"doctype": "Comment", "comment_type": "Info", "reference_doctype": "CRM Lead", "reference_name": doc.name, "content": meta}).insert(ignore_permissions=True, set_name=anchor_name)
 			frappe.db.commit()
-			return {"id": doc.name, "owner": doc.lead_owner, "stale": False, "added": added, "dated": dated}
+			if booked:
+				# A task insert doesn't refresh the Today board by itself; this adds
+				# the card now instead of at the next five-minute pass.
+				from crm.api.today_board import enqueue_today_sync
+
+				enqueue_today_sync()
+			return {"id": doc.name, "owner": doc.lead_owner, "stale": False, "added": added, "dated": dated, "booked": booked}
 		except Exception:
 			frappe.db.rollback()
 			raise

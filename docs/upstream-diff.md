@@ -4,6 +4,16 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Knock AI handoffs land on the owner's Today board** (2026-10-01) — Lance:
+  a handoff to Germán (Dee Draeger) never showed on his board. The sync only
+  changed `lead_owner`; the lead was a parked import (`import_hidden`), had no
+  task, and an owner change doesn't refresh the board. `crm.api.knock.sync` now
+  takes an optional `handoff` {at, call_at, why}: it unhides the lead, books one
+  High "Call <first>" CRM Task for the owner due at the seller's requested time
+  (`call_at`, from Knock's AI) or now, and queues a board sync. Idempotent per
+  handoff via `handoff_at` on the thread's anchor comment. Tests:
+  `unit_test_knock_sync.py` (Handoff).
+
 - **Comp gallery: "Listed Mon YYYY" replaces the photo-file date** (2026-10-01) — Lance:
   "why doesn't the photo age show up anymore?" It effectively never did: Redfin,
   Zillow and Realtor all strip the camera timestamp from their images (0 of 5,652
