@@ -4,6 +4,12 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Kanban: thin, trackless scrollbars** (2026-10-05) — with macOS "always show
+  scrollbars" the column scroller drew a ~16px bar with a light grey track that
+  looked heavy in dark mode and cropped card text. `KanbanView.vue` column and
+  board scrollers get a new `.thin-scrollbar` class (`index.css`:
+  `scrollbar-width: thin`, translucent grey thumb, transparent track).
+
 - **Purchase Agreement: one inspect-and-close window, assignment spelled out** (2026-09-30) —
   Lance's Labora "Contract tweaks": the inspection clock should start when the
   seller lets us in (not at signing), closing should land about when inspection

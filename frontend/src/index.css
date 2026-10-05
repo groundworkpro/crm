@@ -22,3 +22,11 @@
 			prose-th:relative;
   }
 }
+
+/* Thin, trackless scrollbars (Kanban columns). With macOS "always show
+   scrollbars" the native bar is ~16px with a light track that looks heavy in
+   dark mode and eats card width. */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
