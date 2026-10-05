@@ -121,7 +121,7 @@
         class="flex flex-col gap-1 border-t border-outline-gray-modals pt-2"
         @click.stop
       >
-        <div class="flex items-center gap-1 text-sm font-medium text-ink-gray-5">
+        <div class="flex items-center gap-1 text-xs font-medium text-ink-gray-5">
           <SparkleIcon class="size-3.5" />
           {{ __('AI Summary') }}
         </div>

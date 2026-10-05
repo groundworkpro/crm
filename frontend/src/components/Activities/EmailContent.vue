@@ -1,6 +1,6 @@
 <template>
   <div
-    class="email-content prose-f max-w-none break-words py-2 text-base leading-5 text-ink-gray-8"
+    class="email-content prose-f max-w-none break-words py-2 text-p-sm text-ink-gray-8"
     v-html="content"
   />
 </template>

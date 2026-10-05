@@ -4,6 +4,15 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Activity feed: one type scale** (2026-10-05) — the timeline mixed 12, 13 and
+  14px text (comments rendered through `prose-sm` at 14px with 1.7 line height,
+  call summaries 13px, the "AI Summary" label 13px, emails 14px). It now follows
+  frappe-ui's scale on desktop and phone alike: 12px (`text-xs`) for who/when lines,
+  badges and section labels; 13px (`text-sm` / `text-p-sm`) for anything you read —
+  comments (display and inline edit, `CommentArea.vue`), texts, call card and
+  summary (`CallArea.vue`), email cards (`EmailArea.vue`, `EmailContent.vue`).
+  Same `prose-sm text-p-sm` pairing `NoteArea.vue` already used.
+
 - **Kanban: thin, trackless scrollbars** (2026-10-05) — with macOS "always show
   scrollbars" the column scroller drew a ~16px bar with a light grey track that
   looked heavy in dark mode and cropped card text. `KanbanView.vue` column and

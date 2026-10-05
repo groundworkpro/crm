@@ -43,7 +43,7 @@
     >
       <TextEditor
         ref="editor"
-        editor-class="prose-f max-w-none focus:outline-none"
+        editor-class="prose-f text-p-sm max-w-none focus:outline-none"
         :content="editedContent"
         :placeholder="__('Edit comment...')"
         :editable="true"
@@ -76,7 +76,7 @@
         @saved="activities?.reload()"
       />
       <!-- eslint-disable-next-line vue/no-v-html -->
-      <div v-else class="prose-f" v-html="sanitizeHTML(activity.content)" />
+      <div v-else class="prose-f text-p-sm" v-html="sanitizeHTML(activity.content)" />
       <div v-if="activity.attachments.length" class="mt-2 flex flex-wrap gap-2">
         <AttachmentItem
           v-for="a in activity.attachments"
