@@ -4,6 +4,18 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: a rep can type in a comp's square footage** (2026-10-05) — Dennis:
+  sold comps with "Living area —" never made the calc's $/sf average (it skips
+  comps without sqft) and there was no way to fix them. The comp detail modal's
+  Living area now has the same pencil as the subject ("Add sqft" when blank;
+  Reset reverts). `set_comp_sqft(lead, comp, sqft)` writes a per-lead,
+  team-wide JSON map `comps_sqft` (comp docname -> int) on CRM Lead / CRM
+  Property (ops `setup_comp_selection.py` / `setup_properties.py`,
+  has_column-guarded; `comp_sqft_supported` hides the pencil until then).
+  `get_lead_comps` stamps it over `square_footage` before the filters and again
+  at the end (the Zillow pin refresh / sale-history passes can rewrite sqft),
+  with `sqft_source: "manual"` and the scraped value in `sqft_original`.
+  Practice runs neither read nor write it. Tests: `unit_test_comp_sqft.py`.
 - **Kanban: thin, trackless scrollbars** (2026-10-05) — with macOS "always show
   scrollbars" the column scroller drew a ~16px bar with a light grey track that
   looked heavy in dark mode and cropped card text. `KanbanView.vue` column and
