@@ -714,11 +714,13 @@
     :subject-mode="subjectDetail"
     :can-tag="canTagTypes"
     :can-edit-sqft="!isPractice"
+    :can-edit-comp-sqft="!isPractice && !!data?.comp_sqft_supported"
     :can-share="!isPractice"
     @use="toggleUse"
     @street="openStreetView(subjectDetail ? null : detailComp?.name)"
     @set-type="setCompType"
     @save-sqft="saveSubjectSqft"
+    @save-comp-sqft="saveCompSqft"
   />
 
   <!-- Asked on every pick; stacks above the gallery when the pick came from
@@ -3021,6 +3023,30 @@ async function saveSubjectSqft(sqft) {
       return
     }
     toast.success(sqft ? __('Square footage updated') : __('Back to Zillow/listing square footage'))
+    await load()
+  } catch (e) {
+    toast.error(e.messages?.[0] || __('Could not update the square footage.'))
+  }
+}
+
+/**
+ * Save (or clear, with null) one comp's manual square footage for this lead,
+ * then reload: the sqft filters, the fit chips and the calc's $/sf all read it
+ * from the server-stamped row.
+ */
+async function saveCompSqft(name, sqft) {
+  if (!props.lead || !name || isPractice.value) return
+  try {
+    const res = await call('crm.api.comps.set_comp_sqft', {
+      lead: props.lead,
+      comp: name,
+      sqft: sqft == null ? '' : sqft,
+    })
+    if (res?.ok === false) {
+      toast.error(__('Comp square footage is not set up on this site yet.'))
+      return
+    }
+    toast.success(sqft ? __('Comp square footage updated') : __('Back to the source square footage'))
     await load()
   } catch (e) {
     toast.error(e.messages?.[0] || __('Could not update the square footage.'))
