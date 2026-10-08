@@ -243,10 +243,10 @@
             <div class="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               <div v-for="fact in facts" :key="fact.label">
                 <div class="text-xs text-ink-gray-5">{{ fact.label }}</div>
-                <!-- The subject's living area is the one fact a rep can correct
-                     from here: Zillow is sometimes plainly wrong about the house
-                     being priced, and this panel is where they are looking when
-                     they notice. Same write as the tray card's pencil. -->
+                <!-- Living area is the one fact a rep can correct from here:
+                     Zillow is sometimes plainly wrong about the subject, and a
+                     comp with no sqft cannot feed the $/sf average. Subject:
+                     same write as the tray card's pencil; comp: per-lead map. -->
                 <template v-if="fact.editable">
                   <div v-if="editingSqft" class="mt-0.5 flex flex-wrap items-center gap-1">
                     <input
@@ -277,13 +277,19 @@
                       :title="manualSqft ? __('Edit square footage (set manually)') : __('Edit square footage')"
                       @click="startSqftEdit"
                     >
-                      {{ fact.value }}
+                      <span :class="fact.value === '—' ? 'text-ink-blue-3' : ''">
+                        {{ fact.value === '—' ? __('Add sqft') : fact.value }}
+                      </span>
                       <FeatherIcon name="edit-2" class="size-3 text-ink-gray-4 group-hover:text-ink-gray-8" />
                     </button>
                     <span
                       v-if="manualSqft"
                       class="rounded bg-surface-gray-2 px-1 text-2xs text-ink-gray-6"
-                      :title="__('Square footage was set manually and overrides Zillow/listing data')"
+                      :title="
+                        sqftOriginal
+                          ? __('Set manually — sources said {0}', [area(sqftOriginal)])
+                          : __('Square footage was set manually and overrides Zillow/listing data')
+                      "
                     >
                       {{ __('Manual') }}
                     </span>
@@ -371,7 +377,7 @@ import { propertySearchAddress, providerLink, zillowUrl } from '@/utils/property
 import { Badge, Button, Dialog, FeatherIcon, call } from 'frappe-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
-const emit = defineEmits(['use', 'street', 'setType', 'saveSqft'])
+const emit = defineEmits(['use', 'street', 'setType', 'saveSqft', 'saveCompSqft'])
 
 const props = defineProps({
   lead: { type: String, required: true },
@@ -387,6 +393,9 @@ const props = defineProps({
   // Subject-mode only: the sqft override is a team-wide fact write on the
   // lead, so hosts turn it off in practice runs (same flag CompSubjectCard takes).
   canEditSqft: { type: Boolean, default: false },
+  // Comp-mode: a rep-entered sqft for THIS comp on this lead (sources often have
+  // none, which drops the comp out of the $/sf average). Off in practice runs.
+  canEditCompSqft: { type: Boolean, default: false },
   // Practice writes to an attempt, not the lead — a comps-page link would open
   // the real house, which is the wrong surface mid-run.
   canShare: { type: Boolean, default: true },
@@ -398,7 +407,16 @@ const show = defineModel({ type: Boolean })
 const editingSqft = ref(false)
 const sqftDraft = ref('')
 const sqftInput = ref(null)
-const manualSqft = computed(() => props.subjectMode && props.subject?.source?.sqft === 'manual')
+const manualSqft = computed(() =>
+  props.subjectMode
+    ? props.subject?.source?.sqft === 'manual'
+    : props.comp?.sqft_source === 'manual',
+)
+const sqftOriginal = computed(() => (props.subjectMode ? null : props.comp?.sqft_original || null))
+// A comp's manual sqft outranks the Zillow detail blob, same as the subject's.
+const compManualSqft = computed(() =>
+  !props.subjectMode && manualSqft.value ? Number(props.comp?.square_footage) || null : null,
+)
 // The subject's OWN facts win over the Zillow detail blob here: an override
 // lives on props.subject, and the detail call is exactly the source it overrides.
 const subjectSqft = computed(() =>
@@ -425,7 +443,10 @@ function onShareClick(e) {
 }
 
 function startSqftEdit() {
-  sqftDraft.value = subjectSqft.value ? String(Math.round(subjectSqft.value)) : ''
+  const cur = props.subjectMode
+    ? subjectSqft.value
+    : compManualSqft.value || details.value?.sqft || props.comp?.square_footage
+  sqftDraft.value = cur ? String(Math.round(Number(cur))) : ''
   editingSqft.value = true
   nextTick(() => sqftInput.value?.focus())
 }
@@ -434,13 +455,21 @@ function saveSqft() {
   const n = Math.round(Number(String(sqftDraft.value).replace(/[^0-9.]/g, '')))
   if (!Number.isFinite(n) || n <= 0) return
   editingSqft.value = false
-  emit('saveSqft', n)
+  if (props.subjectMode) emit('saveSqft', n)
+  else emit('saveCompSqft', props.comp?.name, n)
 }
 
 function clearSqft() {
   editingSqft.value = false
-  emit('saveSqft', null)
+  if (props.subjectMode) emit('saveSqft', null)
+  else emit('saveCompSqft', props.comp?.name, null)
 }
+
+// Paging to another comp must not carry a half-typed number across.
+watch(
+  () => props.comp?.name,
+  () => (editingSqft.value = false),
+)
 
 watch(show, (v) => {
   if (!v) editingSqft.value = false
@@ -711,8 +740,8 @@ const facts = computed(() => {
     { label: __('Baths'), value: decimal(d.baths || c.bathrooms) },
     {
       label: __('Living area'),
-      value: area(subjectSqft.value || d.sqft || c.square_footage),
-      editable: props.subjectMode && props.canEditSqft,
+      value: area(subjectSqft.value || compManualSqft.value || d.sqft || c.square_footage),
+      editable: props.subjectMode ? props.canEditSqft : props.canEditCompSqft,
     },
     {
       label: __('Lot size'),

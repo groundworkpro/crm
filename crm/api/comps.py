@@ -146,6 +146,12 @@ SELECTED_FIELD = "comps_selected"
 #: corrected measurement is correct for everyone.
 SQFT_FIELD = "sqft_override"
 
+#: Per-lead, TEAM-WIDE square footage a rep typed in for a COMP (comp docname ->
+#: int sqft). Every source sometimes has no living area for a house (Dennis,
+#: 2026-10-01: a sold comp with "Living area —" cannot feed the $/sf average), and
+#: the rep can usually find it on the listing or the assessor's site.
+COMP_SQFT_FIELD = "comps_sqft"
+
 #: Per-lead, TEAM-WIDE condition tag on a picked comp (comp docname -> label).
 #: Optional on purpose — picking stays one click; the tag is what a rep adds when
 #: the photos told them something the numbers do not carry.
@@ -1031,6 +1037,89 @@ def set_subject_sqft(lead, sqft=None):
 	# correction must not run SLA/assignment hooks or read as a lead edit.
 	frappe.db.set_value(subject_doctype(lead), lead, SQFT_FIELD, val, update_modified=False)
 	return {"ok": True, "sqft": val or None}
+
+
+def _comp_sqft_supported(dt="CRM Lead") -> bool:
+	"""False until the ops script adds `comps_sqft`; comps keep their scraped sqft."""
+	return frappe.db.has_column(dt, COMP_SQFT_FIELD)
+
+
+def _load_comp_sqft(doc) -> dict:
+	"""comp docname -> rep-entered sqft for this lead. Garbage entries are dropped."""
+	if not _comp_sqft_supported(doc.doctype):
+		return {}
+	raw = doc.get(COMP_SQFT_FIELD)
+	if not raw:
+		return {}
+	try:
+		val = json.loads(raw)
+	except Exception:
+		return {}
+	if not isinstance(val, dict):
+		return {}
+	out = {}
+	for k, v in val.items():
+		n = _num(v)
+		if n and 0 < n <= 100000:
+			out[str(k)] = int(n)
+	return out
+
+
+def _apply_comp_sqft(rows, overrides):
+	"""Stamp the manual sqft over each matching row, keeping what the source said.
+
+	Run twice in `get_lead_comps`: before the filters (so the sqft tiers and the
+	fit read the corrected number) and again at the end, because the Zillow pin
+	refresh and sale-history passes may write a scraped sqft back over the row.
+	"""
+	if not overrides:
+		return
+	for row in rows or []:
+		val = overrides.get(row.get("name"))
+		if not val:
+			continue
+		if row.get("sqft_source") != "manual":
+			row["sqft_original"] = row.get("square_footage") or None
+		row["square_footage"] = val
+		row["sqft_source"] = "manual"
+
+
+@frappe.whitelist()
+def set_comp_sqft(lead, comp, sqft=None):
+	"""Set (or clear, with blank/0) one comp's square footage for this lead.
+
+	For the comp whose sources had no living area (or a wrong one). Team-wide like
+	the picks and condition tags. Kept per lead rather than on the comp itself:
+	most comps are not stored rows (Zillow/Redfin/BatchData pins are rebuilt on
+	every load), and a rep's correction should not silently rewrite other deals.
+	"""
+	_guard()
+	if not frappe.db.exists(subject_doctype(lead), lead):
+		frappe.throw(_("Lead {0} does not exist.").format(lead), frappe.DoesNotExistError)
+	if not _comp_sqft_supported(subject_doctype(lead)):
+		return {"ok": False, "error": "comps_sqft field is missing"}
+	comp = str(comp or "").strip()
+	if not comp:
+		frappe.throw(_("Which comp?"))
+
+	val = 0
+	if sqft not in (None, ""):
+		n = _num(sqft)
+		if n is None or n < 0 or n > 100000:
+			frappe.throw(_("Square footage must be a positive number."))
+		val = int(n)
+
+	doc = _load_subject(lead)
+	sizes = _load_comp_sqft(doc)
+	if val:
+		sizes[comp] = val
+	else:
+		sizes.pop(comp, None)
+	frappe.db.set_value(
+		subject_doctype(lead), lead, COMP_SQFT_FIELD, json.dumps(sizes, sort_keys=True),
+		update_modified=False,
+	)
+	return {"ok": True, "comp": comp, "sqft": val or None}
 
 
 def _types_supported(dt="CRM Lead") -> bool:
@@ -2420,6 +2509,11 @@ def get_lead_comps(
 	base["types_supported"] = _types_supported(doc.doctype)
 	for row in out:
 		row["comp_type"] = comp_types.get(row["name"])
+	# Manual comp sqft, same team-wide/practice rule as the tags. Before the
+	# filters so the sqft tiers and the calc's $/sf both see it.
+	comp_sqft = {} if override is not None else _load_comp_sqft(doc)
+	base["comp_sqft_supported"] = override is None and _comp_sqft_supported(doc.doctype)
+	_apply_comp_sqft(out, comp_sqft)
 
 	base["total_in_radius"] = len(out)
 	base["sources"] = _sources(base, redfin_status, rental)
@@ -2536,6 +2630,10 @@ def get_lead_comps(
 			for row in base["comps"]:
 				row.setdefault("sale_history", None)
 				row.setdefault("sale_history_missing", True)
+	# Again, LAST: the pin refresh and sale-history passes above write Zillow's
+	# sqft onto rows, and a rep's number has to outrank every scraped one.
+	_apply_comp_sqft(base["comps"], comp_sqft)
+	_apply_comp_sqft(base.get("discarded"), comp_sqft)
 	return base
 
 

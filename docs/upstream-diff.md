@@ -5,6 +5,24 @@ current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
 - **AI "Integrity Report" retired** (2026-10-08) — removed `crm.api.call_review_ai.run_daily_integrity_report` from `scheduler_events.daily_long` in `crm/hooks.py` at Lance's request; the nightly digest email is no longer generated. The code in `call_review_ai.py` is left in place (call review UI still uses it).
+- **Today board: follow-ups that were going missing** (2026-10-08) — Dennis
+  reported follow-ups not showing on Today. Three gaps, all closed (Lance approved):
+  - **Same-day follow-up reopens the card.** One card per lead per day meant a
+    follow-up booked for later today on a card then ticked Done/Skipped never came
+    back. The five-minute sync (`_reopen_due_followups`, pure rule
+    `daily_standup.followup_reopens`) now puts the latest resolved card back in To
+    Call (phase `task`, reason "Follow up · due 3:57 PM", outcome/resolved stamps
+    cleared) once an open task on the lead falls due *after* the card was resolved.
+    A task already due at resolve time never reopens it. Honours the 4pm close —
+    a follow-up due later shows tomorrow as an overdue task card. Dead/lost leads stay closed.
+  - **Task assignee sees the card.** A card is on the lead owner's board *and* the
+    board of anyone with an open task due by end of today on that lead
+    (`board_owners`, `daily_standup.due_task_assignees`). Owner switcher counts and
+    the owner-scoped Today report (today only) follow the same rule.
+  - **Dispo leads with a due task get a card.** Post-contract statuses (Photos &
+    Lockbox … Buyer Assigned) are now fetched, kept only when a task is due, and
+    classify as `task` ("Buyer Assigned · task: …"). No nudge/closer card for them still.
+
 - **Activity feed: one type scale** (2026-10-05) — the timeline mixed 12, 13 and
   14px text (comments rendered through `prose-sm` at 14px with 1.7 line height,
   call summaries 13px, the "AI Summary" label 13px, emails 14px). It now follows
@@ -13,7 +31,18 @@ entries for an area (grep it) before touching that area.
   comments (display and inline edit, `CommentArea.vue`), texts, call card and
   summary (`CallArea.vue`), email cards (`EmailArea.vue`, `EmailContent.vue`).
   Same `prose-sm text-p-sm` pairing `NoteArea.vue` already used.
-
+- **Comps: a rep can type in a comp's square footage** (2026-10-05) — Dennis:
+  sold comps with "Living area —" never made the calc's $/sf average (it skips
+  comps without sqft) and there was no way to fix them. The comp detail modal's
+  Living area now has the same pencil as the subject ("Add sqft" when blank;
+  Reset reverts). `set_comp_sqft(lead, comp, sqft)` writes a per-lead,
+  team-wide JSON map `comps_sqft` (comp docname -> int) on CRM Lead / CRM
+  Property (ops `setup_comp_selection.py` / `setup_properties.py`,
+  has_column-guarded; `comp_sqft_supported` hides the pencil until then).
+  `get_lead_comps` stamps it over `square_footage` before the filters and again
+  at the end (the Zillow pin refresh / sale-history passes can rewrite sqft),
+  with `sqft_source: "manual"` and the scraped value in `sqft_original`.
+  Practice runs neither read nor write it. Tests: `unit_test_comp_sqft.py`.
 - **Kanban: thin, trackless scrollbars** (2026-10-05) — with macOS "always show
   scrollbars" the column scroller drew a ~16px bar with a light grey track that
   looked heavy in dark mode and cropped card text. `KanbanView.vue` column and

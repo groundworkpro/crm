@@ -294,7 +294,11 @@ def _tracked_statuses():
 def _fetch_chase_rows(today):
 	"""Every live lead with the three facts the cadence needs: when we
 	first tried, when we last called, and how many calls it has had today."""
-	statuses = _tracked_statuses()
+	# Post-contract (dispo) leads are fetched too, but only so a task someone
+	# dated for today can still make a card — see the filter after the task map.
+	statuses = tuple(_tracked_statuses()) + tuple(
+		s for s in POST_CONTRACT_STATUSES if s not in _tracked_statuses()
+	)
 	rows = frappe.db.sql(
 		f"""
 		select l.name, l.lead_name, l.status, l.creation, l.property_address,
@@ -397,7 +401,9 @@ def _fetch_chase_rows(today):
 		last_text = text_map.get(r.name)
 		r.last_contact = max([d for d in (r.last_call, last_text) if d], default=None)
 		r.in_sequence = r.name in in_sequence
-	return rows
+	# A dispo lead is only on the list when a task on it is due; otherwise it is
+	# not the setters' work and must not inflate the standup's status counts.
+	return [r for r in rows if r.status not in POST_CONTRACT_STATUSES or r.tasks_due_now]
 
 
 def last_contact_label(row, today) -> str:
@@ -426,9 +432,16 @@ def _classify(row, today):
 		return ("scheduled", 0, False,
 		        f"booked {frappe.utils.format_datetime(row.next_future_due, 'd MMM')}")
 
-	# Photos & Lockbox and later is dispo, not the calling list — even a due
-	# task on it must not mint a Today card.
+	# Photos & Lockbox and later is dispo, not the calling list: no nudge, no
+	# closer card. But a task someone dated for today is still their work, so it
+	# makes a task card (Lance, 2026-10-08 — Dennis's Buyer Assigned follow-up
+	# never showed up).
 	if row.status in POST_CONTRACT_STATUSES:
+		if row.tasks_due_now:
+			title = (row.due_task_title or "").strip()
+			return ("task", 1, True,
+			        f"{row.status} · " + (f"task: {title}" if title else "task due")
+			        + f" · {last_contact_label(row, today)}")
 		return ("dispo", 0, False, row.status)
 
 	# A deal in flight with no next step booked is due every single day. This
@@ -463,6 +476,60 @@ def _classify(row, today):
 		return ("sequence", 0, False, f"in a sequence · {ago}")
 
 	return ("nudge", 1, True, f"no next step · {ago}")
+
+
+def due_task_assignees(tasks, eod):
+	"""Pure: {lead: {user, ...}} for open tasks due by `eod`.
+
+	A Today card belongs on the lead owner's board, and ALSO on the board of
+	anyone who has a task due on that lead today — otherwise a follow-up assigned
+	to you on someone else's lead is invisible to you (Lance, 2026-10-08)."""
+	out = {}
+	for t in tasks:
+		user = (t.get("assigned_to") or "").strip()
+		due = t.get("due_date")
+		lead = t.get("reference_docname")
+		if not user or not due or not lead or get_datetime(due) > eod:
+			continue
+		out.setdefault(lead, set()).add(user)
+	return out
+
+
+def followup_reopens(cards, tasks, now):
+	"""Pure: which resolved cards a same-day follow-up should put back To Call.
+
+	`cards` are today's cards ({name, lead, state, resolved_at}); `tasks` are open
+	tasks ({reference_docname, title, due_date}). A Done/Skipped card comes back
+	when an open task on its lead fell due AFTER the card was resolved and is due
+	by `now` — i.e. the rep closed the card while the follow-up was still in the
+	future, and that time has now arrived. A task already due when the card was
+	resolved never reopens it, so ticking the card again keeps it closed.
+
+	One card per lead (the latest resolved), and none if the lead already has a
+	To Call card. Returns [(card_name, task)]."""
+	open_leads = {c["lead"] for c in cards if c.get("state") == "To Call"}
+	latest = {}
+	for c in cards:
+		if c.get("state") not in ("Done", "Skipped") or not c.get("resolved_at"):
+			continue
+		if c["lead"] in open_leads:
+			continue
+		prev = latest.get(c["lead"])
+		if not prev or get_datetime(c["resolved_at"]) > get_datetime(prev["resolved_at"]):
+			latest[c["lead"]] = c
+	now = get_datetime(now)
+	out = []
+	for lead, card in latest.items():
+		resolved = get_datetime(card["resolved_at"])
+		hits = [
+			t for t in tasks
+			if t.get("reference_docname") == lead and t.get("due_date")
+			and resolved < get_datetime(t["due_date"]) <= now
+		]
+		if hits:
+			hits.sort(key=lambda t: get_datetime(t["due_date"]))
+			out.append((card["name"], hits[-1]))
+	return out
 
 
 #: display order — never-called first, then explicit due tasks, then cadence.
