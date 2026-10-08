@@ -4,6 +4,7 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **AI "Integrity Report" retired** (2026-10-08) — removed `crm.api.call_review_ai.run_daily_integrity_report` from `scheduler_events.daily_long` in `crm/hooks.py` at Lance's request; the nightly digest email is no longer generated. The code in `call_review_ai.py` is left in place (call review UI still uses it).
 - **Activity feed: one type scale** (2026-10-05) — the timeline mixed 12, 13 and
   14px text (comments rendered through `prose-sm` at 14px with 1.7 line height,
   call summaries 13px, the "AI Summary" label 13px, emails 14px). It now follows

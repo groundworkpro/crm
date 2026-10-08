@@ -408,8 +408,7 @@ doc_events = {
 scheduler_events = {
 	"daily_long": [
 		"crm.lead_syncing.background_sync.sync_leads_from_sources_daily",
-		# AI "Integrity Report": review yesterday's recorded calls + email Lance a digest
-		"crm.api.call_review_ai.run_daily_integrity_report",
+		# AI "Integrity Report" retired 2026-10-08 (Lance): no longer scheduled.
 		# Status guard: email Lance if any code-referenced status name no longer
 		# exists (rename/delete outside the doc hooks). Needs `sync_jobs` on prod.
 		"crm.api.lead_status.daily_integrity_check",
