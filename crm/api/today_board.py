@@ -29,7 +29,7 @@ while the call number keeps generation structurally idempotent.
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import frappe
 from bs4 import BeautifulSoup
@@ -40,6 +40,8 @@ from crm.api.daily_standup import (
 	CADENCE_PHASES,
 	board_task_rows,
 	build_standup,
+	due_task_assignees,
+	followup_reopens,
 	is_business_day,
 	is_sequence_call_task,
 	previous_business_day,
@@ -322,7 +324,9 @@ def _owner_options(rows):
 	board that is empty, and so an unexpected owner (a lead still on the old
 	default owner, say) is visible instead of silently unreachable.
 	"""
-	counts = Counter((r.get("lead_owner") or UNASSIGNED) for r in rows)
+	counts = Counter(
+		owner for r in rows for owner in (r.get("board_owners") or [r.get("lead_owner") or UNASSIGNED])
+	)
 	if not counts:
 		return []
 
@@ -498,6 +502,11 @@ def _generate_today(day):
 		materialize_board_steps(day)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "today_board: sequence materialize failed")
+	reopened = 0
+	try:
+		reopened = _reopen_due_followups(day)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "today_board: follow-up reopen failed")
 	data = build_standup(day)
 	due = data["setter"]["due"]
 	with_slots = _supports_call_slots()
@@ -560,15 +569,98 @@ def _generate_today(day):
 			created += 1
 			existing.add(r.name)
 
-	if created:
+	if created or reopened:
 		frappe.db.commit()
 		_publish(day)
 	return {
 		"created": created,
+		"reopened": reopened,
 		"existing": len(existing_rows),
 		"due": len(due),
 		"available": True,
 	}
+
+
+def _due_assignees_for(lead_names, day):
+	"""{lead: {user}} for open tasks due by the end of `day` — see
+	`daily_standup.due_task_assignees`."""
+	if not lead_names:
+		return {}
+	tasks = frappe.get_all(
+		"CRM Task",
+		filters={
+			"reference_doctype": "CRM Lead",
+			"reference_docname": ["in", list(lead_names)],
+			"status": ["not in", ["Done", "Canceled"]],
+			"assigned_to": ["is", "set"],
+			"due_date": ["is", "set"],
+		},
+		fields=["reference_docname", "assigned_to", "due_date"],
+	)
+	return due_task_assignees(tasks, datetime.combine(getdate(day), datetime.max.time()))
+
+
+def _reopen_due_followups(day, now=None):
+	"""Put a Done/Skipped card back in To Call when a follow-up booked for later
+	the same day comes due (Lance, 2026-10-08). The board makes one card per lead
+	per day, so without this a "follow up in 2 hours" on a card the rep then
+	ticked Done never resurfaces. Runs from the five-minute sync, so it honours the
+	same 4pm close as new cards: a follow-up due after close shows tomorrow as an
+	overdue task card instead."""
+	if not _supports_resolved_stamp():
+		return 0
+	now = now or now_datetime()
+	cards = frappe.get_all(
+		DOCTYPE,
+		filters={"for_date": day},
+		fields=["name", "lead", "state", "resolved_at"],
+	)
+	leads = list({c.lead for c in cards if c.state in ("Done", "Skipped")})
+	if not leads:
+		return 0
+	tasks = frappe.get_all(
+		"CRM Task",
+		filters={
+			"reference_doctype": "CRM Lead",
+			"reference_docname": ["in", leads],
+			"status": ["not in", ["Done", "Canceled"]],
+			"due_date": ["between", [f"{day} 00:00:00", now]],
+		},
+		fields=["reference_docname", "title", "due_date"],
+	)
+	picks = followup_reopens(cards, tasks, now)
+	if not picks:
+		return 0
+	# A lead that has since gone dead/lost keeps its card closed.
+	from crm.api.daily_standup import POST_CONTRACT_STATUSES, _tracked_statuses
+
+	live = set(_tracked_statuses()) | set(POST_CONTRACT_STATUSES)
+	status = {
+		l.name: l.status
+		for l in frappe.get_all(
+			"CRM Lead",
+			filters={"name": ["in", list({c.lead for c in cards})]},
+			fields=["name", "status"],
+		)
+	}
+	card_lead = {c.name: c.lead for c in cards}
+	reopened = 0
+	for name, task in picks:
+		if status.get(card_lead.get(name)) not in live:
+			continue
+		title = (task.get("title") or "").strip() or _("Follow up")
+		updates = _state_stamps("To Call", now)
+		updates["state"] = "To Call"
+		updates["phase"] = "task"
+		updates["reason"] = _("{0} · due {1}").format(
+			title, frappe.utils.format_datetime(task.get("due_date"), "h:mm a")
+		)
+		if _supports_outcome():
+			updates["outcome"] = ""
+			updates["outcome_note"] = ""
+		frappe.db.set_value(DOCTYPE, name, updates)
+		reopened += 1
+	return reopened
 
 
 def enqueue_today_sync(doc=None, method=None):
@@ -1115,13 +1207,23 @@ def get_today_board(
 	# The owner selector lists everyone who has cards today, counted BEFORE the
 	# owner filter, so a rep with an empty board can still see whose board has
 	# work on it and switch to it.
+	# A card is on its lead owner's board and on the board of anyone with a task
+	# due today on that lead (Lance, 2026-10-08).
+	assignees = _due_assignees_for(lead_names, day)
+	for r in rows:
+		r["board_owners"] = [r.lead_owner or UNASSIGNED] + sorted(
+			assignees.get(r.lead, set()) - {r.lead_owner or UNASSIGNED}
+		)
 	owners = _owner_options(rows)
 	owner_names = {o["user"]: o["full_name"] for o in owners}
 	for r in rows:
 		key = r.lead_owner or UNASSIGNED
 		r["owner_name"] = owner_names.get(key) or (r.lead_owner or _("Unassigned"))
 	if owner != ALL_OWNERS:
-		rows = [r for r in rows if (r.lead_owner or "") == owner]
+		rows = [
+			r for r in rows
+			if (r.lead_owner or "") == owner or owner in r["board_owners"][1:]
+		]
 
 	# Everything below this line describes the board you are actually looking at:
 	# the status filter counts, the columns and the totals all agree with it.
@@ -1202,7 +1304,20 @@ def _scope_rows_to_owner(rows, owner):
 			"CRM Lead", filters={"name": ["in", lead_names]}, fields=["name", "lead_owner"]
 		)
 	}
-	return [row for row in rows if owners.get(row.lead, UNASSIGNED) == owner]
+	# Today's cards also count for whoever has a task due on the lead today —
+	# the same rule the board uses. Past days stay owner-only (task state then
+	# is not recoverable).
+	today = getdate(now_datetime())
+	todays = {row.lead for row in rows if row.get("for_date") and getdate(row.for_date) == today}
+	assignees = _due_assignees_for(todays, today)
+	return [
+		row for row in rows
+		if owners.get(row.lead, UNASSIGNED) == owner
+		or (
+			row.get("for_date") and getdate(row.for_date) == today
+			and owner in assignees.get(row.lead, set())
+		)
+	]
 
 
 def _tally_report_days(rows):

@@ -147,12 +147,64 @@ class CloserCardTests(unittest.TestCase):
 
 	def test_past_contract_sent_is_not_due(self):
 		for status in ds.POST_CONTRACT_STATUSES:
-			phase, need, due, _ = ds._classify(
-				_row(status, tasks_due_now=1, due_task_title="Follow up"), self.today
-			)
+			phase, need, due, _ = ds._classify(_row(status), self.today)
 			self.assertEqual((phase, need, due), ("dispo", 0, False), status)
+
+	def test_past_contract_with_a_due_task_gets_a_task_card(self):
+		for status in ds.POST_CONTRACT_STATUSES:
+			phase, need, due, reason = ds._classify(
+				_row(status, tasks_due_now=1, due_task_title="Call title co"), self.today
+			)
+			self.assertEqual((phase, need, due), ("task", 1, True), status)
+			self.assertIn(status, reason)
+			self.assertIn("Call title co", reason)
 		phase, _, due, _ = ds._classify(_row("Contract Sent"), self.today)
 		self.assertEqual((phase, due), ("closer", True))
+
+
+class FollowUpReopenTests(unittest.TestCase):
+	now = datetime(2026, 10, 8, 14, 0)
+
+	def _card(self, state="Done", resolved=datetime(2026, 10, 8, 11, 0), lead="L1", name="C1"):
+		return {"name": name, "lead": lead, "state": state, "resolved_at": resolved}
+
+	def _task(self, due, lead="L1", title="Follow up"):
+		return {"reference_docname": lead, "title": title, "due_date": due}
+
+	def test_follow_up_due_after_resolve_reopens(self):
+		picks = ds.followup_reopens([self._card()], [self._task(datetime(2026, 10, 8, 13, 0))], self.now)
+		self.assertEqual([p[0] for p in picks], ["C1"])
+
+	def test_skipped_card_reopens_too(self):
+		picks = ds.followup_reopens([self._card("Skipped")], [self._task(datetime(2026, 10, 8, 13, 0))], self.now)
+		self.assertEqual(len(picks), 1)
+
+	def test_not_yet_due_stays_closed(self):
+		self.assertEqual(ds.followup_reopens([self._card()], [self._task(datetime(2026, 10, 8, 15, 0))], self.now), [])
+
+	def test_task_already_due_when_resolved_stays_closed(self):
+		self.assertEqual(ds.followup_reopens([self._card()], [self._task(datetime(2026, 10, 8, 8, 0))], self.now), [])
+
+	def test_lead_with_open_card_is_left_alone(self):
+		cards = [self._card(), self._card("To Call", None, name="C2")]
+		self.assertEqual(ds.followup_reopens(cards, [self._task(datetime(2026, 10, 8, 13, 0))], self.now), [])
+
+	def test_one_card_per_lead_latest_resolved(self):
+		cards = [self._card(name="C1", resolved=datetime(2026, 10, 8, 9, 0)),
+		         self._card(name="C2", resolved=datetime(2026, 10, 8, 10, 0))]
+		picks = ds.followup_reopens(cards, [self._task(datetime(2026, 10, 8, 13, 0))], self.now)
+		self.assertEqual([p[0] for p in picks], ["C2"])
+
+
+class DueTaskAssigneeTests(unittest.TestCase):
+	def test_assignee_of_task_due_today(self):
+		eod = datetime(2026, 10, 8, 23, 59, 59)
+		tasks = [
+			{"reference_docname": "L1", "assigned_to": "dennis@x", "due_date": datetime(2026, 10, 4, 9, 0)},
+			{"reference_docname": "L1", "assigned_to": "exe@x", "due_date": datetime(2026, 10, 9, 9, 0)},
+			{"reference_docname": "L2", "assigned_to": "", "due_date": datetime(2026, 10, 8, 9, 0)},
+		]
+		self.assertEqual(ds.due_task_assignees(tasks, eod), {"L1": {"dennis@x"}})
 
 
 class SequenceTaskTitleTests(unittest.TestCase):
