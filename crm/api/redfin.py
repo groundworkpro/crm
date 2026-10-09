@@ -746,9 +746,20 @@ def finish_istl_coverage(job, budget=COVERAGE_BUDGET):
 	return holder.get("features") or [], holder.get("meta") or {}
 
 
-def maybe_rewarm(lead, meta):
-	"""If ingest never covered this circle, kick the same warm lead-insert uses."""
+def maybe_rewarm(lead, meta, radius_mi=None):
+	"""If this circle is not collected (or has gone stale), collect it now.
+
+	The BOARD'S circle (never under half a mile), not the old 2-mile ring, at
+	`new_lead` priority -- ahead of the ingest backlog. NOT `interactive`: the
+	scraper marks a crowded tile "ready" from its truncated first page at that
+	class and demotes the rest to ingest, which would board a partial area.
+	"""
 	import frappe
+
+	try:
+		radius_m = max(0.5, float(radius_mi or 0.5)) * 1609.344
+	except (TypeError, ValueError):
+		radius_m = 0.5 * 1609.344
 
 	state = (meta or {}).get("coverage_state")
 	if not state or state == "ready":
@@ -781,6 +792,8 @@ def maybe_rewarm(lead, meta):
 					enqueue_after_commit=True,
 					lat=lat,
 					lng=lng,
+					radius_m=radius_m,
+					priority="new_lead",
 				)
 			except Exception:
 				frappe.log_error(frappe.get_traceback(), "Redfin: rewarm ISTL coverage failed")
@@ -792,6 +805,8 @@ def maybe_rewarm(lead, meta):
 			job_name=f"geo-warm-comps-{lead}",
 			enqueue_after_commit=True,
 			lead=lead,
+			radius_m=radius_m,
+			priority="new_lead",
 		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Redfin: rewarm ISTL coverage failed")

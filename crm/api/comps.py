@@ -2356,7 +2356,7 @@ def get_lead_comps(
 			redfin_store_features = list(features or [])
 			redfin_meta = meta or {}
 			base["redfin"] = redfin.apply_istl_comps(out, redfin_listing_features + redfin_store_features)
-			redfin.maybe_rewarm(lead, meta)
+			redfin.maybe_rewarm(lead, meta, radius)
 			if not rental:
 				from crm.api import comp_merge
 

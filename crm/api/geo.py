@@ -26,6 +26,11 @@ import requests
 from frappe import _
 
 DEFAULT_RADIUS_M = 1609.344 * 2  # 2 miles — the desk's outer ring
+#: What gets COLLECTED. Half a mile, not the 2-mile read ring: reps price off
+#: half a mile, and a 2-mile sweep is ~16x the area -- most of the scraping and
+#: most of the wait for houses nobody comps (Lance, 2026-10-09). A board widened
+#: past this asks for its own radius through `redfin.maybe_rewarm`.
+WARM_RADIUS_M = 1609.344 * 0.5
 TIMEOUT = 10
 
 
@@ -192,7 +197,7 @@ def warm_lead(lead, radius_m=None, ingest_creation=None, ingest_attempt=1, prior
 		return {"ok": False, "reason": "lead has no geocodable address", "lead": lead}
 
 	try:
-		body = {"lat": lat, "lng": lng, "radius_m": float(radius_m or DEFAULT_RADIUS_M)}
+		body = {"lat": lat, "lng": lng, "radius_m": float(radius_m or WARM_RADIUS_M)}
 		# `new_lead` (5) puts a just-bought lead -- or one a rep just opened --
 		# ahead of the nationwide ingest backlog (10), where coverage waits
 		# measured p90 16 min. Bulk backfills pass "ingest" and keep their place.
@@ -218,7 +223,7 @@ def warm_point(lat, lng, radius_m=None, priority="new_lead"):
 	if not _enabled():
 		return {"ok": False, "reason": "redfin_scraper_url not configured"}
 	try:
-		body = {"lat": float(lat), "lng": float(lng), "radius_m": float(radius_m or DEFAULT_RADIUS_M)}
+		body = {"lat": float(lat), "lng": float(lng), "radius_m": float(radius_m or WARM_RADIUS_M)}
 		r = requests.post(f"{_base_url()}/warm", json={**body, "priority": priority}, timeout=TIMEOUT)
 		if getattr(r, "status_code", 200) == 422:
 			r = requests.post(f"{_base_url()}/warm", json=body, timeout=TIMEOUT)

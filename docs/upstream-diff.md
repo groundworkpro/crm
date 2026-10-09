@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Redfin collects half a mile, not 2 miles** (2026-10-09) — Lance: reps
+  don't use more than half a mile; 2 miles is ~16x the area to scrape and wait
+  on. `geo.WARM_RADIUS_M` (0.5 mi) is now what lead insert / `warm_point` /
+  backfill collect; `DEFAULT_RADIUS_M` (2 mi) stays only as the desk's
+  "nearby homes" READ ring. `redfin.maybe_rewarm` now collects the board's own
+  radius (at least 0.5 mi) at `new_lead` priority when a comps open finds the
+  area missing/stale, so a widened board still gets its circle collected.
 - **Comps: gallery no longer jumps to photo 1; Redfin re-check stops** (2026-10-09) —
   Exe: the comp tool sat on "loading Redfin" forever and kept resetting the photo
   gallery to the first picture. Two bugs. (1) `CompDetailModal` watched a getter

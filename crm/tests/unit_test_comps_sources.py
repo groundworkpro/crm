@@ -95,6 +95,26 @@ class Rewarm(unittest.TestCase):
 			redfin.maybe_rewarm("L1", {"coverage_state": "queued", "queue": {"ours": 3, "running": 0}})
 		enq.assert_not_called()
 
+	def test_rewarm_collects_the_boards_circle_first(self):
+		import frappe
+
+		with patch.object(frappe, "enqueue", create=True) as enq, \
+		     patch.object(frappe, "cache", create=True) as cache:
+			cache.return_value.get_value.return_value = None
+			redfin.maybe_rewarm("L1", {"coverage_state": "missing", "queue": {}}, 1)
+		kw = enq.call_args.kwargs
+		self.assertEqual(kw["priority"], "new_lead")
+		self.assertAlmostEqual(kw["radius_m"], 1609.344)
+
+	def test_rewarm_never_below_half_a_mile(self):
+		import frappe
+
+		with patch.object(frappe, "enqueue", create=True) as enq, \
+		     patch.object(frappe, "cache", create=True) as cache:
+			cache.return_value.get_value.return_value = None
+			redfin.maybe_rewarm("L2", {"coverage_state": "missing", "queue": {}}, 0.25)
+		self.assertAlmostEqual(enq.call_args.kwargs["radius_m"], 804.672)
+
 
 class WarmPriority(unittest.TestCase):
 	"""New leads warm at `new_lead`; a service without the class still warms."""
@@ -122,6 +142,10 @@ class WarmPriority(unittest.TestCase):
 		out, sent = self._run([200])
 		self.assertTrue(out["ok"])
 		self.assertEqual(sent[0]["priority"], "new_lead")
+
+	def test_new_lead_collects_half_a_mile(self):
+		out, sent = self._run([200])
+		self.assertAlmostEqual(sent[0]["radius_m"], 804.672)
 
 	def test_old_service_falls_back_to_default(self):
 		out, sent = self._run([422, 200])
