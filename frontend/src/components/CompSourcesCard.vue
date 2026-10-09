@@ -86,6 +86,8 @@ const props = defineProps({
   sources: { type: Object, default: null },
   /** Floating over the map (desktop) vs a full-width strip under it (phone). */
   overlay: { type: Boolean, default: false },
+  /** The page gave up re-checking a source that never arrived. */
+  stopped: { type: Boolean, default: false },
 })
 
 // Tiny inline icon: a check, a spinner, a "…", a "$", a "!" -- the same five
@@ -118,7 +120,7 @@ SourceIcon.props = ['kind', 'small']
 
 const KEY = 'compsSourcesOpen'
 const pref = ref(localStorage.getItem(KEY))
-const pending = computed(() => !!props.sources?.pending)
+const pending = computed(() => !!props.sources?.pending && !props.stopped)
 const open = computed(() => (pref.value == null ? pending.value : pref.value === '1'))
 function setOpen(v) {
   pref.value = v ? '1' : '0'
@@ -184,6 +186,14 @@ function zillowRow(s) {
 
 function redfinRow(s) {
   const r = { key: 'redfin', name: 'Redfin' }
+  if (props.stopped && (s.state === 'loading' || s.state === 'queued'))
+    return {
+      ...r,
+      icon: 'warn',
+      short: 'Redfin',
+      what: s.added ? __('+{0} homes so far', [s.added]) : __('Not in PropWarehouse yet for this area'),
+      where: __('Not collected yet · reopen comps later to check again'),
+    }
   let added = s.added ? __('+{0} homes', [s.added]) : __('Nothing new beyond the others')
   if (s.listings != null || s.recent_sales != null)
     added = __('{0} listings · {1} recent sales', [s.listings || 0, s.recent_sales || 0]) + ' · ' + added

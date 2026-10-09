@@ -450,6 +450,7 @@
             <CompSourcesCard
               v-if="wide && data?.sources"
               :sources="data.sources"
+              :stopped="pollStopped"
               overlay
               class="absolute right-2 top-2 z-[1000]"
             />
@@ -501,7 +502,7 @@
             </div>
           </div>
           <!-- Phone: under the map, never over it — a 16rem map has no room. -->
-          <CompSourcesCard v-if="!wide && data?.sources" :sources="data.sources" class="mt-2 shrink-0" />
+          <CompSourcesCard v-if="!wide && data?.sources" :sources="data.sources" :stopped="pollStopped" class="mt-2 shrink-0" />
 
           <!-- Sized in px, not rem: this app's root font-size is 20px, so a
                `21rem` rail reads as 420px and takes more of the split than the
@@ -3064,27 +3065,42 @@ let pollTimer = null
 let pollSince = 0
 const POLL_GIVE_UP_MS = 15 * 60 * 1000
 let pollOnVisible = null
+// Set once the settle re-check has come back still pending: polling stops and
+// the Sources card says so instead of spinning forever (Exe, 2026-10-08: a
+// lead whose Redfin cells were never collected re-asked every 5s for hours).
+const pollStopped = ref(false)
 function stopPoll() {
   clearTimeout(pollTimer)
   pollTimer = null
   if (pollOnVisible) document.removeEventListener('visibilitychange', pollOnVisible)
   pollOnVisible = null
 }
-function schedulePoll(d) {
+function schedulePoll(d, settled = false) {
   stopPoll()
   const src = d?.sources
   if (!src?.pending || !show.value) {
     pollSince = 0
+    pollStopped.value = false
+    return
+  }
+  // The give-up request has been answered and Redfin is STILL not in: it is
+  // not coming while this page is open. Stop; a reload/filter change re-arms.
+  if (settled) {
+    pollSince = 0
+    pollStopped.value = true
     return
   }
   if (!pollSince) pollSince = Date.now()
   const waited = Date.now() - pollSince
   const r = src.redfin || {}
   const eta = r.queue?.eta_seconds
+  // "Queued" with nothing ours in line and nothing running means no collection
+  // is actually under way -- PropWarehouse reports eta 0 then, not null.
+  const idle = !(r.queue?.ours || 0) && !(r.queue?.running || 0)
   const settle =
     waited > POLL_GIVE_UP_MS ||
     (r.state === 'loading' && waited > 90 * 1000) ||
-    (r.state === 'queued' && eta == null && waited > 2 * 60 * 1000)
+    (r.state === 'queued' && (eta == null || idle) && waited > 2 * 60 * 1000)
   // Loading resolves in seconds; a queue is re-read at a quarter of its ETA,
   // between 5 and 20 seconds.
   const delay =
@@ -3113,7 +3129,10 @@ let loadGen = 0
 async function load({ explicit = userTouched.value, quiet = false, settle = false } = {}) {
   if (!props.lead) return
   stopPoll()
-  if (!quiet) pollSince = 0
+  if (!quiet) {
+    pollSince = 0
+    pollStopped.value = false
+  }
   const gen = ++loadGen
   const want = inventory.value
   if (!quiet) loading.value = true
@@ -3171,7 +3190,7 @@ async function load({ explicit = userTouched.value, quiet = false, settle = fals
   } finally {
     if (gen === loadGen) {
       loading.value = false
-      schedulePoll(data.value)
+      schedulePoll(data.value, settle)
     }
   }
 }

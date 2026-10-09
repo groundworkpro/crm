@@ -813,8 +813,13 @@ const timeline = computed(() => {
   return rows
 })
 
+// Two SOURCES, not one getter returning `[show, name]`: a getter's array is a
+// new object every run, so the callback fired whenever `props.comp` was
+// replaced -- which the comps board does on every background re-check while
+// Redfin is pending -- and threw the rep back to photo 1 every ~5s
+// (Exe, 2026-10-08). The two-source form compares each value separately.
 watch(
-  () => [show.value, props.comp?.name],
+  [show, () => props.comp?.name],
   ([open]) => {
     if (!open || !props.comp?.name) return
     photoIndex.value = 0

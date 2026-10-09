@@ -4,6 +4,19 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: gallery no longer jumps to photo 1; Redfin re-check stops** (2026-10-09) —
+  Exe: the comp tool sat on "loading Redfin" forever and kept resetting the photo
+  gallery to the first picture. Two bugs. (1) `CompDetailModal` watched a getter
+  returning `[show, comp.name]`; a new array every run made Vue fire it whenever
+  `props.comp` was replaced, which `CompsView` does on every background re-check,
+  so the gallery reset every ~5s. Now the two-source `watch([show, () => name])`.
+  (2) PropWarehouse reports some areas `missing`/`partial` with nothing queued or
+  running (`eta_seconds` 0, not null), so the board stayed "queued", never
+  settled, and even after the 15-minute settle kept polling. Now an idle queue
+  settles after 2 minutes like a null ETA, and once the settle answer is still
+  pending the page stops re-checking; the Sources card shows "Not collected yet"
+  instead of a spinner. Why those cells never get collected is a scraper-side
+  question, not fixed here.
 - **AI "Integrity Report" retired** (2026-10-08) — removed `crm.api.call_review_ai.run_daily_integrity_report` from `scheduler_events.daily_long` in `crm/hooks.py` at Lance's request; the nightly digest email is no longer generated. The code in `call_review_ai.py` is left in place (call review UI still uses it).
 - **Today board: follow-ups that were going missing** (2026-10-08) — Dennis
   reported follow-ups not showing on Today. Three gaps, all closed (Lance approved):
