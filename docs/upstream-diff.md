@@ -4,6 +4,16 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Columbus Day is a Groundwork working day** (2026-10-12) — Lance confirmed
+  the team does not take Columbus Day off. The shared `is_holiday` gate now
+  excludes it from automatic days off, while preserving the federal-calendar
+  helper and explicit `crm_holidays` overrides. Today board sync, cadence,
+  standup/streak calculations and sequence holds all use this gate. Regression
+  tests cover multiple years, business-day counting, weekend follow-ups landing
+  on Columbus Day and explicit company overrides. Existing sequence dates already
+  pushed to Tuesday require a separately checked production repair; this code
+  change does not rewrite enrollments or send messages.
+
 - **Redfin collects half a mile, not 2 miles** (2026-10-09) — Lance: reps
   don't use more than half a mile; 2 miles is ~16x the area to scrape and wait
   on. `geo.WARM_RADIUS_M` (0.5 mi) is now what lead insert / `warm_point` /

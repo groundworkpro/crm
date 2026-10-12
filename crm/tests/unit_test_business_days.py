@@ -33,6 +33,22 @@ class HolidayTests(unittest.TestCase):
 			],
 		)
 
+	def test_columbus_day_is_a_working_day(self):
+		for year, day in [(2025, 13), (2026, 12), (2027, 11)]:
+			with self.subTest(year=year):
+				d = date(year, 10, day)
+				self.assertIn(d, ds.us_federal_holidays(year))
+				self.assertFalse(ds.is_holiday(d))
+				self.assertTrue(ds.is_business_day(d))
+
+	def test_columbus_day_counts_in_cadence_and_recap(self):
+		self.assertEqual(ds.business_days_between(date(2026, 10, 9), date(2026, 10, 12)), 1)
+		self.assertEqual(ds.previous_business_day(date(2026, 10, 13)), date(2026, 10, 12))
+
+	def test_explicit_company_day_off_can_override_columbus_day(self):
+		shim.conf["crm_holidays"] = ["2026-10-12"]
+		self.assertFalse(ds.is_business_day(date(2026, 10, 12)))
+
 	def test_sunday_holiday_observed_monday(self):
 		# Christmas 2022 was a Sunday → observed Mon Dec 26
 		self.assertIn(date(2022, 12, 26), ds.us_federal_holidays(2022))

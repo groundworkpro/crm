@@ -105,6 +105,14 @@ class BusinessDayTests(unittest.TestCase):
 			datetime(2026, 9, 8, 8, 0),
 		)
 
+	def test_columbus_day_does_not_delay_followup(self):
+		monday = datetime(2026, 10, 12, 8, 0)
+		self.assertEqual(
+			sd.hold_until(datetime(2026, 10, 10, 8, 0), step()), monday
+		)
+		self.assertIsNone(sd.business_hold_until(monday, step("Task")))
+		self.assertIsNone(sd.hold_until(monday, step()))
+
 	def test_business_day_is_left_alone(self):
 		self.assertIsNone(sd.business_hold_until(datetime(2026, 9, 11, 8, 0), step()))
 		self.assertIsNone(sd.business_hold_until(datetime(2026, 9, 14, 15, 30), step()))
