@@ -722,6 +722,7 @@
     @set-type="setCompType"
     @save-sqft="saveSubjectSqft"
     @save-comp-sqft="saveCompSqft"
+    @source-sqft="fillCompSqft"
   />
 
   <!-- Asked on every pick; stacks above the gallery when the pick came from
@@ -2880,6 +2881,22 @@ function applyCompState(name, state) {
     placePin(next)
   }
   data.value.selected_count = data.value.comps.filter((c) => c.selected).length
+  if (detailComp.value?.name === name) detailComp.value = next
+}
+
+/**
+ * A comp's card loaded Zillow's living area for a row the board had none for
+ * (Redfin hides sqft in some markets). Fill the blank in place so the table's
+ * $/sf and the pin pill pick it up. Never overwrites a value the board has.
+ */
+function fillCompSqft(name, sqft) {
+  if (!data.value || !(sqft > 0)) return
+  const list = data.value.comps || []
+  const row = list.find((c) => c.name === name)
+  if (!row || Number(row.square_footage) > 0) return
+  const next = { ...row, square_footage: Math.round(sqft), sqft_source: 'zillow' }
+  data.value.comps = list.map((c) => (c.name === name ? next : c))
+  placePin(next)
   if (detailComp.value?.name === name) detailComp.value = next
 }
 

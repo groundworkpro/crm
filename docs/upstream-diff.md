@@ -4,6 +4,19 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Comps: blank square footage filled from Zillow** (2026-10-13) — Dennis:
+  the comp table and map pills showed no sqft while each comp's card showed it.
+  Redfin withholds living area in some markets (Memphis: "View sq ft" on
+  redfin.com; 36 of 47 map rows and 495 of 556 board rows had `sqFt` null), and
+  a board Redfin carried alone never asked Zillow. `fill_missing_sqft` (end of
+  `get_lead_comps`, sales only) fills BLANKS only — Redfin stays the authority —
+  from the comp-detail cache, then the 30-day Zillow pin cache (full
+  `street, city, ST zip` key), bills picked comps synchronously (max 6), and
+  queues `warm_sqft_pins` for up to 40 listings/nearest sales (10-minute
+  per-lead lock), so the next load fills them free. 24 billed lookups took
+  10.5s on prod, hence the background job. The detail modal also emits
+  `sourceSqft` so a just-opened card fills its row in place. Tests:
+  `unit_test_comp_sqft_fill.py`.
 - **Columbus Day is a Groundwork working day** (2026-10-12) — Lance confirmed
   the team does not take Columbus Day off. The shared `is_holiday` gate now
   excludes it from automatic days off, while preserving the federal-calendar
