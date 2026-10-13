@@ -4,19 +4,23 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
-- **Comps: blank square footage filled from Zillow** (2026-10-13) — Dennis:
-  the comp table and map pills showed no sqft while each comp's card showed it.
-  Redfin withholds living area in some markets (Memphis: "View sq ft" on
-  redfin.com; 36 of 47 map rows and 495 of 556 board rows had `sqFt` null), and
-  a board Redfin carried alone never asked Zillow. `fill_missing_sqft` (end of
-  `get_lead_comps`, sales only) fills BLANKS only — Redfin stays the authority —
-  from the comp-detail cache, then the 30-day Zillow pin cache (full
-  `street, city, ST zip` key), bills picked comps synchronously (max 6), and
-  queues `warm_sqft_pins` for up to 40 listings/nearest sales (10-minute
-  per-lead lock), so the next load fills them free. 24 billed lookups took
-  10.5s on prod, hence the background job. The detail modal also emits
-  `sourceSqft` so a just-opened card fills its row in place. Tests:
-  `unit_test_comp_sqft_fill.py`.
+- **Comps: blank square footage filled from Redfin's house pages, in the background** (2026-10-13) —
+  Dennis: the comp table and map pills showed no sqft while each comp's card
+  showed it. Redfin's map layer withholds living area in some markets (Memphis:
+  "View sq ft" on redfin.com; 495 of 556 board rows had `sqFt` null), but each
+  house's own Redfin page (scraper `/history`, belowTheFold
+  `publicRecordsInfo.basicInfo.sqFtFinished`) still has it: free, ~0.3s a house.
+  The scraper's `/history` now returns `sqft` and fills a blank
+  `properties.sqft`; `redfin_history` caches it 30 days (`crm:redfin-sqft:v1`,
+  0 = none for 7 days) whenever it reads `/history`, including the sale-history
+  pass. `get_lead_comps` → `fill_missing_sqft` is cache-only (Redfin sqft, then
+  the comp-detail cache, then Zillow's 30-day pin cache; never bills), so the map
+  is never held up. After the board renders, `CompsView.fillBlankSqft` sends the
+  30 nearest blank `redfin::` rows (picked first) to `fill_comp_sqft`, and rows
+  and pins fill in place. Only blanks are filled. The detail modal also emits
+  `sourceSqft`, so a card that has just been opened fills its row. Lance chose
+  Redfin over paid Zillow lookups (the first version billed Zillow).
+  Tests: `unit_test_comp_sqft_fill.py`.
 - **Columbus Day is a Groundwork working day** (2026-10-12) — Lance confirmed
   the team does not take Columbus Day off. The shared `is_holiday` gate now
   excludes it from automatic days off, while preserving the federal-calendar

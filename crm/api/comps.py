@@ -2630,10 +2630,9 @@ def get_lead_comps(
 			for row in base["comps"]:
 				row.setdefault("sale_history", None)
 				row.setdefault("sale_history_missing", True)
-	# Redfin withholds living area in some markets (Memphis: "View sq ft" on
-	# redfin.com, `sqFt` null on 36 of 47 map rows), and a board Redfin carried
-	# alone never asks Zillow -- so the table read "Sq ft —" while the comp's
-	# own detail card showed Zillow's 1,827 sf. Fill the blanks from Zillow.
+	# Redfin's map layer withholds living area in some markets (Memphis: "View
+	# sq ft" on redfin.com, `sqFt` null on 495 of 556 board rows), so the table
+	# read "Sq ft —". Fill blanks from caches here; the page fetches the rest.
 	if not rental:
 		try:
 			base["sqft_fill"] = fill_missing_sqft(base["comps"], lead)
@@ -2646,105 +2645,90 @@ def get_lead_comps(
 	return base
 
 
-#: Living area for rows with NO sqft (Redfin hides it in some markets). Zillow
-#: `/property` through PropWarehouse, sharing the 30-day pin cache with sale
-#: history, so a house is paid for once a month across all leads. Measured on
-#: prod (Memphis, 2026-10-13): 24 lookups took 10.5s, far too slow for the
-#: request. So the request bills only PICKED comps (the table that feeds $/sf);
-#: listings then the nearest sales are looked up by a background job, and every
-#: blank fills free from the caches on the next load.
-SQFT_PICKED_BUDGET = 6
-SQFT_WARM_BUDGET = 40
-SQFT_WARM_LOCK_S = 600
+#: Living area for rows with NO sqft. Redfin's map layer hides sqFt in some
+#: markets (Memphis) but the house's own Redfin page (the scraper's `/history`)
+#: still carries the public-record number, free, ~0.3s a house. The board never
+#: waits for it: `get_lead_comps` fills blanks from caches only, and the page
+#: then asks `fill_comp_sqft` for the nearest blanks in the background.
+SQFT_FETCH_BUDGET = 30
 
 
-def _sqft_order(rows, budget):
-	"""Rows to bill, in priority order: picked, live listings, nearest."""
-	picked = [r for r in rows if r.get("selected")]
-	live = [r for r in rows if r.get("listing_state") in LIVE_STATES]
-	order, seen = [], set()
-	for r in picked + live + list(rows):
-		if len(order) >= budget:
-			break
-		if id(r) not in seen:
-			seen.add(id(r))
-			order.append(r)
-	return order
+def _redfin_pid(row):
+	name = str(row.get("name") or "")
+	return name.split("::", 1)[1] or None if name.startswith("redfin::") else None
 
 
-def fill_missing_sqft(rows, lead=None, picked_budget=SQFT_PICKED_BUDGET, warm_budget=SQFT_WARM_BUDGET):
-	"""Give rows with no `square_footage` Zillow's living area. Mutates. -> info.
+def fill_missing_sqft(rows, lead=None):
+	"""Give rows with no `square_footage` a cached living area. Mutates. -> info.
 
-	Only BLANKS are filled: Redfin stays the authority wherever it answered
-	(`comp_merge`). Sources, cheapest first: the comp-detail cache (a rep
-	already opened the card, so it is the number they saw), the 30-day Zillow
-	pin cache, a billed lookup for picked comps, and a background warm for the
-	rest so the next load has them.
+	Only BLANKS are filled; a number the board already has always stands.
+	Cache-only, so it costs the request nothing: Redfin's page sqft (cached by
+	`/history`, which sale history already reads for listings and the nearest
+	houses), then the comp-detail cache (a rep opened the card), then Zillow's
+	30-day pin cache. `pending` counts blanks Redfin may still answer; the page
+	fetches those through `fill_comp_sqft`.
 	"""
-	from crm.api import zillow_comps
+	from crm.api import redfin_history, zillow_comps
 
-	info = {"blank": 0, "filled": 0, "billed": 0, "queued": 0}
+	info = {"blank": 0, "filled": 0, "pending": 0}
 	blank = [r for r in (rows or []) if r.get("address") and not _num(r.get("square_footage"))]
 	info["blank"] = len(blank)
 	if not blank:
 		return info
 
-	def take(row, sqft):
+	def take(row, sqft, source):
 		val = _num(sqft)
 		if not val or val <= 0:
 			return False
 		row["square_footage"] = int(round(val))
-		row["sqft_source"] = "zillow"
+		row["sqft_source"] = source
 		info["filled"] += 1
 		return True
 
+	redfin_sqft = redfin_history.cached_sqft([_redfin_pid(r) for r in blank])
 	rest = []
 	for row in blank:
+		pid = _redfin_pid(row)
+		if take(row, redfin_sqft.get(pid), "redfin"):
+			continue
 		cached = _detail_cached(row.get("name")) if row.get("name") else None
 		details = cached.get("details") if isinstance(cached, dict) else None
-		if not (isinstance(details, dict) and take(row, details.get("sqft"))):
+		if not (isinstance(details, dict) and take(row, details.get("sqft"), "zillow")):
 			rest.append(row)
-	if not rest:
-		return info
-
-	facts = zillow_comps._pin_facts_many([zillow_comps_address(r) for r in rest], fetch=False)
-	unknown = []
-	for row in rest:
-		addr = zillow_comps_address(row)
-		if not take(row, (facts.get(addr) or {}).get("sqft")) and addr not in facts:
-			unknown.append(row)
-
-	picked = [r for r in unknown if r.get("selected")][:picked_budget]
-	if picked:
-		fetched = zillow_comps._pin_facts_many([zillow_comps_address(r) for r in picked])
-		info["billed"] = len(picked)
-		for row in picked:
-			take(row, (fetched.get(zillow_comps_address(row)) or {}).get("sqft"))
-
-	later = _sqft_order([r for r in unknown if not r.get("selected")], warm_budget)
-	if later and lead:
-		lock = f"crm:comps-sqft-warm:{lead}"
-		cache = frappe.cache()
-		if not cache.get_value(lock):
-			cache.set_value(lock, 1, expires_in_sec=SQFT_WARM_LOCK_S)
-			try:
-				frappe.enqueue(
-					"crm.api.comps.warm_sqft_pins",
-					queue="long",
-					job_name=f"comps-sqft-{lead}",
-					addresses=[zillow_comps_address(r) for r in later],
-				)
-				info["queued"] = len(later)
-			except Exception:
-				frappe.log_error(frappe.get_traceback(), "Comps: sqft warm enqueue failed")
+	if rest:
+		facts = zillow_comps._pin_facts_many([zillow_comps_address(r) for r in rest], fetch=False)
+		for row in rest:
+			if take(row, (facts.get(zillow_comps_address(row)) or {}).get("sqft"), "zillow"):
+				continue
+			pid = _redfin_pid(row)
+			if pid and pid not in redfin_sqft:
+				info["pending"] += 1
 	return info
 
 
-def warm_sqft_pins(addresses):
-	"""Background: put Zillow `/property` facts for these addresses in the pin cache."""
-	from crm.api import zillow_comps
+@frappe.whitelist()
+def fill_comp_sqft(lead, names=None):
+	"""Background fill for the page: Redfin page sqft for up to
+	`SQFT_FETCH_BUDGET` comp names (the caller sends the nearest blanks first).
+	-> {name: sqft}. Free; each answer is cached 30 days for every lead."""
+	from crm.api import redfin_history
 
-	zillow_comps._pin_facts_many(list(addresses or []))
+	_guard()
+	_load_subject(lead)
+	if isinstance(names, str):
+		try:
+			names = json.loads(names)
+		except ValueError:
+			names = [names]
+	pids = {}
+	for name in (names or [])[:SQFT_FETCH_BUDGET]:
+		pid = _redfin_pid({"name": name})
+		if pid:
+			pids[pid] = name
+	if not pids:
+		return {}
+	got = redfin_history.sqft_many(list(pids), SQFT_FETCH_BUDGET)
+	return {pids[pid]: sqft for pid, sqft in got.items() if sqft}
 
 
 def zillow_comps_address(row):

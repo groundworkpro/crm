@@ -35,6 +35,11 @@ TIMEOUT = 20
 #: batch, and a reopened lead reads the cache.
 BUDGET = 50
 SAME_SALE_DAYS = 90
+#: The same `/history` page carries the public-record living area, which the
+#: map layer hides in some markets (Memphis). A house's size barely moves, so
+#: a found number keeps 30 days; "Redfin has none" a week. Stored as 0 for none.
+SQFT_CACHE_S = 30 * 86400
+SQFT_MISS_CACHE_S = 7 * 86400
 
 _WORDS = {
 	"sold": "Sold",
@@ -142,8 +147,12 @@ def row_pid(row, index):
 	return str(pid) if pid else None
 
 
+def _sqft_key(pid):
+	return f"crm:redfin-sqft:v1:{pid}"
+
+
 def _fetch(base, pid):
-	"""Worker thread: HTTP only. -> events list, [] for none, None on failure."""
+	"""Worker thread: HTTP only. -> the `/history` body dict, None on failure."""
 	import requests
 
 	try:
@@ -153,9 +162,75 @@ def _fetch(base, pid):
 		body = r.json()
 		if not isinstance(body, dict) or body.get("ok") is False:
 			return None
-		return body.get("events") or []
+		return body
 	except Exception:
 		return None
+
+
+def _store(cache, pid, body):
+	"""Cache one `/history` answer: events, and sqft when the scraper sent it."""
+	events = body.get("events") or []
+	try:
+		cache.set_value(_key(pid), events, expires_in_sec=CACHE_S if events else EMPTY_CACHE_S)
+	except Exception:
+		pass
+	if "sqft" in body:  # an older scraper omits the key: remember nothing
+		sqft = body.get("sqft")
+		try:
+			sqft = int(round(float(sqft))) if sqft else 0
+		except (TypeError, ValueError):
+			sqft = 0
+		try:
+			cache.set_value(_sqft_key(pid), max(sqft, 0),
+							expires_in_sec=SQFT_CACHE_S if sqft > 0 else SQFT_MISS_CACHE_S)
+		except Exception:
+			pass
+	return events
+
+
+def cached_sqft(pids):
+	"""-> {pid: sqft} from the cache only; 0 = Redfin has none. Absent = unread."""
+	import frappe
+
+	out = {}
+	cache = frappe.cache()
+	for pid in dict.fromkeys(p for p in pids if p):
+		try:
+			hit = cache.get_value(_sqft_key(pid))
+		except Exception:
+			hit = None
+		if isinstance(hit, int):
+			out[pid] = hit
+	return out
+
+
+def sqft_many(pids, fetch_budget=BUDGET):
+	"""-> {pid: sqft (0 = none)}. Cache first, then up to `fetch_budget` fresh
+	`/history` reads in order (which also refresh the sale-history cache)."""
+	import frappe
+	from concurrent.futures import ThreadPoolExecutor
+
+	from crm.api import redfin
+
+	pids = list(dict.fromkeys(p for p in pids if p))
+	out = cached_sqft(pids)
+	todo = [p for p in pids if p not in out][:fetch_budget]
+	base = redfin._base_url() if todo else None
+	if not base:
+		return out
+	with ThreadPoolExecutor(WORKERS) as pool:
+		got = list(pool.map(lambda p: _fetch(base, p), todo))
+	cache = frappe.cache()
+	for pid, body in zip(todo, got):
+		if body is None:
+			continue
+		_store(cache, pid, body)
+		if "sqft" in body:
+			try:
+				out[pid] = max(int(round(float(body.get("sqft") or 0))), 0)
+			except (TypeError, ValueError):
+				out[pid] = 0
+	return out
 
 
 def events_many(pids, fetch_budget=BUDGET):
@@ -185,14 +260,10 @@ def events_many(pids, fetch_budget=BUDGET):
 		return out
 	with ThreadPoolExecutor(WORKERS) as pool:
 		got = list(pool.map(lambda p: _fetch(base, p), todo))
-	for pid, events in zip(todo, got):
-		if events is None:
+	for pid, body in zip(todo, got):
+		if body is None:
 			continue
-		out[pid] = events
-		try:
-			cache.set_value(_key(pid), events, expires_in_sec=CACHE_S if events else EMPTY_CACHE_S)
-		except Exception:
-			pass
+		out[pid] = _store(cache, pid, body)
 	return out
 
 
