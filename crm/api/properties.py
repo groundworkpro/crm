@@ -99,6 +99,18 @@ def record_offer(name: str, payload: dict, html: str) -> None:
 	)
 
 
+def linked_lead_and_street(name: str) -> tuple[str, str]:
+	"""(lead, street) for a property — lead is "" when unlinked, gone, or the
+	column is missing. Street is the first comma part of the address."""
+	fields = ["property_address"] + (["lead"] if _lead_supported() else [])
+	row = frappe.db.get_value(SCRATCH_DOCTYPE, name, fields, as_dict=True) or {}
+	street = ((row.get("property_address") or "").split(",")[0]).strip()
+	lead = (row.get("lead") or "").strip()
+	if lead and not frappe.db.exists("CRM Lead", lead):
+		lead = ""
+	return lead, street
+
+
 def _status_supported() -> bool:
 	return frappe.db.has_column(SCRATCH_DOCTYPE, "status")
 

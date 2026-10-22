@@ -1,6 +1,9 @@
 <template>
   <div class="offer">
     <div class="title">{{ kindTitle }}</div>
+    <div v-if="offer.address" class="for">
+      {{ __('For {0}', [offer.address]) }}
+    </div>
 
     <div v-for="(sc, i) in offer.scenarios" :key="i" class="scene">
       <div class="scene-h">
@@ -301,7 +304,11 @@ function parseLegacy(html) {
   return { scenarios: scenes, comps, sqft, notes }
 }
 
-const compsPage = computed(() => compsPagePath(props.lead))
+// The payload's subject wins: a calc saved on a linked property is also posted
+// on the seller's timeline, and its comps page is the property, not the lead.
+const compsPage = computed(() =>
+  compsPagePath(parsePayload(props.html)?.lead || props.lead),
+)
 
 const offer = computed(() => {
   const raw = parsePayload(props.html) || parseLegacy(props.html) || {}
@@ -315,6 +322,7 @@ const offer = computed(() => {
     kind,
     sqft: Number(raw.sqft) || 0,
     notes: raw.notes || '',
+    address: raw.address || '',
     scenarios,
     comps: (raw.comps || []).map(shapeComp),
   }
@@ -384,6 +392,9 @@ function onSaved() {
 .title {
   font-weight: 650;
   color: var(--ink-gray-9, #171717);
+}
+.for {
+  color: var(--ink-gray-6, #6b6b6b);
 }
 .scene {
   margin-top: 0.45em;

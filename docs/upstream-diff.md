@@ -4,6 +4,18 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Property calcs show up on the linked lead** (2026-10-22) — Dennis: a calc
+  saved on an additional property attached to a lead never reached the lead, so
+  the rep working the seller could not see it. `save_cash_offer` on a `PROP-`
+  subject still records it on the property (`offer_calcs`), and now, when the
+  property's `lead` link is set, ALSO posts the same card as a Comment on that
+  lead's timeline and keeps a per-property Wholesale note in its Notes tab
+  (title `<street> · Wholesale $…`, so it never overwrites or is overwritten by
+  the seller's own `Wholesale …` note). The payload carries `address` (street)
+  and the card shows "For <street>"; its comps/Tweak link points at the
+  property, not the lead. Unlinked properties are unchanged.
+  `properties.linked_lead_and_street`, `unit_test_property_calc_on_lead.py`.
+
 - **Comps: blank square footage filled from Redfin's house pages, in the background** (2026-10-13) —
   Dennis: the comp table and map pills showed no sqft while each comp's card
   showed it. Redfin's map layer withholds living area in some markets (Memphis:
