@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Ask AI pricer result links to the lead's comps page** (2026-10-26) — Lance:
+  after the property pricer gives an ARV, reps need a quick way to the lead's
+  comps page to put in repairs and the rest of the offer calcs. New
+  `components/PricerCompsLink.vue` (prop `lead`) is a plain new-tab link to
+  `compsPagePath(lead)`, for the Ask AI bubble's result card (the bubble is
+  being built on `agent/ai-skill-frappe-integration`).
+
 - **Columbus Day is a Groundwork working day** (2026-10-12) — Lance confirmed
   the team does not take Columbus Day off. The shared `is_holiday` gate now
   excludes it from automatic days off, while preserving the federal-calendar
