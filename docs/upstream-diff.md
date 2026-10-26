@@ -11,8 +11,10 @@ entries for an area (grep it) before touching that area.
   and logs a timeline Comment with the range and offer, so earlier ARVs stay in
   the history. Separate from `price_determination` on purpose: the pricer's
   offer formula differs from the lead desk's, which that snapshot refuses.
-  Column-guarded (`stored: false` before the field exists). Test:
-  `crm/tests/unit_test_save_arv.py`.
+  Column-guarded (`stored: false` before the field exists). The Ask AI bubble
+  mounts `components/SaveArvButton.vue` (props `lead`, `arv`, `arvLow`,
+  `arvHigh`, `offer`) on each result. Test: `crm/tests/unit_test_save_arv.py`.
+
 - **Feedback on an AI pricer ARV goes to Exe** (2026-10-26) — Lance: if the
   property pricer AI runs an after-repair value (ARV) and a rep disagrees with the
   math, they can say why and it goes to Exe. `crm.api.arv_feedback.send` posts it
