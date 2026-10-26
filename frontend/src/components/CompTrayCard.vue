@@ -169,6 +169,11 @@
             v-else
             class="rounded bg-surface-gray-2 px-1 py-0.5 text-2xs font-medium text-ink-gray-7"
           >{{ comp.comp_type }}</span>
+          <span
+            v-if="ai"
+            class="inline-flex items-center gap-0.5 rounded bg-surface-gray-7 px-1 py-0.5 text-2xs font-medium text-ink-white"
+            :title="ai.why"
+          ><FeatherIcon name="zap" class="size-2.5" />{{ __('AI comp') }}</span>
         </div>
 
         <div class="mt-0.5 truncate text-xs font-medium text-ink-gray-8" :title="comp.address">
@@ -287,6 +292,8 @@ const props = defineProps({
   // Condition tagging is a team-wide write on the lead, so hosts turn it off
   // in practice mode / on pre-provision sites; a stored tag still renders.
   canTag: { type: Boolean, default: false },
+  // The Ask AI pricer's line for this comp ({ why, price }) when it used it.
+  ai: { type: Object, default: null },
 })
 defineEmits(['hover', 'open', 'use', 'discard', 'undiscard', 'street', 'setType'])
 

@@ -24,7 +24,12 @@ import { compsPagePath } from '@/utils/comps'
 const props = defineProps({
   // CRM Lead name (or a scratch CRM Property name -- compsPagePath handles both).
   lead: { type: String, default: '' },
+  // Ask AI job id: the comps page picks the AI's comps and fills its numbers.
+  job: { type: String, default: '' },
 })
 
-const href = computed(() => compsPagePath(props.lead))
+const href = computed(() => {
+  const path = compsPagePath(props.lead)
+  return path && props.job ? `${path}?ai=${props.job}` : path
+})
 </script>

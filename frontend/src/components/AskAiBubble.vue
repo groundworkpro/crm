@@ -119,7 +119,7 @@
                 :arv-high="m.result.arv_high"
                 :offer="m.result.offers?.offer"
               />
-              <PricerCompsLink :lead="lead?.name" />
+              <PricerCompsLink :lead="lead?.name" :job="m.job" />
               <button
                 class="inline-flex h-7 items-center gap-1.5 rounded bg-surface-gray-2 px-2 text-base text-ink-gray-8 hover:bg-surface-gray-3"
                 @click="feedbackFor = m.result"
@@ -302,7 +302,7 @@ async function run(kind, question = '') {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settle(r.answer ? { role: 'ai', result: r.answer } : { role: 'ai', text: r.text })
+      if (r.status === 'done') return settle(r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text })
       if (r.status === 'error') return settle({ role: 'ai', error: true, text: r.error })
       if (r.status === 'running' && kind === 'price') messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
