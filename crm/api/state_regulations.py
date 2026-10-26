@@ -11,7 +11,7 @@ one returns a state with its companies and documents. The ids are content
 hashes that change whenever Titanium redeploys, so they are read from the
 site's main JS bundle on every sync instead of being hardcoded.
 
-Storage: a daily job (`sync_guide`) writes the trimmed guide to Redis. If Redis
+Storage: a weekly job (`sync_guide`) writes the trimmed guide to Redis. If Redis
 has nothing yet (fresh boot, the site is down) the snapshot committed next to
 this file, `data/state_regulations.json`, is used. Lookups never call the site.
 """
@@ -216,7 +216,7 @@ def changed_states(old: dict, new: dict) -> list[str]:
 
 
 def sync_guide():
-	"""Daily: refresh the Redis copy from the site. Logs, never raises."""
+	"""Weekly: refresh the Redis copy from the site. Logs, never raises."""
 	try:
 		new = fetch_guide()
 	except Exception:
