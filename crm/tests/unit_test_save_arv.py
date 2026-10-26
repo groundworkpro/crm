@@ -1,6 +1,7 @@
 """crm.api.arv.save_arv: validation, column guard, timeline comment."""
 
 import unittest
+from unittest import mock
 
 from crm.tests.frappe_shim import install
 
@@ -14,7 +15,8 @@ class SaveArv(unittest.TestCase):
 		shim.db.values = {("CRM Lead", "L1"): {"name": "L1"}}
 		shim.db.columns = {"CRM Lead": {"arv"}}
 		shim.db.set_value.reset_mock()
-		shim.get_doc.reset_mock()
+		shim.get_doc = mock.MagicMock()  # other test files swap it out
+		shim.has_permission = mock.MagicMock(return_value=True)
 
 	def comment(self):
 		return shim.get_doc.call_args[0][0]["content"]
