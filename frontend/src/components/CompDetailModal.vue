@@ -377,7 +377,7 @@ import { propertySearchAddress, providerLink, zillowUrl } from '@/utils/property
 import { Badge, Button, Dialog, FeatherIcon, call } from 'frappe-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
-const emit = defineEmits(['use', 'street', 'setType', 'saveSqft', 'saveCompSqft'])
+const emit = defineEmits(['use', 'street', 'setType', 'saveSqft', 'saveCompSqft', 'sourceSqft'])
 
 const props = defineProps({
   lead: { type: String, required: true },
@@ -863,6 +863,11 @@ async function load(force = false) {
     if (token !== requestToken) return
     response.value = result
     cache.set(name, result)
+    // Redfin hides living area in some markets, so the board row can be blank
+    // while Zillow's card has it; hand the number back so the table and pill
+    // fill in without a reload.
+    const sqft = Number(result?.details?.sqft)
+    if (!props.subjectMode && sqft > 0) emit('sourceSqft', name, sqft)
   } catch (e) {
     if (token !== requestToken) return
     error.value = e?.messages?.[0] || e?.message || __('Could not load this property.')

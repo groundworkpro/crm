@@ -367,17 +367,23 @@ def _wholesale_note(scenes):
 	return title, "".join(parts)
 
 
-def _upsert_wholesale_note(lead, scenes):
-	"""Keep one Wholesale note per lead so re-saves do not stack."""
+def _upsert_wholesale_note(lead, scenes, street=""):
+	"""Keep one Wholesale note per lead so re-saves do not stack.
+
+	A calc saved on a property linked to the lead (`street` set) keeps its own
+	note, titled "<street> · Wholesale …", so it neither overwrites nor is
+	overwritten by the seller's own house (whose title starts with "Wholesale")."""
 	title, content = _wholesale_note(scenes)
 	if not title:
 		return
+	prefix = f"{street} · " if street else ""
+	title = prefix + title
 	existing = frappe.get_all(
 		"FCRM Note",
 		filters={
 			"reference_doctype": "CRM Lead",
 			"reference_docname": lead,
-			"title": ["like", "Wholesale %"],
+			"title": ["like", prefix.replace("%", "\\%").replace("_", "\\_") + "Wholesale %"],
 		},
 		pluck="name",
 		order_by="modified desc",
@@ -400,9 +406,9 @@ def _upsert_wholesale_note(lead, scenes):
 	).insert(ignore_permissions=True)
 
 
-def _payload(lead, scenes, comps, sqft, notes=""):
+def _payload(lead, scenes, comps, sqft, notes="", address=""):
 	kind = scenes[0]["kind"] if scenes else "cash"
-	return {
+	out = {
 		"lead": lead,
 		"kind": kind,
 		"sqft": sqft,
@@ -420,9 +426,14 @@ def _payload(lead, scenes, comps, sqft, notes=""):
 			for c in comps
 		],
 	}
+	# The house a property calc was for. The card shows it, so a calc posted on
+	# the seller's timeline for their second house is not read as their own.
+	if address:
+		out["address"] = address
+	return out
 
 
-def _html(lead, scenes, comps, sqft, notes=""):
+def _html(lead, scenes, comps, sqft, notes="", address=""):
 	# Vertical on purpose: the activity bubble is ~20rem and `prose-f` is
 	# `break-all`, so a single "Comps: A · B" line wraps mid-number and reads
 	# as a text blob. One row per comp, each a real link. `data-cash-offer` is
@@ -436,7 +447,7 @@ def _html(lead, scenes, comps, sqft, notes=""):
 		else f"/crm/leads/{lead}/comps"
 	)
 	attr = html_lib.escape(
-		json.dumps(_payload(lead, scenes, comps, sqft, notes), separators=(",", ":")),
+		json.dumps(_payload(lead, scenes, comps, sqft, notes, address), separators=(",", ":")),
 		quote=True,
 	)
 	kind = scenes[0].get("kind") if scenes else "cash"
@@ -456,6 +467,8 @@ def _html(lead, scenes, comps, sqft, notes=""):
 		'<div class="cash-offer" data-cash-offer="{}">'.format(attr),
 		"<div><b>{}</b></div>".format(escape_html(title)),
 	]
+	if address:
+		parts.append("<div>{}</div>".format(escape_html(_("For {0}").format(address))))
 	for i, sc in enumerate(scenes):
 		label = _("Scenario {0}").format(i + 1)
 		if sc.get("kind") == "list":
@@ -664,15 +677,30 @@ def save_cash_offer(lead, scenarios=None, comps=None, subject_sqft=None, notes=N
 		frappe.throw(_("Type a value in at least one scenario first."))
 
 	used = _comps(comps)
-	content = _html(lead, scenes, used, sqft, notes or "")
 	if dt == SCRATCH_DOCTYPE:
 		# A scratch property has no activity timeline and no Notes tab. The calc
 		# lives on the property itself, newest first, and the latest one seeds the
-		# calculator on the next open (see properties.py).
-		from crm.api.properties import record_offer
+		# calculator on the next open (see properties.py). When the property hangs
+		# off a lead (a second house, a neighbour), the same card is ALSO posted on
+		# that lead's timeline, labelled with the property's street, so the rep
+		# working the seller sees it without opening Properties.
+		from crm.api.properties import linked_lead_and_street, record_offer
 
-		record_offer(lead, _payload(lead, scenes, used, sqft, notes or ""), content)
-		return {"ok": True, "comps": len(used), "scenarios": len(scenes)}
+		parent, street = linked_lead_and_street(lead)
+		label = (street or lead) if parent else ""
+		content = _html(lead, scenes, used, sqft, notes or "", label)
+		record_offer(lead, _payload(lead, scenes, used, sqft, notes or "", label), content)
+		if parent:
+			_post_on_lead(parent, content)
+			_upsert_wholesale_note(parent, scenes, label)
+		return {"ok": True, "comps": len(used), "scenarios": len(scenes), "lead": parent}
+	content = _html(lead, scenes, used, sqft, notes or "")
+	_post_on_lead(lead, content)
+	_upsert_wholesale_note(lead, scenes)
+	return {"ok": True, "comps": len(used), "scenarios": len(scenes)}
+
+
+def _post_on_lead(lead, content):
 	frappe.get_doc(
 		{
 			"doctype": "Comment",
@@ -684,5 +712,3 @@ def save_cash_offer(lead, scenarios=None, comps=None, subject_sqft=None, notes=N
 			"comment_by": frappe.session.user,
 		}
 	).insert(ignore_permissions=True)
-	_upsert_wholesale_note(lead, scenes)
-	return {"ok": True, "comps": len(used), "scenarios": len(scenes)}

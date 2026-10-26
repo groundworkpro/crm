@@ -722,6 +722,7 @@
     @set-type="setCompType"
     @save-sqft="saveSubjectSqft"
     @save-comp-sqft="saveCompSqft"
+    @source-sqft="fillCompSqft"
   />
 
   <!-- Asked on every pick; stacks above the gallery when the pick came from
@@ -2884,6 +2885,64 @@ function applyCompState(name, state) {
 }
 
 /**
+ * Redfin's map layer hides sqft in some markets (Memphis) but each house's own
+ * Redfin page has it. The map is already drawn; ask for the nearest blanks
+ * (picked first) in the background and fill rows/pins as answers land.
+ * Each name is asked once per page; the server caches answers 30 days.
+ */
+const SQFT_FILL_BATCH = 30
+const sqftAsked = new Set()
+async function fillBlankSqft() {
+  if (isPractice.value || inventory.value === 'rentals' || !props.lead) return
+  const lead = props.lead
+  const wanted = (data.value?.comps || [])
+    .filter(
+      (c) =>
+        !(Number(c.square_footage) > 0) &&
+        String(c.name || '').startsWith('redfin::') &&
+        !sqftAsked.has(c.name),
+    )
+    .sort(
+      (a, b) =>
+        (b.selected ? 1 : 0) - (a.selected ? 1 : 0) ||
+        (Number(a.distance_mi) || 99) - (Number(b.distance_mi) || 99),
+    )
+    .slice(0, SQFT_FILL_BATCH)
+    .map((c) => c.name)
+  if (!wanted.length) return
+  wanted.forEach((n) => sqftAsked.add(n))
+  try {
+    const got = await call('crm.api.comps.fill_comp_sqft', {
+      lead,
+      names: JSON.stringify(wanted),
+    })
+    if (lead !== props.lead) return
+    for (const [name, sqft] of Object.entries(got || {})) {
+      fillCompSqft(name, Number(sqft), 'redfin')
+    }
+  } catch (e) {
+    // Best-effort: the board is already usable without these. Not retried on
+    // every poll, so a failing scraper is not hammered.
+  }
+}
+
+/**
+ * A comp's card loaded Zillow's living area for a row the board had none for
+ * (Redfin hides sqft in some markets). Fill the blank in place so the table's
+ * $/sf and the pin pill pick it up. Never overwrites a value the board has.
+ */
+function fillCompSqft(name, sqft, source = 'zillow') {
+  if (!data.value || !(sqft > 0)) return
+  const list = data.value.comps || []
+  const row = list.find((c) => c.name === name)
+  if (!row || Number(row.square_footage) > 0) return
+  const next = { ...row, square_footage: Math.round(sqft), sqft_source: source }
+  data.value.comps = list.map((c) => (c.name === name ? next : c))
+  placePin(next)
+  if (detailComp.value?.name === name) detailComp.value = next
+}
+
+/**
  * Mark a comp as one we are pricing off, or hide it. Team-wide by design.
  *
  * The map is NOT rebuilt. Adding a comp used to `load()` → `render()`, which
@@ -3181,6 +3240,7 @@ async function load({ explicit = userTouched.value, quiet = false, settle = fals
     }
     await nextTick()
     render()
+    fillBlankSqft()
     if (detailComp.value) {
       const next = comps.value.find((c) => c.name === detailComp.value.name)
       if (next) detailComp.value = next

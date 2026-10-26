@@ -2630,11 +2630,114 @@ def get_lead_comps(
 			for row in base["comps"]:
 				row.setdefault("sale_history", None)
 				row.setdefault("sale_history_missing", True)
+	# Redfin's map layer withholds living area in some markets (Memphis: "View
+	# sq ft" on redfin.com, `sqFt` null on 495 of 556 board rows), so the table
+	# read "Sq ft —". Fill blanks from caches here; the page fetches the rest.
+	if not rental:
+		try:
+			base["sqft_fill"] = fill_missing_sqft(base["comps"], lead)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: sqft fill failed")
 	# Again, LAST: the pin refresh and sale-history passes above write Zillow's
 	# sqft onto rows, and a rep's number has to outrank every scraped one.
 	_apply_comp_sqft(base["comps"], comp_sqft)
 	_apply_comp_sqft(base.get("discarded"), comp_sqft)
 	return base
+
+
+#: Living area for rows with NO sqft. Redfin's map layer hides sqFt in some
+#: markets (Memphis) but the house's own Redfin page (the scraper's `/history`)
+#: still carries the public-record number, free, ~0.3s a house. The board never
+#: waits for it: `get_lead_comps` fills blanks from caches only, and the page
+#: then asks `fill_comp_sqft` for the nearest blanks in the background.
+SQFT_FETCH_BUDGET = 30
+
+
+def _redfin_pid(row):
+	name = str(row.get("name") or "")
+	return name.split("::", 1)[1] or None if name.startswith("redfin::") else None
+
+
+def fill_missing_sqft(rows, lead=None):
+	"""Give rows with no `square_footage` a cached living area. Mutates. -> info.
+
+	Only BLANKS are filled; a number the board already has always stands.
+	Cache-only, so it costs the request nothing: Redfin's page sqft (cached by
+	`/history`, which sale history already reads for listings and the nearest
+	houses), then the comp-detail cache (a rep opened the card), then Zillow's
+	30-day pin cache. `pending` counts blanks Redfin may still answer; the page
+	fetches those through `fill_comp_sqft`.
+	"""
+	from crm.api import redfin_history, zillow_comps
+
+	info = {"blank": 0, "filled": 0, "pending": 0}
+	blank = [r for r in (rows or []) if r.get("address") and not _num(r.get("square_footage"))]
+	info["blank"] = len(blank)
+	if not blank:
+		return info
+
+	def take(row, sqft, source):
+		val = _num(sqft)
+		if not val or val <= 0:
+			return False
+		row["square_footage"] = int(round(val))
+		row["sqft_source"] = source
+		info["filled"] += 1
+		return True
+
+	redfin_sqft = redfin_history.cached_sqft([_redfin_pid(r) for r in blank])
+	rest = []
+	for row in blank:
+		pid = _redfin_pid(row)
+		if take(row, redfin_sqft.get(pid), "redfin"):
+			continue
+		cached = _detail_cached(row.get("name")) if row.get("name") else None
+		details = cached.get("details") if isinstance(cached, dict) else None
+		if not (isinstance(details, dict) and take(row, details.get("sqft"), "zillow")):
+			rest.append(row)
+	if rest:
+		facts = zillow_comps._pin_facts_many([zillow_comps_address(r) for r in rest], fetch=False)
+		for row in rest:
+			if take(row, (facts.get(zillow_comps_address(row)) or {}).get("sqft"), "zillow"):
+				continue
+			pid = _redfin_pid(row)
+			if pid and pid not in redfin_sqft:
+				info["pending"] += 1
+	return info
+
+
+@frappe.whitelist()
+def fill_comp_sqft(lead, names=None):
+	"""Background fill for the page: Redfin page sqft for up to
+	`SQFT_FETCH_BUDGET` comp names (the caller sends the nearest blanks first).
+	-> {name: sqft}. Free; each answer is cached 30 days for every lead."""
+	from crm.api import redfin_history
+
+	_guard()
+	_load_subject(lead)
+	if isinstance(names, str):
+		try:
+			names = json.loads(names)
+		except ValueError:
+			names = [names]
+	pids = {}
+	for name in (names or [])[:SQFT_FETCH_BUDGET]:
+		pid = _redfin_pid({"name": name})
+		if pid:
+			pids[pid] = name
+	if not pids:
+		return {}
+	got = redfin_history.sqft_many(list(pids), SQFT_FETCH_BUDGET)
+	return {pids[pid]: sqft for pid, sqft in got.items() if sqft}
+
+
+def zillow_comps_address(row):
+	"""The pin-cache key for a row: the full `street, city, ST zip` line.
+
+	Redfin rows keep the street alone in `address`; a bare street sent to
+	Zillow resolves a same-numbered house anywhere in the country.
+	"""
+	return _zillow_lookup_address(row)
 
 
 def _history_order(rows, budget):
