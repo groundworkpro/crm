@@ -4,6 +4,13 @@ Every Groundwork change to the frappe/crm fork, newest first. **Keep this list
 current**: add an entry at the top when you change app behaviour, and read the
 entries for an area (grep it) before touching that area.
 
+- **Feedback on an AI pricer ARV goes to Exe** (2026-10-26) — Lance: if the
+  property pricer AI runs an after-repair value (ARV) and a rep disagrees with the
+  math, they can say why and it goes to Exe. `crm.api.arv_feedback.send` posts it
+  as a Talk DM from the rep to Exe (site config `arv_feedback_to` overrides), which
+  Talk mirrors to Mattermost; it carries the comps link, the AI's ARV, the rep's
+  ARV and the AI's math. `ArvFeedbackModal.vue` is the form; the Ask AI bubble
+  mounts it next to each ARV. Tests: `unit_test_arv_feedback.py`.
 - **Ask AI pricer result links to the lead's comps page** (2026-10-26) — Lance:
   after the property pricer gives an ARV, reps need a quick way to the lead's
   comps page to put in repairs and the rest of the offer calcs. New
