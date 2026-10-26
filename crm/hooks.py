@@ -412,6 +412,9 @@ scheduler_events = {
 		# Status guard: email Lance if any code-referenced status name no longer
 		# exists (rename/delete outside the doc hooks). Needs `sync_jobs` on prod.
 		"crm.api.lead_status.daily_integrity_check",
+		# Titanium state wholesaling guide (tumarketguide.com) -> Redis; lookups
+		# fall back to crm/api/data/state_regulations.json. Needs `sync_jobs`.
+		"crm.api.state_regulations.sync_guide",
 	],
 	"hourly_long": [
 		"crm.lead_syncing.background_sync.sync_leads_from_sources_hourly",
