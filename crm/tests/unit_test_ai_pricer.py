@@ -44,13 +44,14 @@ class AiPricerTest(unittest.TestCase):
 		self.p.stop()
 		self.a.stop()
 
-	def test_default_rollout_is_lance_and_exe(self):
+	def test_default_is_everyone_and_config_narrows_it(self):
+		self.assertTrue(ai_pricer._allowed("german@groundworkpro.com"))
+		shim.conf["ai_pricer_users"] = "lance.johnson@groundworkpro.com, exe.ortiz@groundworkpro.com"
 		self.assertTrue(ai_pricer._allowed("exe.ortiz@groundworkpro.com"))
 		self.assertFalse(ai_pricer._allowed("german@groundworkpro.com"))
-		shim.conf["ai_pricer_users"] = "*"
-		self.assertTrue(ai_pricer._allowed("german@groundworkpro.com"))
 
 	def test_status_hidden_for_others(self):
+		shim.conf["ai_pricer_users"] = ["lance.johnson@groundworkpro.com"]
 		shim.session.user = "german@groundworkpro.com"
 		self.assertEqual(ai_pricer.status(), {"enabled": False})
 

@@ -11,8 +11,8 @@ Keys are unprefixed ("shared" in Frappe's terms) so the worker needs no site nam
   crm:ai_pricer:job:<id>     {"status": queued|running|done|error, ...}
   crm:ai_pricer:worker_seen  heartbeat; missing = worker down, say so up front
 
-Who sees it: site_config `ai_pricer_users` (list of logins), default Lance + Exe
-for the first week. "*" opens it to every logged-in user.
+Who sees it: site_config `ai_pricer_users` (list of logins). Default "*", every
+logged-in user (Lance opened it to everyone 2026-10-26).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ QUEUE = "crm:ai_pricer:queue"
 JOB = "crm:ai_pricer:job:"
 SEEN = "crm:ai_pricer:worker_seen"
 TTL = 86400
-DEFAULT_USERS = ("lance.johnson@groundworkpro.com", "exe.ortiz@groundworkpro.com", "Administrator")
+DEFAULT_USERS = ("*",)
 MAX_QUESTION = 2000
 MAX_NOTES = 6
 
