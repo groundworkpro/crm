@@ -219,6 +219,21 @@ class SequenceTaskTitleTests(unittest.TestCase):
 		self.assertFalse(ds.is_sequence_call_task("Text Joe — day 1 of 10"))
 		self.assertFalse(ds.is_sequence_call_task("Follow up"))
 
+	def test_long_term_call_keeps_cycle_label(self):
+		self.assertTrue(ds.is_sequence_call_task("Call Joe · Weekly follow-up 2 of 4"))
+		self.assertEqual(ds.call_row_title("Call Joe · Weekly follow-up 2 of 4"), "Weekly follow-up 2 of 4")
+		self.assertEqual(ds.call_row_title("Call Joe · Monthly follow-up 3 of 11"), "Monthly follow-up 3 of 11")
+		self.assertEqual(ds.call_row_title("Call Joe"), "Triple dial")
+		self.assertEqual(ds.call_row_title("Call Joe · "), "Triple dial")
+
+	def test_refund_prompt(self):
+		self.assertTrue(ds.shows_refund_prompt("Called No Answer", True, False, False))
+		self.assertTrue(ds.shows_refund_prompt("New", True, False, False))
+		self.assertFalse(ds.shows_refund_prompt("Called No Answer", False, False, False))
+		self.assertFalse(ds.shows_refund_prompt("Called No Answer", True, True, False))
+		self.assertFalse(ds.shows_refund_prompt("Called No Answer", True, False, True))
+		self.assertFalse(ds.shows_refund_prompt("Follow Up", True, False, False))
+
 	def test_triple_dial_suffix(self):
 		self.assertEqual(
 			ds.with_triple_dial("Text Joe — day 3 of 10", True),

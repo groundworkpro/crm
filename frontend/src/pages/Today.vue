@@ -288,6 +288,26 @@
                 :label="__('No refund')"
                 :title="item.non_refundable_reason || __('The provider will not refund this lead')"
               />
+              <!-- Day 10 of the no-response cadence: one tap queues the refund
+                   (Refunds board, To Request) without marking the lead Dead.
+                   The lead keeps its status and moves on to Long-Term. -->
+              <button
+                v-if="item.refund_prompt"
+                type="button"
+                class="flex h-6 items-center gap-1 rounded-full border border-outline-amber-2 bg-surface-amber-1 px-2 text-xs font-medium text-ink-amber-3 hover:bg-surface-amber-2 disabled:cursor-wait disabled:opacity-60"
+                :disabled="markingRefundLeads.includes(item.lead)"
+                :title="__('10 days with no response — queue this lead on the Refunds board')"
+                @click.stop="markRefundable(item)"
+              >
+                <FeatherIcon name="rotate-ccw" class="size-3" />
+                {{ __('Mark refundable') }}
+              </button>
+              <Badge
+                v-else-if="item.refundable"
+                variant="subtle"
+                theme="orange"
+                :label="__('Refundable')"
+              />
               <div @click.stop>
                 <Dropdown
                   :options="leadStatusOptions(item)"
@@ -635,6 +655,7 @@ const selectedSignal = ref('')
 const selectedItem = ref(null)
 const showLeadModal = ref(false)
 const savingStatusLeads = ref([])
+const markingRefundLeads = ref([])
 const pendingLeadStatus = ref(null)
 const showLostReasonModal = ref(false)
 const selectedAddress = ref('')
@@ -1071,6 +1092,33 @@ async function updateLeadStatus(item, status, extraValues = {}) {
     board.reload()
   } finally {
     savingStatusLeads.value = savingStatusLeads.value.filter(
+      (lead) => lead !== item.lead,
+    )
+  }
+}
+
+async function markRefundable(item) {
+  if (markingRefundLeads.value.includes(item.lead)) return
+  markingRefundLeads.value = [...markingRefundLeads.value, item.lead]
+  try {
+    await call('crm.api.refunds.set_refund_state', {
+      lead: item.lead,
+      refundable: 1,
+    })
+    // Same lead can have more than one card; flip them all.
+    for (const col of columns.value) {
+      for (const card of col.items) {
+        if (card.lead === item.lead) {
+          card.refundable = true
+          card.refund_prompt = false
+        }
+      }
+    }
+    toast.success(__('Marked refundable — on the Refunds board'))
+  } catch (e) {
+    toast.error(e.messages?.[0] || __('Could not mark refundable'))
+  } finally {
+    markingRefundLeads.value = markingRefundLeads.value.filter(
       (lead) => lead !== item.lead,
     )
   }
