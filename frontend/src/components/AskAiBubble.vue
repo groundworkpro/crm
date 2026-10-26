@@ -200,6 +200,9 @@ const busy = ref(false)
 const feedbackFor = ref(null)
 const scroller = ref(null)
 const input = ref(null)
+// Groups this conversation's rows in the server-side transcript (CRM AI Chat Message).
+const newChatId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
+let chatId = newChatId()
 
 function grow() {
   const el = input.value
@@ -237,6 +240,7 @@ async function pickLead(name) {
   search.value = ''
   if (lead.value?.name === name) return
   messages.value = []
+  chatId = newChatId()
   try {
     lead.value = await call('crm.api.ai_pricer.lead_info', { lead: name })
   } catch {
@@ -278,6 +282,7 @@ function toggle() {
 
 function reset() {
   messages.value = []
+  chatId = newChatId()
 }
 
 function scrollDown() {
@@ -314,7 +319,13 @@ async function run(kind, question = '') {
     scrollDown()
   }
   try {
-    const { job } = await call('crm.api.ai_pricer.ask', { lead: forLead, kind, question, history: JSON.stringify(hist) })
+    const { job } = await call('crm.api.ai_pricer.ask', {
+      lead: forLead,
+      kind,
+      question,
+      history: JSON.stringify(hist),
+      chat: chatId,
+    })
     const started = Date.now()
     while (Date.now() - started < 5 * 60 * 1000) {
       await new Promise((r) => setTimeout(r, 2500))

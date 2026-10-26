@@ -13,6 +13,14 @@ Keys are unprefixed ("shared" in Frappe's terms) so the worker needs no site nam
 
 Who sees it: site_config `ai_pricer_users` (list of logins). Default "*", every
 logged-in user (Lance opened it to everyone 2026-10-26).
+
+Transcript (Lance, 2026-10-27: "store both sides of the chat"): every rep message
+and every AI reply is a row in **CRM AI Chat Message** (doctype made by the deploy
+repo's `scripts/setup_ai_chat_log.py`), grouped by the bubble's `chat` id. The rep's
+side is written in `ask`; the AI's side when `get_job` first sees the job finish
+(`crm:ai_pricer:log:<id>` carries who/what until then, and deleting it is the
+once-only claim). Until the doctype exists nothing is written, and a failed write
+never breaks the chat.
 """
 
 from __future__ import annotations
@@ -26,6 +34,8 @@ from frappe import _
 QUEUE = "crm:ai_pricer:queue"
 JOB = "crm:ai_pricer:job:"
 SEEN = "crm:ai_pricer:worker_seen"
+LOG = "crm:ai_pricer:log:"
+CHAT_DOCTYPE = "CRM AI Chat Message"
 TTL = 86400
 DEFAULT_USERS = ("*",)
 MAX_QUESTION = 2000
@@ -62,6 +72,58 @@ def _read(job_id: str) -> dict | None:
 	r, base = _redis()
 	raw = base.get(r, JOB + job_id)
 	return json.loads(raw) if raw else None
+
+
+def _log_supported() -> bool:
+	return bool(frappe.db.exists("DocType", CHAT_DOCTYPE))
+
+
+def _clean_chat(chat) -> str:
+	chat = str(chat or "")
+	return chat if 8 <= len(chat) <= 40 and chat.replace("-", "").isalnum() else uuid.uuid4().hex
+
+
+def _summary(answer: dict) -> str:
+	"""One readable line for a price card; the full card is kept as JSON beside it."""
+	money = lambda n: f"${round(n):,}" if isinstance(n, (int, float)) else "?"  # noqa: E731
+	offers = answer.get("offers") or {}
+	comps = "; ".join(f"{c.get('address')} {money(c.get('price'))}" for c in answer.get("comps_used") or [])
+	return (
+		f"ARV {money(answer.get('arv'))} ({money(answer.get('arv_low'))}-{money(answer.get('arv_high'))}), "
+		f"{answer.get('confidence')} confidence, repair tier {answer.get('repair_tier')}, "
+		f"repairs {money(offers.get('repairs'))}, offer {money(offers.get('offer'))}. Comps: {comps}"
+	)
+
+
+def _write_log(row: dict):
+	"""Insert one transcript row. Never raises: logging must not break the chat."""
+	try:
+		if not _log_supported():
+			return
+		frappe.get_doc({"doctype": CHAT_DOCTYPE, **row}).insert(ignore_permissions=True)
+		frappe.db.commit()
+	except Exception:
+		frappe.log_error(title="Ask AI: chat log write failed")
+
+
+def _log_reply(job_id: str, result: dict):
+	"""Write the AI's side once, the first time a poll sees the job finished."""
+	r, base = _redis()
+	raw = base.get(r, LOG + job_id)
+	if not raw or not base.delete(r, LOG + job_id):
+		return
+	meta = json.loads(raw)
+	answer = result.get("answer")
+	error = result.get("status") == "error"
+	_write_log(
+		{
+			**meta,
+			"role": "ai",
+			"error": 1 if error else 0,
+			"text": (result.get("error") if error else _summary(answer) if answer else result.get("text")) or "",
+			"answer": json.dumps(answer) if answer else None,
+		}
+	)
 
 
 def _worker_up() -> bool:
@@ -135,7 +197,7 @@ def lead_info(lead: str):
 
 
 @frappe.whitelist(methods=["POST"])
-def ask(lead: str, kind: str = "price", question: str = "", history=None):
+def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None):
 	_guard()
 	frappe.has_permission("CRM Lead", "read", lead, throw=True)
 	if isinstance(history, str):
@@ -145,7 +207,12 @@ def ask(lead: str, kind: str = "price", question: str = "", history=None):
 	doc = frappe.get_doc("CRM Lead", lead)
 	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "")
 	_push(job)
-	return {"job": job["id"]}
+	meta = {"chat": _clean_chat(chat), "lead": lead, "user": job["user"], "kind": kind, "job": job["id"]}
+	if _log_supported():
+		r, base = _redis()
+		base.set(r, LOG + job["id"], json.dumps(meta), ex=TTL)
+		_write_log({**meta, "role": "user", "text": job["question"] or "Price this house"})
+	return {"job": job["id"], "chat": meta["chat"]}
 
 
 @frappe.whitelist()
@@ -153,4 +220,7 @@ def get_job(job: str):
 	_guard()
 	if not job or len(job) != 32 or not job.isalnum():
 		frappe.throw(_("Bad job id."))
-	return _read(job) or {"status": "error", "error": "This request expired. Ask again."}
+	result = _read(job) or {"status": "error", "error": "This request expired. Ask again."}
+	if result.get("status") in ("done", "error"):
+		_log_reply(job, result)
+	return result
