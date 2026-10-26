@@ -1629,7 +1629,13 @@ async function save() {
   }
 }
 
-defineExpose({ save, canSave })
+/** Ask AI handoff: put the AI's ARV and repair tier in the first cash column. */
+function prefill({ arv, rehabPsf, mult }) {
+  kind.value = 'cash'
+  Object.assign(books.cash.s[0], { arv, rehabPsf, mult })
+}
+
+defineExpose({ save, canSave, prefill })
 
 function onKeys(e) {
   if (e.key === 'Escape' && menuFor.value >= 0) {
