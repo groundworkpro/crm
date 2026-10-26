@@ -149,7 +149,7 @@
     </div>
 
     <button
-      class="flex h-12 items-center gap-2 rounded-full bg-surface-gray-9 px-4 text-base font-medium text-ink-white shadow-xl hover:opacity-90"
+      class="flex h-12 items-center gap-2 rounded-full bg-surface-gray-7 px-4 text-base font-medium text-ink-white shadow-xl hover:bg-surface-gray-6"
       :title="__('Ask AI to price a house')"
       @click="toggle"
     >
