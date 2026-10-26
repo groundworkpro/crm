@@ -133,18 +133,28 @@
         </template>
       </div>
 
-      <form class="flex items-end gap-2 border-t px-3 py-2.5" @submit.prevent="send">
-        <Textarea
-          v-model="draft"
-          :rows="1"
-          class="flex-1"
-          :disabled="!lead || busy"
-          :placeholder="lead ? __('Ask about this house… (e.g. what if it needs a full rehab?)') : __('Pick a lead first')"
-          @keydown.enter.exact.prevent="send"
-        />
-        <Button variant="solid" type="submit" :disabled="!lead || busy || !draft.trim()">
-          <template #icon><FeatherIcon name="send" class="h-4 w-4" /></template>
-        </Button>
+      <!-- One composer box: the text grows with what is typed (up to ~5 lines),
+           no resize handle, and the send button sits inside it. -->
+      <form class="border-t px-3 py-2.5" @submit.prevent="send">
+        <div
+          class="flex items-end gap-1 rounded-lg border border-outline-gray-2 bg-surface-white py-1 pl-3 pr-1 focus-within:border-outline-gray-4"
+          :class="!lead || busy ? 'opacity-60' : ''"
+        >
+          <textarea
+            ref="input"
+            v-model="draft"
+            rows="1"
+            class="max-h-[120px] min-w-0 flex-1 resize-none border-none bg-transparent px-0 py-1 text-base leading-5 text-ink-gray-9 placeholder:text-ink-gray-4 focus:outline-none focus:ring-0"
+            :disabled="!lead || busy"
+            :placeholder="lead ? __('Ask about this house…') : __('Pick a lead first')"
+            :title="lead ? __('e.g. what if it needs a full rehab?') : ''"
+            @input="grow"
+            @keydown.enter.exact.prevent="send"
+          />
+          <Button variant="solid" type="submit" :disabled="!lead || busy || !draft.trim()" :title="__('Send')">
+            <template #icon><FeatherIcon name="send" class="h-3.5 w-3.5" /></template>
+          </Button>
+        </div>
       </form>
     </div>
 
@@ -172,7 +182,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { Button, FeatherIcon, LoadingIndicator, TextInput, Textarea, call } from 'frappe-ui'
+import { Button, FeatherIcon, LoadingIndicator, TextInput, call } from 'frappe-ui'
 import SaveArvButton from '@/components/SaveArvButton.vue'
 import PricerCompsLink from '@/components/PricerCompsLink.vue'
 import ArvFeedbackModal from '@/components/Modals/ArvFeedbackModal.vue'
@@ -189,6 +199,14 @@ const draft = ref('')
 const busy = ref(false)
 const feedbackFor = ref(null)
 const scroller = ref(null)
+const input = ref(null)
+
+function grow() {
+  const el = input.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+}
 
 call('crm.api.ai_pricer.status')
   .then((r) => {
@@ -318,6 +336,7 @@ function send() {
   const q = draft.value.trim()
   if (!q || !lead.value || busy.value) return
   draft.value = ''
+  nextTick(grow)
   run('ask', q)
 }
 </script>
