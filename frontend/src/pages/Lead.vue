@@ -347,6 +347,7 @@
            overflow-y-auto/min-h-0 region lets the whole body scroll while the
            header above and the lead-id footer below stay fixed. -->
       <div class="flex flex-1 flex-col overflow-y-auto min-h-0">
+      <StateRegulationBanner :lead="leadId" :state="doc.property_state" />
       <SLASection
         v-if="doc.sla_status"
         v-model="doc"
@@ -474,6 +475,7 @@ import AssignTo from '@/components/AssignTo.vue'
 import FilesUploader from '@/components/FilesUploader/FilesUploader.vue'
 import SidePanelLayout from '@/components/SidePanelLayout.vue'
 import SLASection from '@/components/SLASection.vue'
+import StateRegulationBanner from '@/components/StateRegulationBanner.vue'
 import CustomActions from '@/components/CustomActions.vue'
 import FirstCallReadCard from '@/components/FirstCallReadCard.vue'
 import RefundStatusCard from '@/components/RefundStatusCard.vue'

@@ -422,16 +422,19 @@ def create_docuseal_agreement(
 	else:
 		# The live Purchase Agreement template carries: Agreement Date, Seller
 		# Name(s), Property Address, Sale Price, Access Days, Due Diligence Days,
-		# Earnest Money, Offer Expires Days, Additional Terms, Signer Name, Title
+		# Closing Days, Earnest Money, Offer Expires Days, Additional Terms,
+		# Signer Name, Title
 		# (+ the signature/date fields). Keys below that the template doesn't have
 		# (County / APN / Governing State / Occupancy / Personal Property /
 		# Disclosed Defects) are ignored by DocuSeal and kept only so an older
 		# template revision would still prefill.
 		#
-		# Since the 2026-09-30 rebuild, inspection and closing share ONE window
-		# ("Due Diligence Days", counted from the day the seller first lets us in)
-		# and "Closing Days" no longer exists; "Access Days" is how long the seller
-		# has to give us a way in after signing.
+		# Timeline (v4, 2026-10-27): "Access Days" is how long the seller has to
+		# give us a way in after signing; "Due Diligence Days" is the inspection
+		# period, counted from that first access; "Closing Days" is how long after
+		# the inspection period ends we close. (Between 2026-09-30 and 2026-10-27
+		# inspection and closing shared one window and Closing Days was absent;
+		# the key is ignored on those older templates.)
 		#
 		# Sale Price and Offer Expires Days are deliberately NOT prefilled: they
 		# are per-deal terms with no safe default, and each is a REQUIRED field,
@@ -449,6 +452,7 @@ def create_docuseal_agreement(
 			"Earnest Money": "100",
 			"Access Days": "3",
 			"Due Diligence Days": "30",
+			"Closing Days": "15",
 			"Occupancy": _OCCUPANCY_DEFAULT,
 			"Personal Property": "None.",
 			"Additional Terms": "None.",

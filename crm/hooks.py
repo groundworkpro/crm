@@ -422,6 +422,12 @@ scheduler_events = {
 		# last CATCHUP_DAYS that has no parsed_at (needs `sync_jobs` on prod).
 		"crm.api.contract_parse.catch_up_unparsed",
 	],
+	"weekly_long": [
+		# Titanium state wholesaling guide (tumarketguide.com) -> Redis; lookups
+		# fall back to crm/api/data/state_regulations.json. Weekly is plenty: the
+		# guide changes a few times a quarter. Needs `sync_jobs`.
+		"crm.api.state_regulations.sync_guide",
+	],
 	"monthly_long": ["crm.lead_syncing.background_sync.sync_leads_from_sources_monthly"],
 	"cron": {
 		# Single periodic driver for CRM Sequences: enqueue a drainer for every

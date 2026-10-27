@@ -438,9 +438,14 @@
                (`leaflet-container`, `leaflet-touch`, ...). While these classes
                only changed with a prop that never moved at runtime that was
                harmless; now that `wide` flips on resize, re-patching the map
-               element destroys the map. -->
+               element destroys the map.
+
+               `isolate` gives the map its own stacking context. Leaflet's
+               panes (z 400-700) and controls (z 1000), plus our overlays here
+               (z 1000/1100), otherwise compete page-wide — they painted over
+               the fixed Ask AI bubble (z-40). -->
           <div
-            class="relative overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-gray-1"
+            class="relative isolate overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-gray-1"
             :data-compact="wide ? null : '1'"
             :class="wide ? 'h-full min-h-0 flex-1' : 'min-h-0 flex-1'"
           >

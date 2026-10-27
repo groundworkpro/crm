@@ -43,7 +43,10 @@ from crm.api.daily_standup import (
 	due_task_assignees,
 	followup_reopens,
 	is_business_day,
+	TEN_DAY_SEQUENCE,
+	call_row_title,
 	is_sequence_call_task,
+	shows_refund_prompt,
 	previous_business_day,
 	sequence_day,
 )
@@ -1060,7 +1063,7 @@ def get_today_board(
 			        "property_address", "property_city", "property_state", "property_zip"]
 		        + [
 			        f for f in ("zillow_zpid", "zillow_fetched_at", "custom_non_refundable",
-			                    "custom_non_refundable_reason")
+			                    "custom_non_refundable_reason", "custom_refundable")
 			        if frappe.db.has_column("CRM Lead", f)
 		        ],
 		)
@@ -1076,6 +1079,16 @@ def get_today_board(
 		as_dict=True,
 	)
 	made = {c.n: c.c for c in calls}
+	# Day 10 reached: the 10-day enrollment completes when its day-10 task is
+	# created. Drives the card's "Mark refundable" button.
+	ten_day_done = set(
+		frappe.get_all(
+			"CRM Sequence Enrollment",
+			filters={"lead": ["in", lead_names], "sequence": TEN_DAY_SEQUENCE, "status": "Completed"},
+			pluck="lead",
+		)
+	) if frappe.db.exists("DocType", "CRM Sequence Enrollment") else set()
+	has_refund_field = frappe.db.has_column("CRM Lead", "custom_refundable")
 
 	# One open task per lead for the card. Fetch once for the whole board rather
 	# than issuing a query per card; due tasks sort before undated tasks.
@@ -1117,7 +1130,7 @@ def get_today_board(
 			row.pop("modified", None)
 			row["is_completed"] = False
 			if is_sequence_call_task(row.get("title")):
-				row["title"] = "Triple dial"
+				row["title"] = call_row_title(row.get("title"))
 			shaped.append(row)
 		open_tasks_shaped[lead] = shaped
 		open_task_by_lead[lead] = shaped[0] if shaped else None
@@ -1178,6 +1191,10 @@ def get_today_board(
 		# a setter doesn't spend a 10-dial streak chasing a denial.
 		r["non_refundable"] = bool(l.get("custom_non_refundable"))
 		r["non_refundable_reason"] = (l.get("custom_non_refundable_reason") or "") or None
+		r["refundable"] = bool(l.get("custom_refundable"))
+		r["refund_prompt"] = shows_refund_prompt(
+			l.get("status"), r.lead in ten_day_done, r["refundable"], r["non_refundable"]
+		) and has_refund_field
 		r["calls_today"] = made.get(r.lead, 0)
 		r["call_number"] = int(r.get("call_number") or 1)
 		r["total_calls"] = int(

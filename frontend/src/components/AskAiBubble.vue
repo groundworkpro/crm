@@ -54,7 +54,11 @@
       </div>
 
       <div ref="scroller" class="flex-1 space-y-3 overflow-y-auto px-3 py-3">
-        <div v-if="!messages.length" class="pt-6 text-center text-sm text-ink-gray-5">
+        <div v-if="loadingHistory && !messages.length" class="flex items-center justify-center gap-2 pt-6 text-sm text-ink-gray-5">
+          <LoadingIndicator class="h-4 w-4" />
+          {{ __('Loading your last chat…') }}
+        </div>
+        <div v-else-if="!messages.length" class="pt-6 text-center text-sm text-ink-gray-5">
           <p v-if="lead">{{ __('Price this house: comps, after-repair value and offers in about a minute.') }}</p>
           <p v-else>{{ __('Pick a lead to price it.') }}</p>
           <Button v-if="lead" class="mt-3" variant="solid" :loading="busy" @click="price">
@@ -121,6 +125,15 @@
               />
               <PricerCompsLink :lead="lead?.name" :job="m.job" />
               <button
+                v-if="m.job"
+                class="inline-flex h-7 items-center gap-1.5 rounded bg-surface-gray-2 px-2 text-base text-ink-gray-8 hover:bg-surface-gray-3 disabled:opacity-60"
+                :disabled="m.commenting || m.commented"
+                @click="saveComment(m)"
+              >
+                <FeatherIcon :name="m.commented ? 'check' : 'message-square'" class="h-3.5 w-3.5" />
+                {{ m.commented ? __('Saved as comment') : m.commenting ? __('Saving…') : __('Save as comment') }}
+              </button>
+              <button
                 class="inline-flex h-7 items-center gap-1.5 rounded bg-surface-gray-2 px-2 text-base text-ink-gray-8 hover:bg-surface-gray-3"
                 @click="feedbackFor = m.result"
               >
@@ -129,22 +142,43 @@
               </button>
             </div>
           </div>
-          <div v-else class="whitespace-pre-wrap rounded-lg border px-3 py-2 text-base text-ink-gray-8">{{ m.text }}</div>
+          <div v-else class="rounded-lg border px-3 py-2 text-base text-ink-gray-8">
+            <div class="whitespace-pre-wrap">{{ m.text }}</div>
+            <button
+              v-if="m.job"
+              class="mt-2 inline-flex items-center gap-1 text-sm text-ink-gray-5 hover:text-ink-gray-8 disabled:opacity-60"
+              :disabled="m.commenting || m.commented"
+              @click="saveComment(m)"
+            >
+              <FeatherIcon :name="m.commented ? 'check' : 'message-square'" class="h-3 w-3" />
+              {{ m.commented ? __('Saved as comment') : m.commenting ? __('Saving…') : __('Save as comment') }}
+            </button>
+          </div>
         </template>
       </div>
 
-      <form class="flex items-end gap-2 border-t px-3 py-2.5" @submit.prevent="send">
-        <Textarea
-          v-model="draft"
-          :rows="1"
-          class="flex-1"
-          :disabled="!lead || busy"
-          :placeholder="lead ? __('Ask about this house… (e.g. what if it needs a full rehab?)') : __('Pick a lead first')"
-          @keydown.enter.exact.prevent="send"
-        />
-        <Button variant="solid" type="submit" :disabled="!lead || busy || !draft.trim()">
-          <template #icon><FeatherIcon name="send" class="h-4 w-4" /></template>
-        </Button>
+      <!-- One composer box: the text grows with what is typed (up to ~5 lines),
+           no resize handle, and the send button sits inside it. -->
+      <form class="border-t px-3 py-2.5" @submit.prevent="send">
+        <div
+          class="flex items-end gap-1 rounded-lg border border-outline-gray-2 bg-surface-white py-1 pl-3 pr-1 focus-within:border-outline-gray-4"
+          :class="!lead || busy ? 'opacity-60' : ''"
+        >
+          <textarea
+            ref="input"
+            v-model="draft"
+            rows="1"
+            class="max-h-[120px] min-w-0 flex-1 resize-none border-none bg-transparent px-0 py-1 text-base leading-5 text-ink-gray-9 placeholder:text-ink-gray-4 focus:outline-none focus:ring-0"
+            :disabled="!lead || busy"
+            :placeholder="lead ? __('Ask about this house…') : __('Pick a lead first')"
+            :title="lead ? __('e.g. what if it needs a full rehab?') : ''"
+            @input="grow"
+            @keydown.enter.exact.prevent="send"
+          />
+          <Button variant="solid" type="submit" :disabled="!lead || busy || !draft.trim()" :title="__('Send')">
+            <template #icon><FeatherIcon name="send" class="h-3.5 w-3.5" /></template>
+          </Button>
+        </div>
       </form>
     </div>
 
@@ -172,7 +206,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { Button, FeatherIcon, LoadingIndicator, TextInput, Textarea, call } from 'frappe-ui'
+import { Button, FeatherIcon, LoadingIndicator, TextInput, call, toast, getCachedResource } from 'frappe-ui'
 import SaveArvButton from '@/components/SaveArvButton.vue'
 import PricerCompsLink from '@/components/PricerCompsLink.vue'
 import ArvFeedbackModal from '@/components/Modals/ArvFeedbackModal.vue'
@@ -188,7 +222,19 @@ const messages = ref([])
 const draft = ref('')
 const busy = ref(false)
 const feedbackFor = ref(null)
+const loadingHistory = ref(false)
 const scroller = ref(null)
+const input = ref(null)
+// Groups this conversation's rows in the server-side transcript (CRM AI Chat Message).
+const newChatId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
+let chatId = newChatId()
+
+function grow() {
+  const el = input.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+}
 
 call('crm.api.ai_pricer.status')
   .then((r) => {
@@ -219,10 +265,37 @@ async function pickLead(name) {
   search.value = ''
   if (lead.value?.name === name) return
   messages.value = []
+  chatId = newChatId()
   try {
     lead.value = await call('crm.api.ai_pricer.lead_info', { lead: name })
   } catch {
     lead.value = null
+    return
+  }
+  await loadHistory(name)
+}
+
+// Reopening the bubble on a lead brings back the rep's last chat there (stored
+// server-side in CRM AI Chat Message), and resumes a reply still in flight.
+async function loadHistory(name) {
+  loadingHistory.value = true
+  try {
+    const h = await call('crm.api.ai_pricer.chat_history', { lead: name })
+    if (lead.value?.name !== name || messages.value.length || !h?.chat) return
+    chatId = h.chat
+    // A price click is stored as "Price this house"; live, it shows no rep bubble.
+    messages.value = h.messages.filter((m) => !(m.role === 'user' && m.kind === 'price'))
+    if (h.pending) {
+      const pendingKind = h.messages.find((m) => m.job === h.pending)?.kind || 'ask'
+      busy.value = true
+      messages.value.push({ role: 'ai', pending: true, text: __('Thinking…') })
+      poll(h.pending, name, pendingKind, messages.value.length - 1)
+    }
+    scrollDown()
+  } catch {
+    // No history is fine: the chat just starts empty.
+  } finally {
+    loadingHistory.value = false
   }
 }
 
@@ -260,6 +333,7 @@ function toggle() {
 
 function reset() {
   messages.value = []
+  chatId = newChatId()
 }
 
 function scrollDown() {
@@ -290,34 +364,68 @@ async function run(kind, question = '') {
   messages.value.push(waiting)
   scrollDown()
   const idx = messages.value.length - 1
-  const settle = (m) => {
-    if (lead.value?.name === forLead) messages.value.splice(idx, 1, m)
-    busy.value = false
-    scrollDown()
-  }
   try {
-    const { job } = await call('crm.api.ai_pricer.ask', { lead: forLead, kind, question, history: JSON.stringify(hist) })
+    const { job } = await call('crm.api.ai_pricer.ask', {
+      lead: forLead,
+      kind,
+      question,
+      history: JSON.stringify(hist),
+      chat: chatId,
+    })
+    await poll(job, forLead, kind, idx)
+  } catch (e) {
+    settleAt(forLead, idx, { role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
+  }
+}
+
+function settleAt(forLead, idx, m) {
+  if (lead.value?.name === forLead) messages.value.splice(idx, 1, m)
+  busy.value = false
+  scrollDown()
+}
+
+// Wait for a job's reply and put it in place of the "thinking" row at idx.
+async function poll(job, forLead, kind, idx) {
+  try {
     const started = Date.now()
     while (Date.now() - started < 5 * 60 * 1000) {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settle(r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text })
-      if (r.status === 'error') return settle({ role: 'ai', error: true, text: r.error })
-      if (r.status === 'running' && kind === 'price') messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
+      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text, job })
+      if (r.status === 'error') return settleAt(forLead, idx, { role: 'ai', error: true, text: r.error })
+      if (r.status === 'running' && kind === 'price' && messages.value[idx]) messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
-    settle({ role: 'ai', error: true, text: __('The pricer took too long. Try again.') })
+    settleAt(forLead, idx, { role: 'ai', error: true, text: __('The pricer took too long. Try again.') })
   } catch (e) {
-    settle({ role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
+    settleAt(forLead, idx, { role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
   }
 }
 
 const price = () => run('price')
 
+// Post this AI reply on the lead's timeline (the server rebuilds it from the stored reply).
+async function saveComment(m) {
+  const forLead = lead.value?.name
+  if (!forLead || !m.job) return
+  m.commenting = true
+  try {
+    await call('crm.api.ai_pricer.save_comment', { lead: forLead, job: m.job })
+    m.commented = true
+    toast.success(__('Saved as a comment on the lead'))
+    getCachedResource(['activity', forLead])?.reload()
+  } catch (e) {
+    toast.error(e?.messages?.[0] || e?.message || __('Could not save the comment.'))
+  } finally {
+    m.commenting = false
+  }
+}
+
 function send() {
   const q = draft.value.trim()
   if (!q || !lead.value || busy.value) return
   draft.value = ''
+  nextTick(grow)
   run('ask', q)
 }
 </script>
