@@ -41,6 +41,7 @@ TTL = 86400
 DEFAULT_USERS = ("*",)
 MAX_QUESTION = 2000
 MAX_NOTES = 6
+COMMENT_TITLE = "AI comping tool analysis"
 
 
 def _allowed(user=None) -> bool:
@@ -281,8 +282,12 @@ def _para(text: str) -> str:
 
 
 def comment_html(answer: dict | None, text: str = "", question: str = "") -> str:
-	"""The AI's reply as a timeline comment: a price card in full, or the reply text."""
-	out = ["<p><b>Ask AI analysis</b></p>"]
+	"""The AI's reply as a timeline comment: a price card in full, or the reply text.
+
+	Wrapped in `data-ai-comping` so the timeline can tag it "AI comping tool"
+	(CommentArea.vue); the bold title says the same where the tag is not drawn.
+	"""
+	out = ['<div data-ai-comping="1">', f"<p><b>{COMMENT_TITLE}</b></p>"]
 	if question and question != "Price this house":
 		out.append("<p><i>Asked: " + html.escape(question[:500]) + "</i></p>")
 	if answer:
@@ -315,6 +320,7 @@ def comment_html(answer: dict | None, text: str = "", question: str = "") -> str
 			out.append(_para("Would change it: " + str(answer["would_change_it"])))
 	else:
 		out.append(_para(text))
+	out.append("</div>")
 	return "".join(out)
 
 

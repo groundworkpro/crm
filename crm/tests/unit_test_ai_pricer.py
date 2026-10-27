@@ -197,6 +197,7 @@ class AiSaveCommentTest(_LogBase):
 		for bit in ("ARV $165,000", "$150,000", "medium confidence", "797 Seward $170,000 — same block", "use 2× repairs", "Repairs $46,950", "&lt;brick&gt;"):
 			self.assertIn(bit, c["content"])
 		self.assertNotIn("Asked:", c["content"])
+		self.assertTrue(c["content"].startswith('<div data-ai-comping="1"><p><b>AI comping tool analysis</b></p>'))
 
 	def test_text_reply_falls_back_to_redis(self):
 		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "full rehab?")["job"]

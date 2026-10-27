@@ -6,6 +6,14 @@
           {{ activity.owner_name }}
         </span>
         <span>{{ __('commented') }}</span>
+        <span
+          v-if="isAiComping"
+          class="ml-1 inline-flex items-center gap-1 rounded bg-surface-violet-1 px-1.5 py-0.5 font-medium text-ink-violet-1"
+          :title="__('Saved from Ask AI, the AI comping tool')"
+        >
+          <FeatherIcon name="zap" class="h-3 w-3" />
+          {{ __('AI comping tool') }}
+        </span>
       </div>
       <div class="ml-auto flex items-center gap-1 whitespace-nowrap">
         <Button
@@ -112,7 +120,7 @@ import LucideTrash2 from '~icons/lucide/trash-2'
 import { sessionStore } from '@/stores/session'
 import { usersStore } from '@/stores/users'
 import { formatDate, sanitizeHTML } from '@/utils'
-import { Button, Tooltip, TextEditor, Dialog, call, toast } from 'frappe-ui'
+import { Button, FeatherIcon, Tooltip, TextEditor, Dialog, call, toast } from 'frappe-ui'
 import { computed, ref } from 'vue'
 
 const props = defineProps({
@@ -127,6 +135,9 @@ const { user } = sessionStore()
 const { users: usersList } = usersStore()
 
 const canEdit = computed(() => props.activity.owner === user)
+
+// Saved from the Ask AI bubble (crm.api.ai_pricer.save_comment).
+const isAiComping = computed(() => /data-ai-comping=/.test(props.activity.content || ''))
 
 const isCashOffer = computed(() => {
   const html = props.activity.content || ''
