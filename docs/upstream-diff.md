@@ -134,6 +134,22 @@ entries for an area (grep it) before touching that area.
   board scrollers get a new `.thin-scrollbar` class (`index.css`:
   `scrollbar-width: thin`, translucent grey thumb, transparent track).
 
+- **Purchase Agreement: inspection period and closing period separate again** (2026-10-27) —
+  Lance: split the shared inspect-and-close window. Google Doc `1dFP9Rmh…`
+  edited via the Docs API (backup copy `1O-tMOJn…`); templates rebuilt by
+  `tmp/build_psa_templates_v4.py` → **6635670** (one seller) / **6635672** (two
+  sellers); v3 templates 6153633 / 6153638 left unarchived for in-flight deals.
+  - Step 2 is now "Inspection period": **`Due Diligence Days`** from first
+    access (prefill 30). New step 3: we close within **`Closing Days`** after the
+    inspection period ends (new required blank, prefill **15**).
+  - Title-problem extension now pushes the closing deadline (and our cancel
+    right) to 7 days after title is clear.
+  - Unchanged on purpose: we can cancel any time before closing and earnest
+    money stays refundable until closing (Lance chose this over making it go
+    hard after inspection).
+  - `contract_parse.py` hints: inspection counts from first access; "N days
+    after the inspection period ends" closing = DD expiration + N.
+
 - **Purchase Agreement: one inspect-and-close window, assignment spelled out** (2026-09-30) —
   Lance's Labora "Contract tweaks": the inspection clock should start when the
   seller lets us in (not at signing), closing should land about when inspection
