@@ -152,6 +152,7 @@ def _resolve_template_ids(
 	want_amendment: bool = False,
 	want_cancellation: bool = False,
 	want_termination: bool = False,
+	want_subto: bool = False,
 ):
 	"""Resolve the template id(s) for this deal; newest id wins per match.
 
@@ -161,6 +162,12 @@ def _resolve_template_ids(
 	  Amendment - One Seller / - Two Sellers            (Buyer + Seller(s))
 	  Cancellation - One Seller / - Two Sellers         (Buyer + Seller(s))
 	  Unilateral Termination - No EMD                    (Buyer only)
+	  SubTo Purchase Agreement - One Seller / - Two Sellers (Buyer + Seller(s))
+
+	SubTo (2026-10-27) is the subject-to contract: the buyer takes over the
+	seller's existing mortgage. Built from Dennis's "SubTo Template.docx" by
+	frappe-crm-deploy/agreements/subto/make.py. Its name deliberately does not
+	start with "Purchase Agreement", so the Standard match below never picks it.
 
 	A Standard deal is the Purchase Agreement template alone; a Novation deal
 	adds the matching AIF document into the SAME envelope at create time (via
@@ -203,6 +210,12 @@ def _resolve_template_ids(
 		if not termination:
 			frappe.throw(_("No matching DocuSeal Unilateral Termination template was found."))
 		return [termination["id"]], termination["name"]
+
+	if want_subto:
+		subto = _best(lambda n: n.startswith("SubTo Purchase Agreement") and (("Two" in n) == want_two))
+		if not subto:
+			frappe.throw(_("No matching DocuSeal SubTo Purchase Agreement template was found."))
+		return [subto["id"]], subto["name"]
 
 	if want_amendment:
 		amd = _best(lambda n: n.startswith("Amendment") and (("Two" in n) == want_two))
@@ -323,6 +336,7 @@ def create_docuseal_agreement(
 	want_cancellation = template_key in ("cancellation", "cancel")
 	want_termination = template_key in ("termination", "unilateral_termination", "termination_no_emd")
 	want_aif = template_key in ("novation", "aif")
+	want_subto = template_key in ("subto", "subject_to", "subject-to")
 	# `two_sellers` arrives as a seller *count* ("1" / "2") from the modal, so
 	# "1" must mean one seller — don't run it through the generic `_truthy`
 	# (which treats "1" as true and wrongly demands a second seller).
@@ -348,7 +362,7 @@ def create_docuseal_agreement(
 		frappe.throw(_("Enter the second seller's name."))
 
 	template_ids, template_title = _resolve_template_ids(
-		want_aif, want_two, want_amendment, want_cancellation, want_termination
+		want_aif, want_two, want_amendment, want_cancellation, want_termination, want_subto
 	)
 
 	addr = _full_property_address(leaddoc)
@@ -377,6 +391,19 @@ def create_docuseal_agreement(
 			"Property Owner": seller1_name,
 			"Phone": (leaddoc.get("mobile_no") or leaddoc.get("phone") or "").strip(),
 			"Property Address": addr,
+			"Signer Name": buyer_name,
+		})
+	elif want_subto:
+		# SubTo carries: Seller Name(s), Property Address, County, Legal
+		# Description, Parcel ID, Purchase Price, Mortgage Balance, Mortgage
+		# Catch-up Amount, Signer Name (+ signatures, dates, per-page initials).
+		# The three money fields are per-deal and required, and the lead has no
+		# mortgage fields, so the rep types them; Legal Description likewise.
+		buyer_values = _clean({
+			"Seller Name(s)": sellers_joined,
+			"Property Address": addr,
+			"County": (leaddoc.get("property_county") or "").strip(),
+			"Parcel ID": (leaddoc.get("apn") or "").strip(),
 			"Signer Name": buyer_name,
 		})
 	elif want_amendment or want_cancellation:

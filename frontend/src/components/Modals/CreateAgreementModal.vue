@@ -15,6 +15,7 @@
           :options="[
             { label: __('Standard (no novation)'), value: 'standard' },
             { label: __('Novation (+ Attorney-in-Fact page)'), value: 'novation' },
+            { label: __('SubTo (buyer takes over the existing mortgage)'), value: 'subto' },
             { label: __('Amendment (price / closing date / other)'), value: 'amendment' },
             { label: __('Cancellation / release of earnest money'), value: 'cancellation' },
             { label: __('Unilateral termination (no earnest money)'), value: 'termination' },
