@@ -79,7 +79,10 @@ PARSE_FIELDS = {
 		"hint": (
 			"The date OUR due-diligence / inspection / feasibility period ends. "
 			"Often expressed as 'N days from the Effective Date' — if so, compute "
-			"the actual calendar date from the effective/binding agreement date."
+			"the actual calendar date from the effective/binding agreement date. "
+			"Our own Groundwork agreement counts the inspection period from the "
+			"day the seller first gives us access, not from signing; if that date "
+			"isn't stated, count from the agreement date plus the access days."
 		),
 	},
 	"closing_date": {
@@ -87,7 +90,8 @@ PARSE_FIELDS = {
 		"label": "Closing date",
 		"hint": (
 			"The date the purchase is scheduled to close. If expressed as 'on or "
-			"before <date>', use that date."
+			"before <date>', use that date. If expressed as 'N days after the "
+			"inspection period ends', add N days to the DD expiration date."
 		),
 	},
 	"property_address": {
