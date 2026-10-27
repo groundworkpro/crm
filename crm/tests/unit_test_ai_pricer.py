@@ -87,8 +87,8 @@ class AiPricerTest(_Base):
 		self.assertEqual(ai_pricer.get_job("a" * 32)["status"], "error")
 
 
-class AiChatLogTest(_Base):
-	"""Both sides of the chat land in CRM AI Chat Message once the doctype exists."""
+class _LogBase(_Base):
+	"""The CRM AI Chat Message doctype exists; inserted docs are collected in self.rows."""
 
 	def setUp(self):
 		super().setUp()
@@ -108,6 +108,10 @@ class AiChatLogTest(_Base):
 		shim.get_doc.side_effect = None
 		shim.db.doctypes.discard(ai_pricer.CHAT_DOCTYPE)
 		super().tearDown()
+
+
+class AiChatLogTest(_LogBase):
+	"""Both sides of the chat land in CRM AI Chat Message once the doctype exists."""
 
 	def test_question_and_reply_logged_once(self):
 		chat = "c" * 32
@@ -169,6 +173,49 @@ class AiChatLogTest(_Base):
 		self.assertEqual(ai_pricer.chat_history("CRM-LEAD-1")["messages"], [])
 		shim.db.doctypes.discard(ai_pricer.CHAT_DOCTYPE)
 		self.assertIsNone(ai_pricer.chat_history("CRM-LEAD-1")["chat"])
+
+
+class AiSaveCommentTest(_LogBase):
+	""""Save as comment" posts the stored AI reply on the lead's timeline."""
+
+	def _comments(self):
+		return [r for r in self.rows if r.get("doctype") == "Comment"]
+
+	def test_price_card_from_transcript(self):
+		R = shim._dict
+		card = {"arv": 165000, "arv_low": 150000, "arv_high": 185000, "confidence": "med", "repair_tier": "kitchen_baths",
+				"subject_note": "3/2 <brick>", "comps_used": [{"address": "797 Seward", "price": 170000, "why": "same block"}],
+				"offers": {"classic": 68550, "two_x": 43550, "recommend": "two_x", "repairs": 46950, "fee": 10000}}
+		rows = [R(role="user", text="Price this house", answer=None, error=0), R(role="ai", text="ARV", answer=json.dumps(card), error=0)]
+		shim.get_all.return_value = rows
+		try:
+			ai_pricer.save_comment("CRM-LEAD-1", "a" * 32)
+		finally:
+			shim.get_all.return_value = []
+		(c,) = self._comments()
+		self.assertEqual((c["reference_doctype"], c["reference_name"], c["comment_type"]), ("CRM Lead", "CRM-LEAD-1", "Comment"))
+		for bit in ("ARV $165,000", "$150,000", "medium confidence", "797 Seward $170,000 — same block", "use 2× repairs", "Repairs $46,950", "&lt;brick&gt;"):
+			self.assertIn(bit, c["content"])
+		self.assertNotIn("Asked:", c["content"])
+
+	def test_text_reply_falls_back_to_redis(self):
+		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "full rehab?")["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "text": "Then offer\n$30k less."})
+		ai_pricer.save_comment("CRM-LEAD-1", jid)
+		(c,) = self._comments()
+		self.assertIn("Then offer<br>$30k less.", c["content"])
+
+	def test_unfinished_or_bad_job_refused(self):
+		with self.assertRaises(shim.ValidationError):
+			ai_pricer.save_comment("CRM-LEAD-1", "../x")
+		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "why?")["job"]
+		with self.assertRaises(shim.ValidationError):
+			ai_pricer.save_comment("CRM-LEAD-1", jid)  # still queued
+		self.assertEqual(self._comments(), [])
+
+	def test_question_shown_when_asked(self):
+		html = ai_pricer.comment_html(None, "Pending isn't sold.", "Use <5308 S Peoria>?")
+		self.assertIn("Asked: Use &lt;5308 S Peoria&gt;?", html)
 
 
 if __name__ == "__main__":

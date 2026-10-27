@@ -125,6 +125,15 @@
               />
               <PricerCompsLink :lead="lead?.name" :job="m.job" />
               <button
+                v-if="m.job"
+                class="inline-flex h-7 items-center gap-1.5 rounded bg-surface-gray-2 px-2 text-base text-ink-gray-8 hover:bg-surface-gray-3 disabled:opacity-60"
+                :disabled="m.commenting || m.commented"
+                @click="saveComment(m)"
+              >
+                <FeatherIcon :name="m.commented ? 'check' : 'message-square'" class="h-3.5 w-3.5" />
+                {{ m.commented ? __('Saved as comment') : m.commenting ? __('Saving…') : __('Save as comment') }}
+              </button>
+              <button
                 class="inline-flex h-7 items-center gap-1.5 rounded bg-surface-gray-2 px-2 text-base text-ink-gray-8 hover:bg-surface-gray-3"
                 @click="feedbackFor = m.result"
               >
@@ -133,7 +142,18 @@
               </button>
             </div>
           </div>
-          <div v-else class="whitespace-pre-wrap rounded-lg border px-3 py-2 text-base text-ink-gray-8">{{ m.text }}</div>
+          <div v-else class="rounded-lg border px-3 py-2 text-base text-ink-gray-8">
+            <div class="whitespace-pre-wrap">{{ m.text }}</div>
+            <button
+              v-if="m.job"
+              class="mt-2 inline-flex items-center gap-1 text-sm text-ink-gray-5 hover:text-ink-gray-8 disabled:opacity-60"
+              :disabled="m.commenting || m.commented"
+              @click="saveComment(m)"
+            >
+              <FeatherIcon :name="m.commented ? 'check' : 'message-square'" class="h-3 w-3" />
+              {{ m.commented ? __('Saved as comment') : m.commenting ? __('Saving…') : __('Save as comment') }}
+            </button>
+          </div>
         </template>
       </div>
 
@@ -186,7 +206,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { Button, FeatherIcon, LoadingIndicator, TextInput, call } from 'frappe-ui'
+import { Button, FeatherIcon, LoadingIndicator, TextInput, call, toast, getCachedResource } from 'frappe-ui'
 import SaveArvButton from '@/components/SaveArvButton.vue'
 import PricerCompsLink from '@/components/PricerCompsLink.vue'
 import ArvFeedbackModal from '@/components/Modals/ArvFeedbackModal.vue'
@@ -372,7 +392,7 @@ async function poll(job, forLead, kind, idx) {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text })
+      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text, job })
       if (r.status === 'error') return settleAt(forLead, idx, { role: 'ai', error: true, text: r.error })
       if (r.status === 'running' && kind === 'price' && messages.value[idx]) messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
@@ -383,6 +403,23 @@ async function poll(job, forLead, kind, idx) {
 }
 
 const price = () => run('price')
+
+// Post this AI reply on the lead's timeline (the server rebuilds it from the stored reply).
+async function saveComment(m) {
+  const forLead = lead.value?.name
+  if (!forLead || !m.job) return
+  m.commenting = true
+  try {
+    await call('crm.api.ai_pricer.save_comment', { lead: forLead, job: m.job })
+    m.commented = true
+    toast.success(__('Saved as a comment on the lead'))
+    getCachedResource(['activity', forLead])?.reload()
+  } catch (e) {
+    toast.error(e?.messages?.[0] || e?.message || __('Could not save the comment.'))
+  } finally {
+    m.commenting = false
+  }
+}
 
 function send() {
   const q = draft.value.trim()

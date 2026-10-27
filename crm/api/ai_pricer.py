@@ -25,6 +25,7 @@ never breaks the chat.
 
 from __future__ import annotations
 
+import html
 import json
 import uuid
 
@@ -266,11 +267,112 @@ def chat_history(lead: str):
 	return {"chat": chat, "messages": [_history_row(r) for r in rows], "pending": pending}
 
 
+def _check_job_id(job):
+	if not job or len(job) != 32 or not job.isalnum():
+		frappe.throw(_("Bad job id."))
+
+
+def _money(n) -> str:
+	return f"${round(n):,}" if isinstance(n, (int, float)) else "?"
+
+
+def _para(text: str) -> str:
+	return "<p>" + html.escape(str(text)).replace("\n", "<br>") + "</p>"
+
+
+def comment_html(answer: dict | None, text: str = "", question: str = "") -> str:
+	"""The AI's reply as a timeline comment: a price card in full, or the reply text."""
+	out = ["<p><b>Ask AI analysis</b></p>"]
+	if question and question != "Price this house":
+		out.append("<p><i>Asked: " + html.escape(question[:500]) + "</i></p>")
+	if answer:
+		conf = {"high": "high", "med": "medium", "low": "low"}.get(answer.get("confidence"), answer.get("confidence") or "?")
+		out.append(
+			f"<p><b>ARV {_money(answer.get('arv'))}</b> (range {_money(answer.get('arv_low'))}–"
+			f"{_money(answer.get('arv_high'))}), {html.escape(str(conf))} confidence</p>"
+		)
+		if answer.get("subject_note"):
+			out.append(_para(answer["subject_note"]))
+		comps = answer.get("comps_used") or []
+		if comps:
+			items = "".join(
+				f"<li>{html.escape(str(c.get('address') or ''))} {_money(c.get('price'))}"
+				+ (f" — {html.escape(str(c.get('why')))}" if c.get("why") else "")
+				+ "</li>"
+				for c in comps
+			)
+			out.append(f"<p>Comps used:</p><ul>{items}</ul>")
+		offers = answer.get("offers") or {}
+		if offers:
+			pick = {"classic": "Classic 70%", "two_x": "2× repairs"}.get(offers.get("recommend"))
+			out.append(
+				f"<p>Offers: Classic 70% {_money(offers.get('classic'))} · 2× repairs {_money(offers.get('two_x'))}"
+				+ (f" · use {pick}" if pick else "")
+				+ f"<br>Repairs {_money(offers.get('repairs'))} (tier {html.escape(str(answer.get('repair_tier') or '?'))}), "
+				f"fee {_money(offers.get('fee'))}</p>"
+			)
+		if answer.get("would_change_it"):
+			out.append(_para("Would change it: " + str(answer["would_change_it"])))
+	else:
+		out.append(_para(text))
+	return "".join(out)
+
+
+def _reply_for(lead: str, job: str):
+	"""(answer, text, question) for a finished job: transcript first, Redis as fallback."""
+	question = ""
+	if _log_supported():
+		rows = frappe.get_all(
+			CHAT_DOCTYPE,
+			filters={"lead": lead, "job": job},
+			fields=["role", "text", "answer", "error"],
+			order_by="creation asc",
+			limit=4,
+		)
+		question = next((r.text or "" for r in rows if r.role == "user"), "")
+		ai = next((r for r in rows if r.role == "ai" and not r.error), None)
+		if ai:
+			try:
+				return (json.loads(ai.answer) if ai.answer else None), ai.text or "", question
+			except ValueError:
+				return None, ai.text or "", question
+	result = _read(job) or {}
+	if result.get("status") == "done" and (result.get("answer") or result.get("text")):
+		return result.get("answer"), result.get("text") or "", question
+	frappe.throw(_("That AI reply is not available any more. Ask again, then save it."))
+
+
+@frappe.whitelist(methods=["POST"])
+def save_comment(lead: str, job: str):
+	"""Post one AI reply on the lead's timeline as a Comment (Dennis, 2026-10-27:
+	"a button that saves the AI analysis as a comment in the CRM").
+
+	The content is rebuilt here from the stored reply, not taken from the browser,
+	so the comment is exactly what the AI said.
+	"""
+	_guard()
+	_check_job_id(job)
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	answer, text, question = _reply_for(lead, job)
+	doc = frappe.get_doc(
+		{
+			"doctype": "Comment",
+			"comment_type": "Comment",
+			"reference_doctype": "CRM Lead",
+			"reference_name": lead,
+			"content": comment_html(answer, text, question),
+			"comment_email": frappe.session.user,
+			"comment_by": frappe.session.user,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return {"comment": getattr(doc, "name", None)}
+
+
 @frappe.whitelist()
 def get_job(job: str):
 	_guard()
-	if not job or len(job) != 32 or not job.isalnum():
-		frappe.throw(_("Bad job id."))
+	_check_job_id(job)
 	result = _read(job) or {"status": "error", "error": "This request expired. Ask again."}
 	if result.get("status") in ("done", "error"):
 		_log_reply(job, result)
