@@ -143,6 +143,33 @@ class AiChatLogTest(_Base):
 		ai_pricer.ask("CRM-LEAD-1", "ask", "again?")
 		self.assertEqual(len(self.rows), 2)
 
+	def test_chat_history_returns_latest_chat_and_pending_job(self):
+		R = shim._dict
+		card = {"arv": 165000, "offers": {"offer": 43550}}
+		rows = [
+			R(role="user", kind="price", job="j1", text="Price this house", answer=None, error=0),
+			R(role="ai", kind="price", job="j1", text="ARV $165,000", answer=json.dumps(card), error=0),
+			R(role="user", kind="ask", job="j2", text="full rehab?", answer=None, error=0),
+			R(role="ai", kind="ask", job="j2", text="model timed out", answer=None, error=1),
+			R(role="user", kind="ask", job="j3", text="and now?", answer=None, error=0),
+		]
+		self.r.kv[ai_pricer.JOB + "j3"] = json.dumps({"status": "running"})
+		shim.get_all.side_effect = [[R(chat="c" * 32)], rows]
+		try:
+			out = ai_pricer.chat_history("CRM-LEAD-1")
+		finally:
+			shim.get_all.side_effect = None
+		self.assertEqual(out["chat"], "c" * 32)
+		self.assertEqual(out["pending"], "j3")
+		self.assertEqual(out["messages"][1]["result"]["offers"]["offer"], 43550)
+		self.assertTrue(out["messages"][3]["error"])
+		self.assertEqual([m["role"] for m in out["messages"]], ["user", "ai", "user", "ai", "user"])
+
+	def test_chat_history_empty_without_rows_or_doctype(self):
+		self.assertEqual(ai_pricer.chat_history("CRM-LEAD-1")["messages"], [])
+		shim.db.doctypes.discard(ai_pricer.CHAT_DOCTYPE)
+		self.assertIsNone(ai_pricer.chat_history("CRM-LEAD-1")["chat"])
+
 
 if __name__ == "__main__":
 	unittest.main()

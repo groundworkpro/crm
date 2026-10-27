@@ -215,6 +215,57 @@ def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=N
 	return {"job": job["id"], "chat": meta["chat"]}
 
 
+def _history_row(row) -> dict:
+	"""A transcript row as the bubble draws it (price cards come back as their JSON)."""
+	out = {"role": row.role, "text": row.text or "", "job": row.job, "kind": row.kind}
+	if row.error:
+		out["error"] = True
+	elif row.role == "ai" and row.answer:
+		try:
+			out["result"] = json.loads(row.answer)
+		except ValueError:
+			pass
+	return out
+
+
+@frappe.whitelist()
+def chat_history(lead: str):
+	"""The rep's latest Ask AI chat on this lead, so reopening the bubble picks it back up.
+
+	Only the caller's own chats (Exe, 2026-10-27: "when we open the Ask AI chat, we can
+	see the previous messages"). `pending` is the job of a question still waiting for
+	its reply (asked, then the tab was reloaded), so the bubble can resume polling it.
+	"""
+	_guard()
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	empty = {"chat": None, "messages": [], "pending": None}
+	if not _log_supported():
+		return empty
+	user = frappe.session.user
+	last = frappe.get_all(
+		CHAT_DOCTYPE,
+		filters={"lead": lead, "user": user},
+		fields=["chat"],
+		order_by="creation desc",
+		limit=1,
+	)
+	if not last:
+		return empty
+	chat = last[0].chat
+	rows = frappe.get_all(
+		CHAT_DOCTYPE,
+		filters={"lead": lead, "user": user, "chat": chat},
+		fields=["role", "kind", "job", "text", "answer", "error", "creation"],
+		order_by="creation asc",
+		limit=200,
+	)
+	replied = {r.job for r in rows if r.role == "ai"}
+	pending = next((r.job for r in reversed(rows) if r.role == "user" and r.job and r.job not in replied), None)
+	if pending and not _read(pending):
+		pending = None
+	return {"chat": chat, "messages": [_history_row(r) for r in rows], "pending": pending}
+
+
 @frappe.whitelist()
 def get_job(job: str):
 	_guard()

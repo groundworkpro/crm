@@ -54,7 +54,11 @@
       </div>
 
       <div ref="scroller" class="flex-1 space-y-3 overflow-y-auto px-3 py-3">
-        <div v-if="!messages.length" class="pt-6 text-center text-sm text-ink-gray-5">
+        <div v-if="loadingHistory && !messages.length" class="flex items-center justify-center gap-2 pt-6 text-sm text-ink-gray-5">
+          <LoadingIndicator class="h-4 w-4" />
+          {{ __('Loading your last chat…') }}
+        </div>
+        <div v-else-if="!messages.length" class="pt-6 text-center text-sm text-ink-gray-5">
           <p v-if="lead">{{ __('Price this house: comps, after-repair value and offers in about a minute.') }}</p>
           <p v-else>{{ __('Pick a lead to price it.') }}</p>
           <Button v-if="lead" class="mt-3" variant="solid" :loading="busy" @click="price">
@@ -198,6 +202,7 @@ const messages = ref([])
 const draft = ref('')
 const busy = ref(false)
 const feedbackFor = ref(null)
+const loadingHistory = ref(false)
 const scroller = ref(null)
 const input = ref(null)
 // Groups this conversation's rows in the server-side transcript (CRM AI Chat Message).
@@ -245,6 +250,32 @@ async function pickLead(name) {
     lead.value = await call('crm.api.ai_pricer.lead_info', { lead: name })
   } catch {
     lead.value = null
+    return
+  }
+  await loadHistory(name)
+}
+
+// Reopening the bubble on a lead brings back the rep's last chat there (stored
+// server-side in CRM AI Chat Message), and resumes a reply still in flight.
+async function loadHistory(name) {
+  loadingHistory.value = true
+  try {
+    const h = await call('crm.api.ai_pricer.chat_history', { lead: name })
+    if (lead.value?.name !== name || messages.value.length || !h?.chat) return
+    chatId = h.chat
+    // A price click is stored as "Price this house"; live, it shows no rep bubble.
+    messages.value = h.messages.filter((m) => !(m.role === 'user' && m.kind === 'price'))
+    if (h.pending) {
+      const pendingKind = h.messages.find((m) => m.job === h.pending)?.kind || 'ask'
+      busy.value = true
+      messages.value.push({ role: 'ai', pending: true, text: __('Thinking…') })
+      poll(h.pending, name, pendingKind, messages.value.length - 1)
+    }
+    scrollDown()
+  } catch {
+    // No history is fine: the chat just starts empty.
+  } finally {
+    loadingHistory.value = false
   }
 }
 
@@ -313,11 +344,6 @@ async function run(kind, question = '') {
   messages.value.push(waiting)
   scrollDown()
   const idx = messages.value.length - 1
-  const settle = (m) => {
-    if (lead.value?.name === forLead) messages.value.splice(idx, 1, m)
-    busy.value = false
-    scrollDown()
-  }
   try {
     const { job } = await call('crm.api.ai_pricer.ask', {
       lead: forLead,
@@ -326,18 +352,33 @@ async function run(kind, question = '') {
       history: JSON.stringify(hist),
       chat: chatId,
     })
+    await poll(job, forLead, kind, idx)
+  } catch (e) {
+    settleAt(forLead, idx, { role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
+  }
+}
+
+function settleAt(forLead, idx, m) {
+  if (lead.value?.name === forLead) messages.value.splice(idx, 1, m)
+  busy.value = false
+  scrollDown()
+}
+
+// Wait for a job's reply and put it in place of the "thinking" row at idx.
+async function poll(job, forLead, kind, idx) {
+  try {
     const started = Date.now()
     while (Date.now() - started < 5 * 60 * 1000) {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settle(r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text })
-      if (r.status === 'error') return settle({ role: 'ai', error: true, text: r.error })
-      if (r.status === 'running' && kind === 'price') messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
+      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text })
+      if (r.status === 'error') return settleAt(forLead, idx, { role: 'ai', error: true, text: r.error })
+      if (r.status === 'running' && kind === 'price' && messages.value[idx]) messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
-    settle({ role: 'ai', error: true, text: __('The pricer took too long. Try again.') })
+    settleAt(forLead, idx, { role: 'ai', error: true, text: __('The pricer took too long. Try again.') })
   } catch (e) {
-    settle({ role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
+    settleAt(forLead, idx, { role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
   }
 }
 
