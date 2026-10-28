@@ -81,7 +81,14 @@ USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg \
  && rm -rf /var/lib/apt/lists/*
+# eMudhra intermediate CA compromise (Oct 2026): the base image's CA store and
+# the bench env's certifi still trust the leaked intermediates. Node 20 here
+# only talks to redis (socketio), so its bundled roots are left alone.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 USER frappe
+RUN /home/frappe/frappe-bench/env/bin/pip install --no-cache-dir -q -U 'certifi>=2026.10.19'
 ARG APP=/home/frappe/frappe-bench/apps/crm
 COPY --from=builder --chown=frappe:frappe ${APP}/crm/public/frontend ${APP}/crm/public/frontend
 COPY --from=builder --chown=frappe:frappe ${APP}/crm/www/crm.html ${APP}/crm/www/crm.html
