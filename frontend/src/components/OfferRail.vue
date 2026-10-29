@@ -186,7 +186,7 @@ const emit = defineEmits(['read-saved', 'saved', 'send-agreement'])
 const ask = ref('')
 const askNumber = computed(() => Number(String(ask.value).replace(/[^0-9.]/g, '')) || 0)
 
-const MARGIN = 90
+const MARGIN = 88
 const PROFIT_DOLLARS = 25000
 const MAJOR_COST = 10000
 const MAJORS = ['Roof', 'Foundation', 'Plumbing', 'HVAC', 'Electrical']
