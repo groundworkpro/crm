@@ -39,6 +39,7 @@ Two enforcement points:
   predate this module or bypassed the hook.
 """
 
+import re
 from datetime import date, datetime
 
 import frappe
@@ -96,9 +97,9 @@ def _reason(due, user=None):
 	who = f" by {user}" if user else ""
 	return f"follow-up booked{who} for {frappe.utils.format_datetime(due, 'd MMM')}"
 
-def cancel_engine_tasks(lead) -> list:
-	"""Cancel every open sequence-made task on `lead`. Returns their names."""
-	names = frappe.get_all(
+def open_engine_tasks(lead) -> list:
+	"""Names of the open sequence-made tasks on `lead`."""
+	return frappe.get_all(
 		"CRM Task",
 		filters={
 			"reference_doctype": "CRM Lead",
@@ -108,6 +109,10 @@ def cancel_engine_tasks(lead) -> list:
 		},
 		pluck="name",
 	)
+
+def cancel_engine_tasks(lead, names=None) -> list:
+	"""Cancel every open sequence-made task on `lead`. Returns their names."""
+	names = open_engine_tasks(lead) if names is None else names
 	for name in names:
 		frappe.db.set_value("CRM Task", name, "status", "Canceled")
 	return names
@@ -137,7 +142,30 @@ def enroll_next(lead, nxt, from_seq) -> bool:
 	).insert(ignore_permissions=True)
 	return True
 
-def hand_off(lead, reason) -> list:
+STOP_MARK = " stopped: follow-up booked"
+_CANCELED_RE = re.compile(r"; canceled tasks ([\w,-]+)\s*$")
+
+def stop_log(when, reason, nxt, canceled=None) -> str:
+	"""Pure: the Stopped enrollment's last_log. Lists the engine tasks the
+	handoff canceled so `undo_booking` can reopen them."""
+	log = "{0} stopped: {1}; handed to {2}".format(when, reason, nxt)
+	if canceled:
+		log += "; canceled tasks " + ",".join(str(n) for n in canceled)
+	return log
+
+def parse_stop_log(log):
+	"""Pure: (stopped_at, [canceled task names]) for a booking handoff's
+	last_log, else None."""
+	if not log or STOP_MARK not in log:
+		return None
+	try:
+		when = datetime.strptime(log[:19], "%Y-%m-%d %H:%M:%S")
+	except ValueError:
+		return None
+	m = _CANCELED_RE.search(log)
+	return when, (m.group(1).split(",") if m else [])
+
+def hand_off(lead, reason, canceled=None) -> list:
 	"""Stop each Active enrollment on `lead` whose sequence chains to a next
 	one, and enroll the lead there. Returns [(stopped, next_sequence)]."""
 	out = []
@@ -156,7 +184,7 @@ def hand_off(lead, reason) -> list:
 			row.name,
 			{
 				"status": "Stopped",
-				"last_log": "{0} stopped: {1}; handed to {2}".format(now_datetime(), reason, nxt),
+				"last_log": stop_log(now_datetime(), reason, nxt, canceled),
 			},
 			update_modified=False,
 		)
@@ -168,8 +196,9 @@ def apply_booking(lead, reason):
 	"""Hand off chained sequences and cancel the engine's open tasks.
 	Returns (handed off, canceled tasks). Never raises."""
 	try:
-		handed = hand_off(lead, reason)
-		canceled = cancel_engine_tasks(lead)
+		pending = open_engine_tasks(lead)
+		handed = hand_off(lead, reason, pending)
+		canceled = cancel_engine_tasks(lead, pending)
 		return handed, canceled
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "sequence_booking: apply failed")
@@ -189,8 +218,91 @@ def on_task_change(doc, method=None):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "sequence_booking: task hook failed")
 
-def future_booking(lead, now=None):
-	"""Latest open hand-made task on `lead` due after today, else None."""
+def is_booking_removal(doc, method, today) -> bool:
+	"""Pure: a hand-made lead task that was due after today is being deleted
+	(on_trash) or was just set to Canceled (on_update)."""
+	if doc.get("reference_doctype") != "CRM Lead" or not doc.get("reference_docname"):
+		return False
+	if not is_manual(doc.get("owner")) or not is_after_today(doc.get("due_date"), today):
+		return False
+	if method == "on_trash":
+		return True
+	return method == "on_update" and doc.get("status") == "Canceled" and doc.has_value_changed("status")
+
+def undo_booking(lead, exclude=None, now=None) -> list:
+	"""Reverse today's booking handoffs on `lead` once no booked follow-up is
+	left: the next sequence's enrollment (and any task it made) goes away, the
+	stopped one is Active again at the step it stopped on, and the engine
+	tasks the handoff canceled are reopened. Only same-day handoffs: after a
+	day the lead has been worked on the long sequence and that is left alone.
+	Returns the resumed enrollment names."""
+	now = now or now_datetime()
+	if future_booking(lead, now, exclude=exclude):
+		return []
+	out = []
+	for row in frappe.get_all(
+		"CRM Sequence Enrollment",
+		filters={"lead": lead, "status": "Stopped"},
+		fields=["name", "sequence", "last_log"],
+	):
+		parsed = parse_stop_log(row.last_log)
+		if not parsed or getdate(parsed[0]) != getdate(now):
+			continue
+		stopped_at, reopen = parsed
+		nxt = next_sequence(row.sequence)
+		if nxt:
+			for name in frappe.get_all(
+				"CRM Sequence Enrollment",
+				filters={"lead": lead, "sequence": nxt, "creation": [">=", stopped_at]},
+				pluck="name",
+			):
+				frappe.delete_doc("CRM Sequence Enrollment", name, ignore_permissions=True, force=True)
+			for name in frappe.get_all(
+				"CRM Task",
+				filters={
+					"reference_doctype": "CRM Lead",
+					"reference_docname": lead,
+					"owner": "Administrator",
+					"status": ["not in", list(CLOSED)],
+					"creation": [">=", stopped_at],
+				},
+				pluck="name",
+			):
+				frappe.db.set_value("CRM Task", name, "status", "Canceled")
+		for name in reopen:
+			if frappe.db.get_value("CRM Task", name, "status") == "Canceled":
+				frappe.db.set_value("CRM Task", name, "status", "Todo")
+		frappe.db.set_value(
+			"CRM Sequence Enrollment",
+			row.name,
+			{
+				"status": "Active",
+				"last_log": "{0} resumed: booked follow-up removed; {1} enrollment undone".format(now, nxt),
+			},
+			update_modified=False,
+		)
+		out.append(row.name)
+	return out
+
+def on_task_removed(doc, method=None):
+	"""CRM Task on_trash / on_update: deleting or canceling the booking the
+	same day it was made puts the lead back in the short sequence.
+
+	Dennis, 2026-10-29 (Robert Nurczyk, CRM-LEAD-2026-01693): a "Check to see
+	if it sold" task for Nov 8 was booked and deleted 25 s later; the 10-day
+	had already been handed to Long-Term, so he got weekly calls after one
+	triple dial."""
+	try:
+		if not is_booking_removal(doc, method, now_datetime()):
+			return
+		exclude = doc.name if method == "on_trash" else None
+		undo_booking(doc.reference_docname, exclude=exclude)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "sequence_booking: undo hook failed")
+
+def future_booking(lead, now=None, exclude=None):
+	"""Latest open hand-made task on `lead` due after today, else None.
+	`exclude`: a task name to ignore (one being deleted)."""
 	now = now or now_datetime()
 	eod = datetime.combine(getdate(now), datetime.max.time())
 	row = frappe.db.sql(
@@ -200,8 +312,9 @@ def future_booking(lead, now=None):
 		  and status not in ('Done', 'Canceled')
 		  and owner not in ('Administrator', 'Guest', '')
 		  and due_date > %(eod)s
+		  and name != %(exclude)s
 		""",
-		{"lead": lead, "eod": eod},
+		{"lead": lead, "eod": eod, "exclude": exclude or ""},
 	)
 	return row[0][0] if row and row[0] else None
 

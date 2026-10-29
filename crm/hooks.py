@@ -223,7 +223,11 @@ doc_events = {
 	# cancels the engine's open tasks on it. See crm/api/sequence_booking.py.
 	"CRM Task": {
 		"after_insert": ["crm.api.sequence_booking.on_task_change"],
-		"on_update": ["crm.api.sequence_booking.on_task_change"],
+		"on_update": [
+			"crm.api.sequence_booking.on_task_change",
+			"crm.api.sequence_booking.on_task_removed",
+		],
+		"on_trash": ["crm.api.sequence_booking.on_task_removed"],
 	},
 	"Communication": {
 		"after_insert": ["crm.utils.on_communication_insert"],

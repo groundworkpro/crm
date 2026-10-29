@@ -186,5 +186,81 @@ class StepGuardTests(_Patched):
 		self.assertFalse(sb.check_before_step(SimpleNamespace(lead="L", sequence="New Lead 10-Day")))
 		self.assertEqual(self.calls, ["L"])
 
+class StopLogTests(unittest.TestCase):
+	def test_round_trip(self):
+		log = sb.stop_log(datetime(2026, 10, 8, 11, 48, 16, 847200), "follow-up booked by d@x for 8 Nov", "Long-Term Follow-Up", [5241, 5242])
+		self.assertEqual(sb.parse_stop_log(log), (datetime(2026, 10, 8, 11, 48, 16), ["5241", "5242"]))
+
+	def test_old_logs_without_tasks_still_parse(self):
+		old = "2026-10-08 11:48:16.847200 stopped: follow-up booked by d@x for 8 Nov; handed to Long-Term Follow-Up"
+		self.assertEqual(sb.parse_stop_log(old), (datetime(2026, 10, 8, 11, 48, 16), []))
+
+	def test_other_logs_ignored(self):
+		self.assertIsNone(sb.parse_stop_log("2026-10-08 11:48:16 step 2 (Call): call task created"))
+		self.assertIsNone(sb.parse_stop_log("Lead converted - sequence stopped"))
+		self.assertIsNone(sb.parse_stop_log(None))
+
+class RemovalTests(_Patched):
+	def test_delete_or_cancel_of_a_booking(self):
+		self.assertTrue(sb.is_booking_removal(_task(), "on_trash", TODAY))
+		self.assertTrue(sb.is_booking_removal(_task(status="Canceled", has_value_changed=lambda f: f == "status"), "on_update", TODAY))
+
+	def test_not_a_removal(self):
+		self.assertFalse(sb.is_booking_removal(_task(), "on_update", TODAY))
+		self.assertFalse(sb.is_booking_removal(_task(status="Done"), "on_update", TODAY))
+		self.assertFalse(sb.is_booking_removal(_task(status="Canceled", has_value_changed=lambda f: False), "on_update", TODAY))
+		self.assertFalse(sb.is_booking_removal(_task(owner="Administrator"), "on_trash", TODAY))
+		self.assertFalse(sb.is_booking_removal(_task(due_date=datetime(2026, 9, 25, 16, 0)), "on_trash", TODAY))
+		self.assertFalse(sb.is_booking_removal(_task(reference_doctype="CRM Deal"), "on_trash", TODAY))
+
+	def test_hook_passes_deleted_task_as_exclude(self):
+		calls = []
+		self.patch(sb, "undo_booking", lambda lead, exclude=None: calls.append((lead, exclude)))
+		sb.on_task_removed(_task(), "on_trash")
+		sb.on_task_removed(_task(), "after_insert")
+		self.assertEqual(calls, [("LEAD-1", "T1")])
+
+class UndoTests(_Patched):
+	STOP = "2026-09-25 09:30:00.123456 stopped: follow-up booked by d@x for 11 Oct; handed to Long-Term Follow-Up; canceled tasks S1"
+
+	def setUp(self):
+		super().setUp()
+		self.writes, self.deleted = [], []
+		self.stopped = [_AttrDict(name="ENR-10", sequence="New Lead 10-Day", last_log=self.STOP)]
+		self.patch(sb, "future_booking", lambda lead, now=None, exclude=None: None)
+		self.patch(shim, "get_all", self._get_all)
+		if not hasattr(shim, "delete_doc"):
+			shim.delete_doc = None
+			self.addCleanup(delattr, shim, "delete_doc")
+		self.patch(shim, "delete_doc", lambda dt, name, **k: self.deleted.append((dt, name)))
+		self.patch(shim.db, "set_value", lambda dt, name, field, val=None, **k: self.writes.append((dt, name, field, val)))
+		self.patch(shim.db, "get_value", lambda dt, name, field=None, **k: "Canceled")
+
+	def _get_all(self, doctype, filters=None, **k):
+		if doctype == "CRM Sequence Enrollment":
+			if filters.get("status") == "Stopped":
+				return self.stopped
+			self.assertEqual(filters["creation"], [">=", datetime(2026, 9, 25, 9, 30)])
+			return ["ENR-LT"]
+		return ["LT1"]
+
+	def test_same_day_undo(self):
+		self.assertEqual(sb.undo_booking("LEAD-1"), ["ENR-10"])
+		self.assertEqual(self.deleted, [("CRM Sequence Enrollment", "ENR-LT")])
+		self.assertIn(("CRM Task", "LT1", "status", "Canceled"), self.writes)
+		self.assertIn(("CRM Task", "S1", "status", "Todo"), self.writes)
+		resume = [w for w in self.writes if w[1] == "ENR-10"][0]
+		self.assertEqual(resume[2]["status"], "Active")
+
+	def test_earlier_day_left_alone(self):
+		self.stopped[0]["last_log"] = self.STOP.replace("2026-09-25", "2026-09-24")
+		self.assertEqual(sb.undo_booking("LEAD-1"), [])
+		self.assertEqual((self.writes, self.deleted), ([], []))
+
+	def test_another_booking_keeps_handoff(self):
+		self.patch(sb, "future_booking", lambda lead, now=None, exclude=None: datetime(2026, 10, 2))
+		self.assertEqual(sb.undo_booking("LEAD-1"), [])
+		self.assertEqual(self.writes, [])
+
 if __name__ == "__main__":
 	unittest.main()
