@@ -1,7 +1,8 @@
 """ARV feedback: a rep disagrees with the AI pricer's after-repair value and
 says why. It goes to the person who owns the pricer (Exe) as a Talk DM from the
 rep, which Talk mirrors to Mattermost under the rep's name, so Exe can reply
-and the two can talk it through. No new doctype: the DM thread is the record.
+and the two can talk it through. A copy is also filed in the suggested-fixes list
+(crm.api.ai_suggestions, source Disagree) for review before it goes into the skill.
 
 Site config `arv_feedback_to` overrides the recipient (a CRM login).
 """
@@ -61,9 +62,18 @@ def send(ai_arv=None, feedback: str = "", lead: str | None = None, address: str 
 		if not frappe.db.exists("CRM Lead", lead):
 			frappe.throw(_("Lead not found"), frappe.DoesNotExistError)
 		frappe.get_doc("CRM Lead", lead).check_permission("read")
+	from crm.api import ai_suggestions
+
 	to = recipient()
+	suggestion = ai_suggestions.record(
+		"Disagree", frappe.session.user, feedback, lead=lead, address=(address or "").strip(),
+		ai_arv=ai_arv, rep_arv=user_arv, context=(details or "")[:MAX_DETAILS],
+	)
 	if to == (frappe.session.user or "").lower():
-		frappe.throw(_("ARV feedback goes to you already, so there is no one to send it to."))
+		# The owner disagreeing with the AI: no DM to himself, the list is the record.
+		if not suggestion:
+			frappe.throw(_("ARV feedback goes to you already, so there is no one to send it to."))
+		return {"ok": True, "to": _("your suggestions list"), "channel": None, "suggestion": suggestion}
 
 	from crm.api import talk
 
@@ -81,4 +91,5 @@ def send(ai_arv=None, feedback: str = "", lead: str | None = None, address: str 
 			"origin": "crm",  # mirrored to Mattermost by talk.on_message_insert
 		}
 	).insert(ignore_permissions=True)
-	return {"ok": True, "to": frappe.utils.get_fullname(to) or to, "channel": channel, "message": doc.name}
+	return {"ok": True, "to": frappe.utils.get_fullname(to) or to, "channel": channel, "message": doc.name,
+	        "suggestion": suggestion}
