@@ -2105,6 +2105,76 @@ def _is_rentals(inventory):
 	)
 
 
+POOL_FIELDS = [
+	"name", "address", "city", "state", "zip", "lat", "lng", "price", "status",
+	"listed_date", "removed_date", "days_on_market", "days_old",
+	"bedrooms", "bathrooms", "square_footage", "year_built", "property_type", "source_lead",
+]
+
+
+def _board_pool_row(row, dist, selected, hidden, today):
+	"""One CRM Comp pool row, shaped for the board."""
+	row = shape_pool_row(row)
+	row["distance_mi"] = round(dist, 2)
+	row["source"] = row.get("source") or "istl"
+	# The pooled index holds no imagery. The key exists from the start so the
+	# client never has to special-case its absence; the Zillow merge fills it in
+	# for any pin it can match, and the rest render a placeholder.
+	row.setdefault("photo", "")
+	# Whether a house is merely listed or already under contract is something
+	# only Zillow tells us; the pooled index carries a last ASK and no more. The
+	# key is always present so the client renders one grammar, and the honest
+	# value for an unrefreshed ISTL pin is the coarse one it actually has.
+	#
+	# "off_market", NOT "sold": this inventory is the last LIST price, and a
+	# listing disappearing is not a confirmed close. Only a Zillow-recorded
+	# transaction earns the word sold, which is the same line the pin popup has
+	# always drawn -- now drawn once, on the server, instead of re-derived by
+	# each surface that shows a comp.
+	if not is_adc(row):
+		row["listing_state"] = "for_sale" if _is_active(row.get("status")) else "off_market"
+	row["selected"] = row["name"] in selected
+	row["hidden"] = row["name"] in hidden
+	# Computed while the dates are still dates, and returned so the client can
+	# show "3 mo ago" without re-deriving "recent" a second, divergent way.
+	row["recency_days"] = _recency_days(row, today)
+	# Dates are returned raw; the client derives the recency fade so the map and
+	# any future report can't disagree about what "recent" means.
+	for key in ("listed_date", "removed_date"):
+		if row.get(key):
+			row[key] = str(row[key])
+	return row
+
+
+def _picked_outside_radius(selected, have, lat, lng, self_key, hidden, today):
+	"""Picked CRM Comp rows the radius cut left off the board.
+
+	Only pool rows (plain docnames) can be read back; a picked `zillow::` /
+	`redfin::` / `realtor::` pin exists only while its source returns it.
+	"""
+	missing = sorted(
+		n for n in (selected or ())
+		if n and n not in have and "::" not in n and n != self_key
+	)
+	if not missing:
+		return []
+	rows = frappe.get_all(
+		DOCTYPE,
+		filters=[[DOCTYPE, "name", "in", missing]],
+		fields=POOL_FIELDS,
+		limit_page_length=len(missing),
+	)
+	out = []
+	for row in rows:
+		if row.get("lat") is None or row.get("lng") is None:
+			continue
+		dist = _haversine_mi(lat, lng, row.get("lat"), row.get("lng"))
+		shaped = _board_pool_row(row, dist, selected, hidden, today)
+		shaped["outside_radius"] = True
+		out.append(shaped)
+	return out
+
+
 @frappe.whitelist()
 def get_lead_comps(
 	lead, radius_mi=None, limit=None, filters=None, auto=0, include_hidden=0, state=None,
@@ -2205,11 +2275,7 @@ def get_lead_comps(
 				[DOCTYPE, "lng", ">=", lng - dlng],
 				[DOCTYPE, "lng", "<=", lng + dlng],
 			],
-			fields=[
-				"name", "address", "city", "state", "zip", "lat", "lng", "price", "status",
-				"listed_date", "removed_date", "days_on_market", "days_old",
-				"bedrooms", "bathrooms", "square_footage", "year_built", "property_type", "source_lead",
-			],
+			fields=POOL_FIELDS,
 			limit_page_length=5000,
 		)
 
@@ -2266,36 +2332,19 @@ def get_lead_comps(
 		dist = _haversine_mi(lat, lng, row.lat, row.lng)
 		if dist > radius:
 			continue
-		row = shape_pool_row(row)
-		row["distance_mi"] = round(dist, 2)
-		row["source"] = row.get("source") or "istl"
-		# The pooled index holds no imagery. The key exists from the start so the
-		# client never has to special-case its absence; the Zillow merge fills it in
-		# for any pin it can match, and the rest render a placeholder.
-		row.setdefault("photo", "")
-		# Whether a house is merely listed or already under contract is something
-		# only Zillow tells us; the pooled index carries a last ASK and no more. The
-		# key is always present so the client renders one grammar, and the honest
-		# value for an unrefreshed ISTL pin is the coarse one it actually has.
-		#
-		# "off_market", NOT "sold": this inventory is the last LIST price, and a
-		# listing disappearing is not a confirmed close. Only a Zillow-recorded
-		# transaction earns the word sold, which is the same line the pin popup has
-		# always drawn -- now drawn once, on the server, instead of re-derived by
-		# each surface that shows a comp.
-		if not is_adc(row):
-			row["listing_state"] = "for_sale" if _is_active(row.get("status")) else "off_market"
-		row["selected"] = row["name"] in selected
-		row["hidden"] = row["name"] in hidden
-		# Computed while the dates are still dates, and returned so the client can
-		# show "3 mo ago" without re-deriving "recent" a second, divergent way.
-		row["recency_days"] = _recency_days(row, today)
-		# Dates are returned raw; the client derives the recency fade so the map and
-		# any future report can't disagree about what "recent" means.
-		for key in ("listed_date", "removed_date"):
-			if row.get(key):
-				row[key] = str(row[key])
-		out.append(row)
+		out.append(_board_pool_row(row, dist, selected, hidden, today))
+
+	# A comp the rep PICKED stays on the board even when it sits outside the
+	# circle (Dennis, 2026-10-29: "Add as comp" on two houses 0.52 and 0.77 mi out
+	# saved them as picked, but the default 0.5 mi board dropped them, so neither
+	# the map nor the offer calc showed them). The filter step below already pins
+	# picks that fail the size/date filters; this is the same rule for distance.
+	if not rental:
+		out.extend(
+			_picked_outside_radius(
+				selected, {r["name"] for r in out}, lat, lng, self_key, hidden, today
+			)
+		)
 
 	# Redfin first. Five listings and five recent sales from Redfin is a board;
 	# fewer, or no answer, and Zillow and Realtor fill in. Collected BEFORE the
@@ -2334,6 +2383,21 @@ def get_lead_comps(
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow refresh failed")
 		base["zillow"] = {"used": False, "reason": "error"}
+
+	# Picks outside the circle get no area search and no Redfin merge (both stop
+	# at the radius), so they would board on the pool's last ASK -- 95 Arcadia
+	# showed a 2025 $167.5k list instead of its $375k sale. Same `/property`
+	# refresh the nearest pins get, 30-day cached, a handful of rows at most.
+	far_picks = [r for r in out if r.get("outside_radius") and r.get("source") != "zillow"]
+	if far_picks:
+		try:
+			from crm.api import zillow as zillow_api
+			from crm.api import zillow_comps
+
+			if zillow_api._api_key():
+				zillow_comps.refresh_pins(far_picks, cap=len(far_picks))
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: far pick refresh failed")
 
 	# Redfin ingest overlay on ISTL pool pins. After Zillow so extra zillow::
 	# solds stay Zillow's, but ingested CRM Comp rows take photos + MLS status
