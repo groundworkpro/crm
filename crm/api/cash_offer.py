@@ -1,7 +1,7 @@
 """Save an offer calc to the lead's activity timeline.
 
 This is the comps-page calculator, not the desk rail. The rail is
-90% ARV − 2×repairs − fee and lives in `price_determination`. Cash runs
+88% ARV − 2×repairs − fee and lives in `price_determination`. Cash runs
 ARV × % − (mult × repairs) − assignment fee per scenario, where `mult` is
 1 (the classic 70% rule) or 2 (the same shape the rail uses). Novation is
 Current value − 10% − fee ($40k default) — no repairs. List it is as-is

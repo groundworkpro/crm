@@ -513,7 +513,7 @@
  * Offer calculator. Cash, novation, list-it, or rental — cash by default, one kind at a time.
  *
  * Cash has two formulas, because the desk uses both:
- *   2× repairs  ARV × 90% − 2×repairs − fee   (default; what OfferRail runs)
+ *   2× repairs  ARV × 88% − 2×repairs − fee   (default; what OfferRail runs)
  *   Classic     ARV × 70% −   repairs − fee   (the 70% rule)
  * i.e. after = ARV × %, deduction = mult × $/sf × sqft, offer = after −
  * deduction − profit. Profit is a dollar takeoff ($25k default) so it still
@@ -593,9 +593,9 @@ const FORMULAS = [
   {
     key: 'double',
     label: __('2× repairs'),
-    pct: 0.9,
+    pct: 0.88,
     mult: 2,
-    why: __('Exit Price × 90% − 2× repairs − profit'),
+    why: __('Exit Price × 88% − 2× repairs − profit'),
   },
   {
     key: 'classic',
