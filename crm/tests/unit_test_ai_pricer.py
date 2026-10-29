@@ -219,5 +219,49 @@ class AiSaveCommentTest(_LogBase):
 		self.assertIn("Asked: Use &lt;5308 S Peoria&gt;?", html)
 
 
+class AiCorrectionTest(_LogBase):
+	"""A follow-up the worker flags as a correction is filed as a suggested pricer fix."""
+
+	def setUp(self):
+		super().setUp()
+		from crm.api import ai_suggestions
+
+		self.sug = ai_suggestions
+		shim.db.doctypes.add(ai_suggestions.DOCTYPE)
+
+	def tearDown(self):
+		shim.db.doctypes.discard(self.sug.DOCTYPE)
+		super().tearDown()
+
+	def _suggestions(self):
+		return [r for r in self.rows if r.get("doctype") == self.sug.DOCTYPE]
+
+	def test_flagged_reply_files_suggestion(self):
+		chat = "d" * 32
+		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "408 Forest Hills isn't a flip, kitchen is original", chat=chat)["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps(
+			{"status": "done", "text": "Then it's an as-is sale.", "correction": "Check photos before calling a comp updated."}
+		)
+		ai_pricer.get_job(jid)
+		ai_pricer.get_job(jid)
+		(s,) = self._suggestions()
+		self.assertEqual((s["source"], s["status"], s["lead"], s["chat"], s["job"]), ("Chat", "New", "CRM-LEAD-1", chat, jid))
+		self.assertIn("isn't a flip", s["correction"])
+		self.assertEqual(s["lesson"], "Check photos before calling a comp updated.")
+		self.assertEqual(s["context"], "Then it's an as-is sale.")
+		self.assertIn("618 NW 32nd St", s["address"])
+		ai_row = [r for r in self.rows if r.get("doctype") == ai_pricer.CHAT_DOCTYPE and r["role"] == "ai"]
+		self.assertNotIn("question", ai_row[0])
+
+	def test_plain_question_or_error_files_nothing(self):
+		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "how old is comp 2?")["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "text": "1967."})
+		ai_pricer.get_job(jid)
+		jid = ai_pricer.ask("CRM-LEAD-1", "ask", "repairs are 70k")["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "error", "error": "x", "correction": "y"})
+		ai_pricer.get_job(jid)
+		self.assertEqual(self._suggestions(), [])
+
+
 if __name__ == "__main__":
 	unittest.main()

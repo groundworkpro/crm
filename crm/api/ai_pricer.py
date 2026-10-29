@@ -21,6 +21,10 @@ side is written in `ask`; the AI's side when `get_job` first sees the job finish
 (`crm:ai_pricer:log:<id>` carries who/what until then, and deleting it is the
 once-only claim). Until the doctype exists nothing is written, and a failed write
 never breaks the chat.
+
+Corrections (Exe, 2026-10-29): when the worker flags a follow-up as the rep
+correcting the AI (`correction` in the result), the reply is also filed as a
+suggested pricer fix in CRM AI Suggestion (crm/api/ai_suggestions.py).
 """
 
 from __future__ import annotations
@@ -115,6 +119,7 @@ def _log_reply(job_id: str, result: dict):
 	if not raw or not base.delete(r, LOG + job_id):
 		return
 	meta = json.loads(raw)
+	question = meta.pop("question", "")
 	answer = result.get("answer")
 	error = result.get("status") == "error"
 	_write_log(
@@ -126,6 +131,23 @@ def _log_reply(job_id: str, result: dict):
 			"answer": json.dumps(answer) if answer else None,
 		}
 	)
+	if not error and result.get("correction") and question:
+		_file_correction(meta, question, str(result["correction"]), result.get("text") or "")
+
+
+def _file_correction(meta: dict, question: str, lesson: str, reply: str):
+	from crm.api import ai_suggestions
+
+	address = ""
+	try:
+		address = _address(frappe.get_doc("CRM Lead", meta.get("lead")))
+	except Exception:
+		pass
+	if ai_suggestions.record(
+		"Chat", meta.get("user"), question, lead=meta.get("lead"), address=address, lesson=lesson,
+		context=reply, chat=meta.get("chat"), job=meta.get("job"),
+	):
+		frappe.db.commit()
 
 
 def _worker_up() -> bool:
@@ -212,7 +234,7 @@ def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=N
 	meta = {"chat": _clean_chat(chat), "lead": lead, "user": job["user"], "kind": kind, "job": job["id"]}
 	if _log_supported():
 		r, base = _redis()
-		base.set(r, LOG + job["id"], json.dumps(meta), ex=TTL)
+		base.set(r, LOG + job["id"], json.dumps({**meta, "question": job["question"]}), ex=TTL)
 		_write_log({**meta, "role": "user", "text": job["question"] or "Price this house"})
 	return {"job": job["id"], "chat": meta["chat"]}
 
