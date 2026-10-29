@@ -438,9 +438,14 @@
                (`leaflet-container`, `leaflet-touch`, ...). While these classes
                only changed with a prop that never moved at runtime that was
                harmless; now that `wide` flips on resize, re-patching the map
-               element destroys the map. -->
+               element destroys the map.
+
+               `isolate` gives the map its own stacking context. Leaflet's
+               panes (z 400-700) and controls (z 1000), plus our overlays here
+               (z 1000/1100), otherwise compete page-wide — they painted over
+               the fixed Ask AI bubble (z-40). -->
           <div
-            class="relative overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-gray-1"
+            class="relative isolate overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-gray-1"
             :data-compact="wide ? null : '1'"
             :class="wide ? 'h-full min-h-0 flex-1' : 'min-h-0 flex-1'"
           >
@@ -545,6 +550,12 @@
                  clip, so a card is only fetched as it appears rather than just
                  before -- and a fast scroll shows grey boxes catching up. -->
             <div data-comp-tray class="min-h-0 flex-1 overflow-auto">
+              <AiPricerSummary
+                v-if="ai.run.value"
+                :run="ai.run.value"
+                :used-count="Object.keys(ai.used.value).length"
+                :missing="ai.missing.value"
+              />
               <CompSubjectCard
                 v-if="data?.subject"
                 ref="subjectCardEl"
@@ -564,6 +575,7 @@
                 :subject="data?.subject || null"
                 :active="hoveredComp === c.name"
                 :can-tag="canTagTypes"
+                :ai="ai.used.value[c.name] || null"
                 :ref="(el) => setCardRef(c.name, el)"
                 @hover="hoverFromCard"
                 @open="openCompDetail"
@@ -787,6 +799,8 @@ import LiveOneModal from '@/components/Modals/LiveOneModal.vue'
 import FetchTaxInfoModal from '@/components/Modals/FetchTaxInfoModal.vue'
 import TaxInfoCard from '@/components/TaxInfoCard.vue'
 import CompTrayCard from '@/components/CompTrayCard.vue'
+import AiPricerSummary from '@/components/AiPricerSummary.vue'
+import { useAiPricerRun } from '@/composables/useAiPricerRun'
 import CompSubjectCard from '@/components/CompSubjectCard.vue'
 import CompHelpKey from '@/components/CompHelpKey.vue'
 import CompOfferCalc from '@/components/CompOfferCalc.vue'
@@ -3276,6 +3290,15 @@ const MAX_SHEET_COMPS = 4
 const creatingSheet = ref(false)
 const selectedNames = computed(() => comps.value.filter((c) => c.selected).map((c) => c.name))
 const selectedComps = computed(() => comps.value.filter((c) => c.selected))
+
+// Opened from an Ask AI result: highlight and pick the AI's comps, fill its numbers.
+const ai = useAiPricerRun({
+  job: () => (props.pageMode && !isPractice.value && typeof route.query.ai === 'string' ? route.query.ai : ''),
+  rows: () => [...comps.value, ...discarded.value],
+  ready: computed(() => Boolean(data.value?.comps)),
+  pick: (name) => setCompState(name, 'selected'),
+  prefill: (v) => calcRef.value?.prefill?.(v),
+})
 
 const zillowLine = computed(() => {
   const z = data.value?.zillow

@@ -1,0 +1,636 @@
+{
+ "checked_at": "2026-10-26T17:00:41+00:00",
+ "source": "https://tumarketguide.com",
+ "states": {
+  "AK": {
+   "code": "AK",
+   "documents": [],
+   "kind": "title",
+   "name": "Alaska",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "alaska",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/alaska"
+  },
+  "AL": {
+   "code": "AL",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Alabama",
+   "notes": "",
+   "regulations": "Real estate wholesaling is legal in Alabama, but it is heavily regulated. Under Senate Bill 228 and subsequent enforcement rules by the Alabama Real Estate Commission (AREC), wholesalers must provide strict written disclosures to both the original seller and the end buyer regarding their limited equitable interest and intent to assign the contract.\n\nCommunity submitted:\nReal estate wholesaling is legal in Alabama, but it is heavily regulated. Under Senate Bill 228 and subsequent enforcement rules by the Alabama Real Estate Commission (AREC), wholesalers must provide strict written disclosures to both the original seller and the end buyer regarding their limited equitable interest and intent to assign the contract.",
+   "severity": "UK",
+   "slug": "alabama",
+   "updated_at": "2026-10-22T18:07:05.465736+00:00",
+   "url": "https://tumarketguide.com/states/alabama"
+  },
+  "AR": {
+   "code": "AR",
+   "documents": [],
+   "kind": "title",
+   "name": "Arkansas",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "arkansas",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/arkansas"
+  },
+  "AZ": {
+   "code": "AZ",
+   "documents": [],
+   "kind": "title",
+   "name": "Arizona",
+   "notes": "",
+   "regulations": "HB 2747 (2022) - wholesalers must disclose in writing to the seller that they are a wholesaler before entering a contract; failure lets the seller cancel without penalty and keep the earnest money (effective Sept 24, 2022)\n\nSource: https://www.azleg.gov/legtext/55leg/2R/summary/H.HB2747_021122_COM.DOCX.htm",
+   "severity": "UK",
+   "slug": "arizona",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/arizona"
+  },
+  "CA": {
+   "code": "CA",
+   "documents": [],
+   "kind": "title",
+   "name": "California",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "california",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/california"
+  },
+  "CO": {
+   "code": "CO",
+   "documents": [],
+   "kind": "title",
+   "name": "Colorado",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "colorado",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/colorado"
+  },
+  "CT": {
+   "code": "CT",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Connecticut",
+   "notes": "",
+   "regulations": "Public Act 25-168 (HB 7287, 2025) - wholesalers must register with the Dept. of Consumer Protection; sellers get a 3-business-day cancellation right; closing cannot be set more than 90 days out (effective July 1, 2026)\n\nSource: https://www.cga.ct.gov/2025/act/pa/pdf/2025PA-00168-R00HB-07287-PA.pdf",
+   "severity": "UK",
+   "slug": "connecticut",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/connecticut"
+  },
+  "DE": {
+   "code": "DE",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Delaware",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "delaware",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/delaware"
+  },
+  "FL": {
+   "code": "FL",
+   "documents": [],
+   "kind": "title",
+   "name": "Florida",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "florida",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/florida"
+  },
+  "GA": {
+   "code": "GA",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Georgia",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "georgia",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/georgia"
+  },
+  "HI": {
+   "code": "HI",
+   "documents": [],
+   "kind": "title",
+   "name": "Hawaii",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "hawaii",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/hawaii"
+  },
+  "IA": {
+   "code": "IA",
+   "documents": [],
+   "kind": "title",
+   "name": "Iowa",
+   "notes": "",
+   "regulations": "HSB 637 (enacted as HF 2394, 2024) - must be a licensed broker or represented by one to wholesale; written disclosure of all parties and the wholesaler's equitable interest required; violations carry civil fines up to $10,000 or 10% of sale price and the buyer/seller may cancel (effective July 1, 2024)\n\nSource: https://www.legis.iowa.gov/legislation/BillBook?ga=90&ba=HSB637",
+   "severity": "Medium",
+   "slug": "iowa",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/iowa"
+  },
+  "ID": {
+   "code": "ID",
+   "documents": [],
+   "kind": "title",
+   "name": "Idaho",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "idaho",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/idaho"
+  },
+  "IL": {
+   "code": "IL",
+   "documents": [],
+   "kind": "both",
+   "name": "Illinois",
+   "notes": "",
+   "regulations": "Real Estate License Act (225 ILCS 454, amended by P.A. 101-0357 in 2019) - 2 or more wholesale deals in any 12-month period requires a broker license\n\nSource: https://www.ilga.gov/legislation/ilcs/ilcs5.asp?ActID=1364&ChapterID=24",
+   "severity": "Low",
+   "slug": "illinois",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/illinois"
+  },
+  "IN": {
+   "code": "IN",
+   "documents": [
+    {
+     "title": "Non-Licensed / Assignable / Equitable Interest Disclosing Template Purchase Contract",
+     "url": "https://docs.google.com/document/d/1Y-0Azi-ICMHUFlXfI-CeW95nSibR68_l/copy"
+    }
+   ],
+   "kind": "title",
+   "name": "Indiana",
+   "notes": "",
+   "regulations": "HB 1068 (2024) - all seller solicitations (mailers, texts, emails, voicemails) must disclose you are an unlicensed entity buying for resale; missing disclosure gives the seller a 2-day right to rescind and counts as a deceptive act (effective July 1, 2024)\n\nSource: https://iga.in.gov/legislative/2024/bills/house/1068/details",
+   "severity": "Low",
+   "slug": "indiana",
+   "updated_at": "2026-07-10T21:44:09.017541+00:00",
+   "url": "https://tumarketguide.com/states/indiana"
+  },
+  "KS": {
+   "code": "KS",
+   "documents": [],
+   "kind": "title",
+   "name": "Kansas",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "kansas",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/kansas"
+  },
+  "KY": {
+   "code": "KY",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Kentucky",
+   "notes": "",
+   "regulations": "HB 62 (2023) - advertising an equitable interest in a purchase contract is now real estate brokerage; a license (or a licensed broker advertising for you) is required to market wholesale deals\n\nSource: https://apps.legislature.ky.gov/record/23rs/hb62.html",
+   "severity": "UK",
+   "slug": "kentucky",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/kentucky"
+  },
+  "LA": {
+   "code": "LA",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Louisiana",
+   "notes": "",
+   "regulations": "Community submitted:\nAct 807, effective August 1, 2026:\n\nKey Legal Requirements and Rules:\n\nWritten Disclosure of Intent: Wholesalers must prominently and explicitly disclose in writing to the property owner before signing any agreement that they are marketing or intending to assign/sell their contractual rights or equitable interest for a profit.\n\nMandatory Earnest Money Deposit: Contracts must include an earnest money deposit of at least 1% of the purchase price, held safely in an escrow or seller account.\n\nRight to Cancel: Agreements must explicitly feature a conspicuous cancellation deadline notice using the official Louisiana Real Estate Commission (LREC) Wholesaling Residential Real Property Mandatory Cancellation Notice form, allowing sellers a clear window to exit the contract penalty-free.\n\nBroad Scope: The regulations cover any monetization of equitable interest on residential properties, explicitly including both standard contract assignments and simultaneous double-closing transactions.",
+   "severity": "",
+   "slug": "louisiana",
+   "updated_at": "2026-10-22T18:07:08.362772+00:00",
+   "url": "https://tumarketguide.com/states/louisiana"
+  },
+  "MA": {
+   "code": "MA",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Massachusetts",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "massachusetts",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/massachusetts"
+  },
+  "MD": {
+   "code": "MD",
+   "documents": [
+    {
+     "title": "Non-Licensed / Assignable / Equitable Interest Disclosing Template Purchase Contract",
+     "url": "https://docs.google.com/document/d/1Y-0Azi-ICMHUFlXfI-CeW95nSibR68_l/copy"
+    }
+   ],
+   "kind": "title",
+   "name": "Maryland",
+   "notes": "",
+   "regulations": "HB 124 / SB 160 (Ch. 508/509, 2025) - written disclosure of intent to assign equitable interest; owner may cancel without penalty if not provided (effective Oct 1, 2025)\n\nSource: https://mgaleg.maryland.gov/mgawebsite/Legislation/Details/hb0124?ys=2025RS",
+   "severity": "Low",
+   "slug": "maryland",
+   "updated_at": "2026-07-10T21:45:12.424492+00:00",
+   "url": "https://tumarketguide.com/states/maryland"
+  },
+  "ME": {
+   "code": "ME",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Maine",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "maine",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/maine"
+  },
+  "MI": {
+   "code": "MI",
+   "documents": [],
+   "kind": "title",
+   "name": "Michigan",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "michigan",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/michigan"
+  },
+  "MN": {
+   "code": "MN",
+   "documents": [],
+   "kind": "title",
+   "name": "Minnesota",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "minnesota",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/minnesota"
+  },
+  "MO": {
+   "code": "MO",
+   "documents": [
+    {
+     "title": "Missouri Disclosure Form",
+     "url": "https://docs.google.com/document/d/1K5_hUfV9fZHeaFS-QCb3YBxgMNMFmebl9aj77QlBRaI/copy"
+    }
+   ],
+   "kind": "title",
+   "name": "Missouri",
+   "notes": "",
+   "regulations": "SB 973 (2026) - wholesaler must give seller written disclosure at least 14 days before contract; passed both chambers, pending governor's signature (effective Aug 28, 2026 if signed). HB 2517 (similar disclosure bill) also pending in the Senate.\n\nSource: https://www.senate.mo.gov/BillTracking/Bills/BillInformation?year=2026&billid=321",
+   "severity": "UK",
+   "slug": "missouri",
+   "updated_at": "2026-09-03T16:55:52.974155+00:00",
+   "url": "https://tumarketguide.com/states/missouri"
+  },
+  "MS": {
+   "code": "MS",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Mississippi",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "mississippi",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/mississippi"
+  },
+  "MT": {
+   "code": "MT",
+   "documents": [],
+   "kind": "title",
+   "name": "Montana",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "montana",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/montana"
+  },
+  "NC": {
+   "code": "NC",
+   "documents": [],
+   "kind": "attorney",
+   "name": "North Carolina",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "north-carolina",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/north-carolina"
+  },
+  "ND": {
+   "code": "ND",
+   "documents": [],
+   "kind": "attorney",
+   "name": "North Dakota",
+   "notes": "",
+   "regulations": "HB 1125 (2025) - wholesaling disclosure requirements expanded from residential-only to ALL real estate transactions (effective Aug 1, 2025)\n\nSource: https://ndlegis.gov/assembly/69-2025/regular/bill-overview/bo1125.html",
+   "severity": "UK",
+   "slug": "north-dakota",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/north-dakota"
+  },
+  "NE": {
+   "code": "NE",
+   "documents": [],
+   "kind": "title",
+   "name": "Nebraska",
+   "notes": "No public marketing of properties by unlicensed individuals",
+   "regulations": "LB 892 (2022) - publicly marketing an equitable interest in a purchase contract is broker activity requiring a real estate license\n\nSource: https://nebraskalegislature.gov/bills/view_bill.php?DocumentID=46781",
+   "severity": "Severe",
+   "slug": "nebraska",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/nebraska"
+  },
+  "NH": {
+   "code": "NH",
+   "documents": [],
+   "kind": "attorney",
+   "name": "New Hampshire",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "new-hampshire",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/new-hampshire"
+  },
+  "NJ": {
+   "code": "NJ",
+   "documents": [],
+   "kind": "attorney",
+   "name": "New Jersey",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "new-jersey",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/new-jersey"
+  },
+  "NM": {
+   "code": "NM",
+   "documents": [],
+   "kind": "title",
+   "name": "New Mexico",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "new-mexico",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/new-mexico"
+  },
+  "NV": {
+   "code": "NV",
+   "documents": [],
+   "kind": "title",
+   "name": "Nevada",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "nevada",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/nevada"
+  },
+  "NY": {
+   "code": "NY",
+   "documents": [],
+   "kind": "attorney",
+   "name": "New York",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "new-york",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/new-york"
+  },
+  "OH": {
+   "code": "OH",
+   "documents": [
+    {
+     "title": "Ohio Wholesaling Disclosures",
+     "url": "https://docs.google.com/document/d/1nhPO7lNHLTrzwvjfeo1AE-y5gQSC5bx-NFlz_8q9xO4/copy"
+    }
+   ],
+   "kind": "title",
+   "name": "Ohio",
+   "notes": "",
+   "regulations": "SB 155 (signed Dec 1, 2025; effective early 2026) - wholesalers must give sellers a boldface written disclosure before contract; violations are deceptive acts under the Consumer Sales Practices Act\n\nSource: https://www.legislature.ohio.gov/legislation/136/sb155",
+   "severity": "UK",
+   "slug": "ohio",
+   "updated_at": "2026-07-10T21:43:48.419961+00:00",
+   "url": "https://tumarketguide.com/states/ohio"
+  },
+  "OK": {
+   "code": "OK",
+   "documents": [
+    {
+     "title": "Titanium Purchase Contract for Oklahoma",
+     "url": "https://docs.google.com/document/d/1A2vxfIMxOKr2XR8ZPAKDTFM3ZlPM68pS/copy"
+    }
+   ],
+   "kind": "attorney",
+   "name": "Oklahoma",
+   "notes": "",
+   "regulations": "Predatory Real Estate Wholesaler Prohibition Act (HB 1148, 2021) - real estate license required to publicly market equitable interests.\nSB 1075 (2025) - written disclosure of intent to assign equitable interest required before contract; homeowner may cancel within 2 business days (effective Nov 1, 2025)\n\nSource: https://oklahoma.gov/orec/resources/blog/wholesale-act.html",
+   "severity": "High",
+   "slug": "oklahoma",
+   "updated_at": "2026-07-10T21:44:28.413162+00:00",
+   "url": "https://tumarketguide.com/states/oklahoma"
+  },
+  "OR": {
+   "code": "OR",
+   "documents": [],
+   "kind": "title",
+   "name": "Oregon",
+   "notes": "Gerren Castle & a TU JV Portal Team are Licensed",
+   "regulations": "HB 4058 (2024) - wholesalers must register with the Oregon Real Estate Agency, pay a registration fee, and pass a background check (no full license required)\n\nSource: https://olis.oregonlegislature.gov/liz/2024R1/Measures/Overview/HB4058",
+   "severity": "High",
+   "slug": "oregon",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/oregon"
+  },
+  "PA": {
+   "code": "PA",
+   "documents": [],
+   "kind": "title",
+   "name": "Pennsylvania",
+   "notes": "",
+   "regulations": "SB 1173 / Act 52 of 2024 - Wholesale Real Estate Transaction Transparency and Protection Act; wholesalers must be licensed and disclose their role (effective Jan 4, 2025)\n\nSource: https://www.palegis.us/statutes/unconsolidated/law-information?sessYr=2024&sessInd=0&actNum=52",
+   "severity": "Low",
+   "slug": "pennsylvania",
+   "updated_at": "2026-07-31T22:27:29.814109+00:00",
+   "url": "https://tumarketguide.com/states/pennsylvania"
+  },
+  "RI": {
+   "code": "RI",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Rhode Island",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "rhode-island",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/rhode-island"
+  },
+  "SC": {
+   "code": "SC",
+   "documents": [],
+   "kind": "attorney",
+   "name": "South Carolina",
+   "notes": "No public marketing of properties by unlicensed individuals",
+   "regulations": "H 4754 (signed May 29, 2024 - now law) - brokerage firms and subagents prohibited from engaging in, representing others in, or assisting the practice of wholesaling\n\nSource: https://www.scstatehouse.gov/sess125_2023-2024/bills/4754.htm",
+   "severity": "Severe",
+   "slug": "south-carolina",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/south-carolina"
+  },
+  "SD": {
+   "code": "SD",
+   "documents": [],
+   "kind": "title",
+   "name": "South Dakota",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "south-dakota",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/south-dakota"
+  },
+  "TN": {
+   "code": "TN",
+   "documents": [
+    {
+     "title": "Non-Licensed / Assignable / Equitable Interest Disclosing Template Purchase Contract",
+     "url": "https://docs.google.com/document/d/1Y-0Azi-ICMHUFlXfI-CeW95nSibR68_l/copy"
+    }
+   ],
+   "kind": "title",
+   "name": "Tennessee",
+   "notes": "",
+   "regulations": "SB 909 / Pub. Ch. 72 (2025) - bold-font disclosure of equitable interest to seller and subsequent purchaser; at least 3 business days' notice before assignment (effective Mar 25, 2025)\n\nSource: https://wapp.capitol.tn.gov/apps/BillInfo/Default.aspx?BillNumber=SB0909&GA=114",
+   "severity": "Low",
+   "slug": "tennessee",
+   "updated_at": "2026-07-10T21:44:49.242778+00:00",
+   "url": "https://tumarketguide.com/states/tennessee"
+  },
+  "TX": {
+   "code": "TX",
+   "documents": [],
+   "kind": "title",
+   "name": "Texas",
+   "notes": "",
+   "regulations": "S.B. No. 2212 (2017, Occ. Code Sec. 1101.0045) - contracts may be assigned without a license ONLY if the equitable-interest nature is disclosed in writing to buyers; marketing the property itself rather than the contract is unlicensed brokerage\n\nSource: https://www.legis.state.tx.us/tlodocs/85R/billtext/html/SB02212I.htm",
+   "severity": "Low",
+   "slug": "texas",
+   "updated_at": "2026-07-16T16:14:10.357676+00:00",
+   "url": "https://tumarketguide.com/states/texas"
+  },
+  "UT": {
+   "code": "UT",
+   "documents": [],
+   "kind": "title",
+   "name": "Utah",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "utah",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/utah"
+  },
+  "VA": {
+   "code": "VA",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Virginia",
+   "notes": "",
+   "regulations": "HB 917 (2024) - dealing in real estate contracts (including assignments) 2 or more times in any 12-month period for compensation is brokerage requiring a license (effective July 1, 2024)\n\nSource: https://lis.virginia.gov/cgi-bin/legp604.exe?241+sum+HB917",
+   "severity": "UK",
+   "slug": "virginia",
+   "updated_at": "2026-07-10T20:30:18.099422+00:00",
+   "url": "https://tumarketguide.com/states/virginia"
+  },
+  "VT": {
+   "code": "VT",
+   "documents": [],
+   "kind": "attorney",
+   "name": "Vermont",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "vermont",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/vermont"
+  },
+  "WA": {
+   "code": "WA",
+   "documents": [],
+   "kind": "title",
+   "name": "Washington",
+   "notes": "",
+   "regulations": "Community submitted:\nHB-1081 - https://lawfilesext.leg.wa.gov/biennium/2025-26/Pdf/Bills/Session%20Laws/House/1081-S.SL.pdf?q=20261016105920",
+   "severity": "",
+   "slug": "washington",
+   "updated_at": "2026-10-22T18:07:09.262482+00:00",
+   "url": "https://tumarketguide.com/states/washington"
+  },
+  "WI": {
+   "code": "WI",
+   "documents": [],
+   "kind": "title",
+   "name": "Wisconsin",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "wisconsin",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/wisconsin"
+  },
+  "WV": {
+   "code": "WV",
+   "documents": [],
+   "kind": "attorney",
+   "name": "West Virginia",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "west-virginia",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/west-virginia"
+  },
+  "WY": {
+   "code": "WY",
+   "documents": [],
+   "kind": "title",
+   "name": "Wyoming",
+   "notes": "",
+   "regulations": "",
+   "severity": "",
+   "slug": "wyoming",
+   "updated_at": "2026-07-10T19:31:03.534824+00:00",
+   "url": "https://tumarketguide.com/states/wyoming"
+  }
+ }
+}

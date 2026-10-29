@@ -97,6 +97,37 @@ def is_sequence_call_task(title):
 	return t.lower().startswith("call ") and not sequence_day(t)
 
 
+def call_row_title(title):
+	"""Pure: Today-card label for a sequence Call task.
+
+	New Lead 10-Day calls are "Call Joe" -> "Triple dial". Long-Term Follow-Up
+	calls carry their place in the cycle after " · " ("Call Joe · Weekly
+	follow-up 2 of 4") and keep that label, so the rep can see the lead has
+	moved to the weekly/monthly cycle (Exe, 2026-10-26)."""
+	_, sep, label = (title or "").partition(" · ")
+	return label.strip() if sep and label.strip() else "Triple dial"
+
+
+#: The sequence whose last step is day 10 of the no-response cadence.
+TEN_DAY_SEQUENCE = "New Lead 10-Day"
+#: Lead statuses where "no response after 10 days" still holds.
+REFUND_PROMPT_STATUSES = ("New", "Called No Answer")
+
+
+def shows_refund_prompt(lead_status, ten_day_completed, refundable, non_refundable):
+	"""Pure: offer "Mark refundable" on the Today card once the 10-day is done.
+
+	The 10-day enrollment completes the moment its day-10 task is created, so
+	"completed" = the lead has reached day 10 with no response. Already queued
+	or bonus-paid (never refundable) leads get no prompt."""
+	return bool(
+		ten_day_completed
+		and not refundable
+		and not non_refundable
+		and (lead_status or "") in REFUND_PROMPT_STATUSES
+	)
+
+
 def with_triple_dial(title, has_call):
 	"""Pure: name a text-day task as a triple-dial day when a Call task is also open."""
 	title = title or ""

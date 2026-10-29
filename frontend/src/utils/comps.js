@@ -452,3 +452,24 @@ function formatDecimal(value) {
   const n = Number(value)
   return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '')
 }
+
+const ADDRESS_WORDS = {
+  street: 'st', avenue: 'ave', av: 'ave', road: 'rd', drive: 'dr', lane: 'ln',
+  court: 'ct', place: 'pl', boulevard: 'blvd', terrace: 'ter', circle: 'cir',
+  parkway: 'pkwy', highway: 'hwy', north: 'n', south: 's', east: 'e', west: 'w',
+  northwest: 'nw', northeast: 'ne', southwest: 'sw', southeast: 'se',
+}
+
+/**
+ * "228 Stutzman Street, Johnstown PA" and "228 STUTZMAN ST" -> "228 stutzman st".
+ * For matching the Ask AI pricer's comp addresses to the comps board rows.
+ */
+export function addressMatchKey(address) {
+  return streetAddress(address)
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => ADDRESS_WORDS[w] || w)
+    .join(' ')
+}

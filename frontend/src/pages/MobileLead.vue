@@ -219,6 +219,7 @@
             </div>
           </div>
 
+          <StateRegulationBanner :lead="leadId" :state="doc.property_state" />
           <SLASection
             v-if="doc.sla_status"
             v-model="doc"
@@ -355,6 +356,7 @@ import AllModals from '@/components/Activities/AllModals.vue'
 import AssignTo from '@/components/AssignTo.vue'
 import SidePanelLayout from '@/components/SidePanelLayout.vue'
 import SLASection from '@/components/SLASection.vue'
+import StateRegulationBanner from '@/components/StateRegulationBanner.vue'
 import CustomActions from '@/components/CustomActions.vue'
 import FirstCallReadCard from '@/components/FirstCallReadCard.vue'
 import RefundStatusCard from '@/components/RefundStatusCard.vue'
