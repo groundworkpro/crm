@@ -396,7 +396,8 @@ def create_docuseal_agreement(
 	elif want_subto:
 		# SubTo carries: Seller Name(s), Property Address, County, Legal
 		# Description, Parcel ID, Purchase Price, Mortgage Balance, Mortgage
-		# Catch-up Amount, Signer Name (+ signatures, dates, per-page initials).
+		# Catch-up Amount, Signer Name, Additional Provisions (+ signatures, dates,
+		# per-page initials).
 		# The three money fields are per-deal and required, and the lead has no
 		# mortgage fields, so the rep types them; Legal Description likewise.
 		buyer_values = _clean({
@@ -405,6 +406,9 @@ def create_docuseal_agreement(
 			"County": (leaddoc.get("property_county") or "").strip(),
 			"Parcel ID": (leaddoc.get("apn") or "").strip(),
 			"Signer Name": buyer_name,
+			# Paragraph 22.B (2026-10-30, Dennis): optional free-text box for extra
+			# provisions; "None." unless the rep replaces it on the signing page.
+			"Additional Provisions": "None.",
 		})
 	elif want_amendment or want_cancellation:
 		buyer_values = _clean({

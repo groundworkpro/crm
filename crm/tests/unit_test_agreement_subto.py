@@ -83,6 +83,7 @@ class CreateTests(unittest.TestCase):
 			"County": "Cook",
 			"Parcel ID": "17-01-234-005",
 			"Signer Name": "Dennis Szafran",
+			"Additional Provisions": "None.",
 		})
 		self.assertEqual([s["role"] for s in p["submitters"]], ["Buyer", "Seller"])
 		self.assertEqual(p["submitters"][1]["values"]["Seller Name"], "Felici Love")
