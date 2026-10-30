@@ -59,6 +59,16 @@
         </Row>
 
         <button
+          v-if="dd.report"
+          type="button"
+          class="mt-1.5 flex w-full items-center justify-between rounded-md border border-outline-gray-2 bg-surface-gray-1 px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 hover:bg-surface-gray-2"
+          @click="showReport = true"
+        >
+          <span>{{ __('Full property report') }}</span>
+          <FeatherIcon name="maximize-2" class="size-3.5 shrink-0" />
+        </button>
+
+        <button
           v-if="hasRecords"
           type="button"
           class="mt-1.5 flex w-full items-center justify-between rounded-md border border-outline-gray-2 bg-surface-gray-1 px-2.5 py-1.5 text-xs font-medium text-ink-gray-7 hover:bg-surface-gray-2"
@@ -147,11 +157,13 @@
     <div v-else class="px-5 pb-3 text-sm text-ink-gray-5">
       {{ __('No tax info pulled yet.') }}
     </div>
+    <TaxReportModal v-if="showReport" v-model="showReport" :report="dd.report" />
   </div>
 </template>
 
 <script setup>
 import MoneyIcon from '@/components/Icons/MoneyIcon.vue'
+import TaxReportModal from '@/components/Modals/TaxReportModal.vue'
 import { formatDate, formatNumber } from '@/utils'
 import { globalStore } from '@/stores/global'
 import { Button, FeatherIcon, createResource } from 'frappe-ui'
@@ -166,6 +178,7 @@ const emit = defineEmits(['fetch'])
 
 const { $socket } = globalStore()
 const open = ref(false)
+const showReport = ref(false)
 
 const Row = (p, { slots }) =>
   h('div', { class: 'flex gap-1.5' }, [

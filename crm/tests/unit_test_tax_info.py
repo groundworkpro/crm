@@ -230,6 +230,168 @@ class RealEstateApiTests(unittest.TestCase):
 		self.assertEqual(_parse_property({})["matched"], 0)
 		self.assertEqual(_dd_from_raw({}), {})
 
+class FullReportTests(unittest.TestCase):
+	"""The BatchLeads-style tabs (Tax Information / Sale & Loan / Foreclosure & Lien)."""
+
+	def test_reapi_tax_tab(self):
+		rec = dict(
+			REAPI,
+			taxInfo=dict(
+				REAPI["taxInfo"],
+				assessedLandValue=95000,
+				assessedImprovementValue=75400,
+				marketValue=231770,
+				marketLandValue=95000,
+				marketImprovementValue=136770,
+			),
+			ownerInfo=dict(REAPI["ownerInfo"], mailAddress=dict(REAPI["ownerInfo"]["mailAddress"], zip4="2860")),
+		)
+		tax = _dd_from_raw(rec)["report"]["tax"]
+		self.assertEqual(tax["parcel"], "0998-19-8204")
+		self.assertEqual(tax["property_tax"], 2472.57)
+		self.assertEqual(tax["assessed_land"], 95000)
+		self.assertEqual(tax["assessed_improvement"], 75400)
+		self.assertEqual(tax["total_market"], 231770)
+		self.assertEqual(tax["market_improvement"], 136770)
+		self.assertEqual(tax["market_value_year"], 2025)
+		self.assertEqual(tax["mailing"], "1 Mail Rd, Venice, FL 34293-2860")
+
+	def test_reapi_sale_and_loans(self):
+		rec = dict(
+			REAPI,
+			lastSale=dict(REAPI["saleHistory"][0]),
+			estimatedMortgagePayment=866,
+			openMortgageBalance=144415,
+			currentMortgages=[
+				{
+					"amount": 144415,
+					"lenderName": "The Mortgage Firm Inc",
+					"loanType": "Conventional",
+					"maturityDate": "2051-04-01T00:00:00.000Z",
+					"recordingDate": "2021-04-06T00:00:00.000Z",
+					"term": "360",
+					"termType": "Month",
+				}
+			],
+		)
+		rep = _dd_from_raw(rec)["report"]
+		self.assertEqual(rep["last_sale"]["price"], 169900)
+		self.assertEqual(rep["last_sale"]["sellers"], "Old Owner")
+		self.assertIsNone(rep["last_transfer"])  # newest deed is the last sale
+		self.assertEqual([t["recording_date"] for t in rep["transactions"]], ["2021-04-06", "2009-01-02"])
+		loan = rep["current_loans"][0]
+		self.assertEqual(loan["due_date"], "2051-04-01")
+		self.assertEqual(loan["term_months"], 360)
+		self.assertEqual(loan["est_payment"], 866)
+		self.assertEqual(loan["est_balance"], 144415)
+
+	def test_reapi_last_transfer_is_a_later_deed(self):
+		rec = dict(REAPI, lastSale=dict(REAPI["saleHistory"][1]))
+		rec["saleHistory"] = list(REAPI["saleHistory"])
+		rep = _dd_from_raw(rec)["report"]
+		self.assertEqual(rep["last_transfer"]["doc_type"], "Warranty Deed")
+
+	def test_reapi_lists_every_foreclosure_filing(self):
+		rec = dict(
+			REAPI,
+			foreclosureInfo=[
+				{
+					"active": False,
+					"documentType": "Notice of Default",
+					"recordingDate": "2013-04-09T00:00:00.000Z",
+					"lenderName": "WELLS FARGO BANK NA",
+					"trusteeFullName": "JOHN DRISCOLL",
+					"trusteeAddress": "5040 CORPORATE WOODS DR",
+					"trusteePhone": "757-457-1460",
+					"defaultAmount": 12000,
+					"openingBid": 90000,
+				},
+				dict(REAPI["foreclosureInfo"][0]),
+			],
+			taxLien=True,
+		)
+		rep = _dd_from_raw(rec)["report"]
+		self.assertEqual(len(rep["foreclosures"]), 2)
+		first = rep["foreclosures"][0]
+		self.assertEqual(first["status"], "Not active")
+		self.assertEqual(first["trustee"], "JOHN DRISCOLL")
+		self.assertEqual(first["unpaid_amount"], 12000)
+		self.assertEqual(first["opening_bid"], 90000)
+		self.assertTrue(rep["lien_flags"]["tax_lien"])
+		self.assertEqual(rep["liens"], [])
+
+	def test_batchdata_report(self):
+		rec = dict(
+			BATCHDATA,
+			assessment={
+				"totalAssessedValue": 30620,
+				"assessedLandValue": 2670,
+				"landMarketValue": 8010,
+				"totalMarketValue": 91860,
+				"marketValueYear": 2025,
+			},
+			sale={
+				"lastTransfer": {
+					"documentNumber": "2013R42367",
+					"documentType": "Quit Claim Deed",
+					"price": 60000,
+					"recordingDate": "2013-10-02T00:00:00.000Z",
+				},
+				"lastSale": {"salePriceIsEstimated": False},
+			},
+			openLien={
+				"totalOpenLienCount": 1,
+				"totalOpenLienBalance": 28914,
+				"mortgages": [
+					{
+						"recordingDate": "2006-06-13T00:00:00.000Z",
+						"loanType": "Fannie Mae/Freddie Mac",
+						"loanAmount": 51850,
+						"dueDate": "2036-07-01T00:00:00.000Z",
+						"estimatedPaymentAmount": 332,
+						"currentEstimatedBalance": 17999,
+						"currentEstimatedInterestRate": 6.93,
+					}
+				],
+			},
+			foreclosure={
+				"status": "Notice of Lis Pendens",
+				"recordingDate": "2020-03-13T00:00:00.000Z",
+				"caseNumber": "20-001211-CI",
+				"documentNumber": "2020085545",
+				"trusteeCareOfName": "Melissa Konick",
+				"defaultDate": "2020-01-01T00:00:00.000Z",
+				"auctionMinimumBidAmount": 0,
+			},
+			involuntaryLien={
+				"liens": [
+					{
+						"documentNumber": "202500242274",
+						"documentType": "Code Enforcement Lien",
+						"filingDate": "2025-10-15T00:00:00.000Z",
+						"lienAmount": 196,
+						"recordingDate": "2025-11-17T00:00:00.000Z",
+					}
+				]
+			},
+		)
+		rep = _dd_from_raw(rec)["report"]
+		self.assertEqual(rep["tax"]["market_land"], 8010)
+		self.assertEqual(rep["tax"]["market_value_year"], 2025)
+		self.assertIsNone(rep["last_sale"])  # only a price-estimated flag, nothing to show
+		self.assertEqual(rep["last_transfer"]["doc_number"], "2013R42367")
+		loan = rep["current_loans"][0]
+		self.assertEqual((loan["est_payment"], loan["est_balance"], loan["rate"]), (332, 17999, 6.93))
+		fc = rep["foreclosures"][0]
+		self.assertEqual(fc["care_of"], "Melissa Konick")
+		self.assertEqual(fc["default_date"], "2020-01-01")
+		self.assertIsNone(fc["opening_bid"])
+		lien = rep["liens"][0]
+		self.assertEqual(lien["lien_amount"], 196)
+		self.assertEqual(lien["filing_date"], "2025-10-15")
+		self.assertTrue(rep["lien_flags"]["lien"])
+
+
 class LegacyBatchDataTests(unittest.TestCase):
 	def test_old_pulls_still_parse(self):
 		out = _parse_property(BATCHDATA)

@@ -201,6 +201,7 @@ def _dd_from_raw(p: dict) -> dict:
 	"""Compact records tables for the Tax Info card / comps panel."""
 	if not isinstance(p, dict) or not p:
 		return {}
+	raw = p
 	p = _normalize(p)
 	owner = p.get("owner") or {}
 	mailing = owner.get("mailingAddress") or {}
@@ -262,6 +263,7 @@ def _dd_from_raw(p: dict) -> dict:
 		}
 
 	return {
+		"report": _report_from_raw(raw),
 		"mailing": " ".join(
 			filter(
 				None,
@@ -283,6 +285,318 @@ def _dd_from_raw(p: dict) -> dict:
 		"deeds": deeds,
 		"mortgages": mortgages,
 		"taxes": taxes[:12],
+	}
+
+
+# ---------------------------------------------------------------------------
+# Full property report (the BatchLeads-style "Tax Information / Sale & Loan /
+# Foreclosure & Lien" tabs). Built straight from the provider's raw record, not
+# through `_normalize`, which only keeps what the compact card needs. Every
+# value is optional; the frontend shows "N/A" for a missing one.
+# ---------------------------------------------------------------------------
+
+
+_money = _num  # a recorded $0 (no-consideration deed, unknown amount) shows as N/A
+
+
+def _names(value):
+	"""A list of names or one comma string → one display string."""
+	if isinstance(value, (list, tuple)):
+		return ", ".join(str(v) for v in value if v) or None
+	return value or None
+
+
+def _int(value):
+	try:
+		return int(float(value)) or None
+	except (TypeError, ValueError):
+		return None
+
+
+def _address(*parts):
+	return ", ".join(str(x) for x in parts if x) or None
+
+
+def _compact(rows):
+	"""Drop rows whose every value is empty."""
+	return [r for r in rows if any(v not in (None, "", [], False) for v in r.values())]
+
+
+def _report_from_raw(p: dict) -> dict:
+	if not isinstance(p, dict) or not p:
+		return {}
+	report = _reapi_report(p) if _is_reapi(p) else _batchdata_report(p)
+	for key in ("transactions", "loans"):
+		report[key].sort(key=lambda r: r.get("recording_date") or r.get("sale_date") or "", reverse=True)
+	report["current_loans"].sort(key=lambda r: r.get("recording_date") or "", reverse=True)
+	report["foreclosures"].sort(key=lambda r: r.get("recording_date") or "", reverse=True)
+	report["liens"].sort(key=lambda r: r.get("recording_date") or r.get("filing_date") or "", reverse=True)
+	return report
+
+
+def _reapi_report(p: dict) -> dict:
+	owner = p.get("ownerInfo") or {}
+	mail = owner.get("mailAddress") or {}
+	tax = p.get("taxInfo") or {}
+	lot = p.get("lotInfo") or {}
+	zip_code = "-".join(z for z in (mail.get("zip"), mail.get("zip4")) if z)
+
+	def sale(d):
+		return {
+			"sale_date": _iso_date(d.get("saleDate")),
+			"recording_date": _iso_date(d.get("recordingDate")),
+			"price": _money(d.get("saleAmount")),
+			"doc_number": d.get("documentNumber"),
+			"doc_type": d.get("documentType"),
+			"buyers": _names(d.get("buyerNames")),
+			"sellers": _names(d.get("sellerNames")),
+			"transaction_type": d.get("transactionType"),
+			"purchase_method": d.get("purchaseMethod"),
+		}
+
+	def loan(m):
+		return {
+			"recording_date": _iso_date(m.get("recordingDate") or m.get("documentDate")),
+			"loan_type": m.get("loanType"),
+			"amount": _money(m.get("amount")),
+			"lender": m.get("lenderName"),
+			"due_date": _iso_date(m.get("maturityDate")),
+			"term_months": _int(m.get("term")) if (m.get("termType") or "Month") == "Month" else None,
+			"rate": _num(m.get("interestRate")),
+			"position": m.get("position"),
+			"open": m.get("open"),
+			"doc_number": m.get("documentNumber"),
+		}
+
+	transactions = [sale(d) for d in p.get("saleHistory") or [] if isinstance(d, dict)]
+	transactions.sort(key=lambda r: r.get("recording_date") or "", reverse=True)
+	last_sale = sale(p["lastSale"]) if isinstance(p.get("lastSale"), dict) and p["lastSale"] else None
+	# RealEstateAPI has no separate "last transfer": the newest recorded deed is it,
+	# shown only when it is not the last sale itself (a later quitclaim, etc.).
+	last_transfer = None
+	if transactions:
+		newest = transactions[0]
+		if not last_sale or (newest["recording_date"], newest["doc_type"]) != (
+			last_sale["recording_date"],
+			last_sale["doc_type"],
+		):
+			last_transfer = newest
+
+	current = [loan(m) for m in p.get("currentMortgages") or [] if isinstance(m, dict)]
+	# RealEstateAPI only estimates the payment/balance for the property as a whole;
+	# with a single open loan that IS the loan's estimate.
+	est_payment = _money(p.get("estimatedMortgagePayment"))
+	est_balance = _money(p.get("openMortgageBalance") or p.get("estimatedMortgageBalance"))
+	if len(current) == 1:
+		current[0]["est_payment"] = est_payment
+		current[0]["est_balance"] = est_balance
+
+	foreclosures = []
+	for f in p.get("foreclosureInfo") or []:
+		if not isinstance(f, dict):
+			continue
+		foreclosures.append(
+			{
+				"active": bool(f.get("active")),
+				"doc_number": f.get("documentNumber"),
+				"doc_type": f.get("documentType"),
+				"status": "Active" if f.get("active") else "Not active",
+				"unpaid_amount": _money(f.get("defaultAmount")),
+				"opening_bid": _money(f.get("openingBid")),
+				"judgment_amount": _money(f.get("judgmentAmount")),
+				"original_loan_amount": _money(f.get("originalLoanAmount")),
+				"borrower": f.get("borrowerName"),
+				"lender": f.get("lenderName"),
+				"lender_phone": f.get("lenderPhone"),
+				"recording_date": _iso_date(f.get("recordingDate")),
+				"auction_date": _iso_date(f.get("auctionDate")),
+				"auction_time": f.get("auctionTime"),
+				"auction_location": f.get("auctionStreetAddress"),
+				"default_date": None,
+				"loan_number": None,
+				"trustee": f.get("trusteeFullName"),
+				"trustee_address": f.get("trusteeAddress"),
+				"trustee_phone": f.get("trusteePhone"),
+				"care_of": None,
+				"case_number": f.get("caseNumber"),
+				"trustee_sale_number": f.get("trusteeSaleNumber"),
+			}
+		)
+
+	return {
+		"source": "RealEstateAPI",
+		"tax": {
+			"parcel": lot.get("apn"),
+			"owner": " & ".join(n for n in (owner.get("owner1FullName"), owner.get("owner2FullName")) if n)
+			or owner.get("companyName"),
+			"property_tax": _money(tax.get("taxAmount")),
+			"tax_year": _int(tax.get("year")),
+			"delinquent_year": _int(tax.get("taxDelinquentYear")),
+			"total_assessed": _money(tax.get("assessedValue")),
+			"assessed_land": _money(tax.get("assessedLandValue")),
+			"assessed_improvement": _money(tax.get("assessedImprovementValue")),
+			"assessment_year": _int(tax.get("assessmentYear")),
+			"total_market": _money(tax.get("marketValue")),
+			"market_land": _money(tax.get("marketLandValue")),
+			"market_improvement": _money(tax.get("marketImprovementValue")),
+			# RealEstateAPI dates the market value by the assessment roll.
+			"market_value_year": _int(tax.get("assessmentYear")) if tax.get("marketValue") else None,
+			"mailing": _address(mail.get("address"), mail.get("city"), " ".join(x for x in (mail.get("state"), zip_code) if x)),
+		},
+		"last_sale": last_sale,
+		"last_transfer": last_transfer,
+		"transactions": transactions,
+		"current_loans": current,
+		"loan_totals": {"open_balance": est_balance, "est_payment": est_payment},
+		"loans": [loan(m) for m in p.get("mortgageHistory") or [] if isinstance(m, dict)],
+		"foreclosures": foreclosures,
+		# PropertyDetail carries only yes/no lien flags; the documents themselves are
+		# RealEstateAPI's separate (paid) involuntary-liens report.
+		"liens": [],
+		"lien_flags": {
+			"tax_lien": p.get("taxLien"),
+			"lien": p.get("lien"),
+			"judgment": p.get("judgment"),
+		},
+	}
+
+
+def _batchdata_report(p: dict) -> dict:
+	owner = p.get("owner") or {}
+	mail = owner.get("mailingAddress") or {}
+	tax = p.get("tax") or {}
+	assessment = p.get("assessment") or {}
+	sale_block = p.get("sale") or {}
+	fc = p.get("foreclosure") or {}
+	zip_code = "-".join(str(z) for z in (mail.get("zip"), mail.get("zipPlus4")) if z)
+
+	def sale(d, buyers_key="buyers", sellers_key="sellers"):
+		if not isinstance(d, dict):
+			return None
+		row = {
+			"sale_date": _iso_date(d.get("saleDate")),
+			"recording_date": _iso_date(d.get("recordingDate")),
+			"price": _money(d.get("salePrice") or d.get("price")),
+			"doc_number": d.get("documentNumber"),
+			"doc_type": d.get("documentType"),
+			"buyers": _names(d.get(buyers_key)),
+			"sellers": _names(d.get(sellers_key)),
+			"transaction_type": d.get("transactionType"),
+			"new_construction": d.get("newConstruction"),
+		}
+		return row if any(v for k, v in row.items() if k != "price") else None
+
+	open_lien = p.get("openLien") or {}
+	current = []
+	for m in open_lien.get("mortgages") or []:
+		if isinstance(m, dict):
+			current.append(
+				{
+					"recording_date": _iso_date(m.get("recordingDate")),
+					"loan_type": m.get("loanType"),
+					"amount": _money(m.get("loanAmount")),
+					"lender": m.get("lenderName") or m.get("assignedLenderName"),
+					"due_date": _iso_date(m.get("dueDate")),
+					"term_months": _int(m.get("loanTermMonths")),
+					"rate": _num(m.get("currentEstimatedInterestRate")),
+					"est_payment": _money(m.get("estimatedPaymentAmount")),
+					"est_balance": _money(m.get("currentEstimatedBalance")),
+				}
+			)
+	loans = []
+	for m in p.get("mortgageHistory") or []:
+		if isinstance(m, dict):
+			loans.append(
+				{
+					"recording_date": _iso_date(m.get("recordingDate") or m.get("documentDate")),
+					"loan_type": m.get("loanType"),
+					"amount": _money(m.get("loanAmount")),
+					"lender": m.get("lenderName"),
+					"due_date": _iso_date(m.get("dueDate")),
+					"term_months": _int(m.get("loanTermMonths")),
+					"rate": _num(m.get("interestRate")),
+				}
+			)
+
+	foreclosures = []
+	if fc:
+		auction = _address(fc.get("auctionLocation"), fc.get("auctionCity"))
+		foreclosures.append(
+			{
+				"active": None,
+				"doc_number": fc.get("documentNumber"),
+				"doc_type": fc.get("documentType"),
+				"status": fc.get("status"),
+				"unpaid_amount": _money(fc.get("unpaidBalance") or fc.get("pastDueAmount")),
+				"opening_bid": _money(fc.get("auctionMinimumBidAmount")),
+				"judgment_amount": _money(fc.get("judgmentAmount")),
+				"original_loan_amount": _money(fc.get("originalLoanAmount")),
+				"borrower": fc.get("borrowerName"),
+				"lender": fc.get("currentLenderName"),
+				"lender_phone": None,
+				"recording_date": _iso_date(fc.get("recordingDate") or fc.get("filingDate")),
+				"auction_date": _iso_date(fc.get("auctionDate")),
+				"auction_time": fc.get("auctionTime"),
+				"auction_location": auction,
+				"default_date": _iso_date(fc.get("defaultDate")),
+				"loan_number": fc.get("loanNumber"),
+				"trustee": fc.get("trusteeName"),
+				"trustee_address": fc.get("trusteeAddress"),
+				"trustee_phone": fc.get("trusteePhone"),
+				"care_of": fc.get("trusteeCareOfName"),
+				"case_number": fc.get("caseNumber"),
+				"trustee_sale_number": fc.get("trusteeSaleNumber"),
+			}
+		)
+
+	liens = []
+	for lien in (p.get("involuntaryLien") or {}).get("liens") or []:
+		if isinstance(lien, dict):
+			liens.append(
+				{
+					"doc_number": lien.get("documentNumber"),
+					"doc_type": lien.get("documentType"),
+					"lien_type": lien.get("lienType"),
+					"lien_amount": _money(lien.get("lienAmount")),
+					"judgment_amount": _money(lien.get("judgmentAmount")),
+					"filing_date": _iso_date(lien.get("filingDate")),
+					"recording_date": _iso_date(lien.get("recordingDate")),
+					"tax_period_end": _iso_date(lien.get("taxPeriodEndDate")),
+				}
+			)
+
+	quick = p.get("quickLists") or {}
+	return {
+		"source": "BatchData",
+		"tax": {
+			"parcel": (p.get("ids") or {}).get("apn"),
+			"owner": owner.get("fullName"),
+			"property_tax": _money(tax.get("taxAmount")),
+			"tax_year": _int(tax.get("taxYear")),
+			"delinquent_year": _int(tax.get("taxDelinquentYear")),
+			"total_assessed": _money(assessment.get("totalAssessedValue")),
+			"assessed_land": _money(assessment.get("assessedLandValue")),
+			"assessed_improvement": _money(assessment.get("assessedImprovementValue")),
+			"assessment_year": _int(assessment.get("assessmentYear")),
+			"total_market": _money(assessment.get("totalMarketValue")),
+			"market_land": _money(assessment.get("landMarketValue")),
+			"market_improvement": _money(assessment.get("improvementMarketValue")),
+			"market_value_year": _int(assessment.get("marketValueYear")),
+			"mailing": _address(mail.get("street"), mail.get("city"), " ".join(x for x in (mail.get("state"), zip_code) if x)),
+		},
+		"last_sale": sale(sale_block.get("lastSale"), "saleBuyers", "saleSellers"),
+		"last_transfer": sale(sale_block.get("lastTransfer"), "saleBuyers", "saleSellers"),
+		"transactions": [r for r in (sale(d) for d in p.get("deedHistory") or []) if r],
+		"current_loans": current,
+		"loan_totals": {"open_balance": _money(open_lien.get("totalOpenLienBalance")), "est_payment": None},
+		"loans": loans,
+		"foreclosures": foreclosures,
+		"liens": _compact(liens),
+		"lien_flags": {
+			"tax_lien": quick.get("taxDefault"),
+			"lien": bool(liens) or None,
+			"judgment": None,
+		},
 	}
 
 
