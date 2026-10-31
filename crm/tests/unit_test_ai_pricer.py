@@ -295,6 +295,31 @@ class CompsPageChangeTest(AiCorrectionTest):
 		                 ("Comps page", 12, "$30/sf", "$45/sf", "Teach the agent", "Roof is shot"))
 		self.assertTrue(s["lesson"].startswith("Step 12: Changed Repairs"))
 
+	def test_step_change_saves_setup_logs_and_rides_on_jobs(self):
+		store = {}
+		shim.db.get_default.side_effect = lambda k, *a: store.get(k)
+		shim.db.set_default = mock.MagicMock(side_effect=lambda k, v, *a: store.__setitem__(k, v))
+		try:
+			with self.assertRaises(Exception):
+				ai_pricer.save_step(12, " ", tool="code")
+			with self.assertRaises(Exception):
+				ai_pricer.save_step(4, "x", tool="code")
+			with self.assertRaises(Exception):
+				ai_pricer.save_step(12, "x", tool="rm -rf")
+			r = ai_pricer.save_step("12", "No photos: be safe", tool="model:anthropic/claude-sonnet-5-5",
+			                        note="Pre-1950: full rehab", lead="CRM-LEAD-1", chat="e" * 32)
+			self.assertEqual(r["setup"]["12"], {"tool": "model:anthropic/claude-sonnet-5-5", "note": "Pre-1950: full rehab"})
+			self.assertEqual(r["lines"][0], "Changed Step 12 tool: Jev -> anthropic/claude-sonnet-5-5. Why: No photos: be safe")
+			self.assertEqual(len(self._suggestions()), 2)
+			self.assertEqual(ai_pricer.save_step(12, "again", note="Pre-1950: full rehab")["lines"], [])
+			ai_pricer.save_step(5, "tighter", size_band=0.2)
+			ai_pricer.ask("CRM-LEAD-1", "decide")
+			job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])
+			self.assertEqual((job["setup"]["12"]["tool"], job["setup"]["5"]["size_band"]),
+			                 ("model:anthropic/claude-sonnet-5-5", 0.2))
+		finally:
+			shim.db.get_default.side_effect = None
+
 
 if __name__ == "__main__":
 	unittest.main()

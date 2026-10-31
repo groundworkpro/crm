@@ -2,7 +2,8 @@
   <!-- Exe's 13 comping steps beside the comps page (mockup 4A). Steps shows what each
        step decided and why; Chat talks to the same agent, and what it changes lands on
        the page; Changes is the team's log of every override with its reason.
-       Rule steps run in code on agentbox, steps 6, 9 and 12 are Jev's calls. -->
+       Rule steps run in code on agentbox; steps 6, 9 and 12 use the tool the team picked
+       (Jev, a rule, or any model), and anyone can change a step with a reason. -->
   <aside class="flex min-h-0 w-[380px] shrink-0 flex-col overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-white">
     <div class="flex items-center gap-1 border-b border-outline-gray-2 px-2 py-1.5">
       <button
@@ -60,27 +61,63 @@
 
     <div ref="scroller" class="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3 text-sm">
       <template v-if="tab === 'steps'">
-        <p v-if="!steps.length" class="pt-4 text-center text-ink-gray-5">
-          {{ running ? __('Running the steps…') : __('Run the 13 steps to fill the comps, the value and the repairs, with the reason for each.') }}
+        <p v-if="!steps.length" class="pt-1 text-ink-gray-5">
+          {{ running ? __('Running the steps…') : __('Run the 13 steps to fill the comps, the value and the repairs. Change any step first if you like.') }}
         </p>
-        <template v-else>
-          <div v-if="run" class="rounded-md bg-surface-gray-1 px-3 py-2">
+        <template v-if="cards.length">
+          <div v-if="run && steps.length" class="rounded-md bg-surface-gray-1 px-3 py-2">
             <div class="flex items-baseline gap-2">
               <span class="text-base font-semibold text-ink-gray-9">{{ money(run.arv) }}</span>
               <span class="text-ink-gray-6">{{ money(run.arv_low) }} to {{ money(run.arv_high) }}</span>
               <span class="ml-auto text-xs text-ink-gray-6">{{ __('{0} confidence', [run.confidence]) }}</span>
             </div>
           </div>
-          <div v-for="s in steps" :key="s.n" class="rounded-md border border-outline-gray-2 px-3 py-2">
+          <div v-for="s in cards" :key="s.n" class="rounded-md border border-outline-gray-2 px-3 py-2">
             <div class="flex items-center gap-1.5">
               <span class="w-5 text-ink-gray-5">{{ s.n }}</span>
               <span class="font-medium text-ink-gray-9">{{ s.title }}</span>
               <span
                 class="ml-auto rounded px-1.5 py-0.5 text-2xs"
-                :class="s.who === 'Jev' ? 'bg-surface-gray-7 text-ink-white' : 'bg-surface-gray-2 text-ink-gray-7'"
-              >{{ s.who === 'Jev' ? 'Jev' : __('Rule') }}</span>
+                :class="toolOf(s.n) === 'code' ? 'bg-surface-gray-2 text-ink-gray-7' : 'bg-surface-gray-7 text-ink-white'"
+                :title="__('What makes this step\'s call')"
+              >{{ toolLabel(toolOf(s.n)) }}</span>
+              <button type="button" class="whitespace-nowrap rounded px-1 text-xs text-ink-gray-5 hover:bg-surface-gray-2" @click="editStep(s.n)">
+                {{ editing === s.n ? __('Close') : __('Change') }}
+              </button>
             </div>
-            <p class="mt-1 whitespace-pre-line pl-6 text-ink-gray-7">{{ s.text }}</p>
+            <p v-if="s.text" class="mt-1 whitespace-pre-line pl-6 text-ink-gray-7">{{ s.text }}</p>
+            <p v-if="settingText(s.n)" class="mt-1 pl-6 text-xs text-ink-gray-6">{{ settingText(s.n) }}</p>
+            <!-- Change how this step runs, for the whole team. The reason goes in the Changes log. -->
+            <div v-if="editing === s.n" class="mt-2 space-y-2 rounded bg-surface-gray-1 p-2 pl-6 text-xs">
+              <template v-if="TOOL_STEPS.includes(s.n)">
+                <label class="block text-ink-gray-7">{{ __('Who makes this call') }}
+                  <select v-model="form.tool" class="form-select mt-1 w-full text-sm">
+                    <option value="jev">{{ __('Jev (decision model)') }}</option>
+                    <option value="code">{{ __('Rule (code, no AI)') }}</option>
+                    <option v-for="m in models" :key="m" :value="'model:' + m">{{ m }}</option>
+                    <option value="other">{{ __('Other model…') }}</option>
+                  </select>
+                </label>
+                <input v-if="form.tool === 'other'" v-model="form.other" class="form-input w-full text-sm" :placeholder="__('provider/model, or hf/org/model')" />
+                <label class="block text-ink-gray-7">{{ __('Team rule for this step (optional)') }}
+                  <textarea v-model="form.note" rows="2" class="form-textarea mt-1 w-full resize-none text-sm" :placeholder="__('e.g. Built before 1950 and no photos: full rehab')" />
+                </label>
+              </template>
+              <label v-else-if="s.n === 5" class="block text-ink-gray-7">{{ __('Comps within this % of the subject size') }}
+                <input v-model.number="form.size_band" type="number" min="5" max="100" step="5" class="form-input mt-1 w-24 text-sm" />
+              </label>
+              <label v-else-if="s.n === 7" class="block text-ink-gray-7">{{ __('Farthest radius, miles') }}
+                <input v-model.number="form.max_mi" type="number" min="0.25" max="5" step="0.25" class="form-input mt-1 w-24 text-sm" />
+              </label>
+              <p v-else class="text-ink-gray-6">{{ __('This step is a fixed rule in code. Describe the change in Chat and the agent will draft it for the team.') }}</p>
+              <template v-if="editable(s.n)">
+                <textarea v-model="form.why" rows="2" class="form-textarea w-full resize-none text-sm" :placeholder="__('Why the change? The team sees this.')" />
+                <div class="flex gap-2">
+                  <Button size="sm" variant="solid" :disabled="!form.why.trim()" :loading="saving" @click="saveStep(s.n)">{{ __('Save and rerun') }}</Button>
+                  <Button size="sm" variant="ghost" @click="editing = null">{{ __('Cancel') }}</Button>
+                </div>
+              </template>
+            </div>
           </div>
         </template>
       </template>
@@ -155,6 +192,13 @@ const CHIPS = {
   comps: [__('I know the street'), __('Not really updated'), __('Different buyer pool'), __('Bad sale data'), __('Other')],
 }
 
+const STEP_TITLES = ['Subject facts', 'Area price feel', 'Ceiling', 'Same side of road and river', 'Similar size, type, era',
+  'Condition of each comp', 'Sold, days on market, recency', 'Flip history', 'Best comp is the anchor', 'Second comp to balance',
+  'Size adjustment, conservative', 'Repairs', 'Save the calcs']
+const TOOL_STEPS = [6, 9, 12]
+const MODELS = ['anthropic/claude-haiku-5-5', 'anthropic/claude-sonnet-5-5', 'openai-codex/gpt-6-luna', 'antigravity/gemini-3-8-flash',
+  'inco/deepseek-v4.1-flash', 'hf/Qwen/Qwen3-235B-A22B-Instruct-2507']
+
 const tab = ref('steps')
 const steps = ref([])
 const run = ref(null)
@@ -166,6 +210,9 @@ const changes = ref([])
 const why = ref('')
 const reasonType = ref('')
 const saving = ref(false)
+const setup = ref({})
+const editing = ref(null)
+const form = ref({})
 const scroller = ref(null)
 const input = ref(null)
 const newChatId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -176,6 +223,66 @@ const when = (d) => (d ? new Date(d.replace(' ', 'T')).toLocaleString([], { mont
 const rows = () => props.view?.rows?.() || []
 const byAddress = (a) => rows().find((c) => addressMatchKey(c.address) === addressMatchKey(a))
 const street = (c) => (c?.address || '').split(',')[0]
+
+// The 13 step cards: the last run's text, or just titles before any run, so steps can be changed first.
+const cards = computed(() => (steps.value.length ? steps.value : STEP_TITLES.map((title, i) => ({ n: i + 1, title, text: '' }))))
+const models = computed(() => run.value?.models || MODELS)
+const conf = (n) => setup.value[String(n)] || {}
+const toolOf = (n) => (TOOL_STEPS.includes(n) ? conf(n).tool || 'jev' : 'code')
+const toolLabel = (t) => (t === 'jev' ? 'Jev' : t === 'code' ? __('Rule') : t.split(':').pop().split('/').pop())
+const editable = (n) => TOOL_STEPS.includes(n) || n === 5 || n === 7
+function settingText(n) {
+  const c = conf(n)
+  if (n === 5 && c.size_band) return __('Size band: within {0}%', [Math.round(c.size_band * 100)])
+  if (n === 7 && c.max_mi) return __('Radius: up to {0} mi', [c.max_mi])
+  return c.note ? __('Team rule: {0}', [c.note]) : ''
+}
+function editStep(n) {
+  if (editing.value === n) return (editing.value = null)
+  const c = conf(n)
+  const t = toolOf(n)
+  const known = ['jev', 'code', ...models.value.map((m) => 'model:' + m)].includes(t)
+  form.value = { tool: known ? t : 'other', other: known ? '' : t.replace(/^model:/, ''), note: c.note || '',
+    size_band: Math.round((c.size_band || 0.3) * 100), max_mi: c.max_mi || 2, why: '' }
+  editing.value = n
+}
+async function loadSetup() {
+  try {
+    setup.value = (await call('crm.api.ai_pricer.step_setup')) || {}
+  } catch {
+    /* Ask AI off */
+  }
+}
+loadSetup()
+
+// One step change for the team (from the card or from chat), logged on this lead with its reason.
+async function changeStep(n, fields, reason, reasonType) {
+  const r = await call('crm.api.ai_pricer.save_step', { n, reason, reason_type: reasonType, lead: props.lead, chat: chatId, ...fields })
+  setup.value = r.setup || setup.value
+  for (const t of r.lines || []) messages.value.push({ role: 'user', kind: 'change', text: t })
+  return (r.lines || []).length
+}
+async function saveStep(n) {
+  const f = form.value
+  const fields = {}
+  if (TOOL_STEPS.includes(n)) {
+    fields.tool = f.tool === 'other' ? 'model:' + f.other.trim() : f.tool
+    fields.note = f.note
+  } else if (n === 5) fields.size_band = Number(f.size_band) / 100
+  else if (n === 7) fields.max_mi = Number(f.max_mi)
+  saving.value = true
+  try {
+    const changed = await changeStep(n, fields, f.why.trim(), '')
+    editing.value = null
+    if (tab.value === 'changes') loadChanges()
+    if (changed) runSteps()
+    else toast.info(__('Nothing changed'))
+  } catch (e) {
+    toast.error(e?.messages?.[0] || e?.message || __('Could not save the step.'))
+  } finally {
+    saving.value = false
+  }
+}
 
 // What the page shows now, and what the agent last put there. Diffs need a reason.
 function snapshot() {
@@ -246,10 +353,10 @@ async function applyRun(d) {
   await settle()
 }
 
-async function runSteps() {
+async function runSteps(opts) {
   if (running.value) return
   running.value = true
-  tab.value = 'steps'
+  if (opts?.stay !== true) tab.value = 'steps'
   try {
     const { job } = await call('crm.api.ai_pricer.ask', { lead: props.lead, kind: 'decide', chat: chatId })
     const r = await poll(job)
@@ -313,9 +420,18 @@ function pageText() {
 
 // Apply what the agent said to change, and log each one with the rep's message as the reason.
 async function applyActions(actions, question) {
-  if (actions?.length) await props.view?.openCalc?.()
+  let rerun = false
+  for (const a of (actions || []).filter((x) => x.do === 'step')) {
+    const f = Object.fromEntries(['tool', 'note', 'size_band', 'max_mi'].filter((k) => k in a).map((k) => [k, a[k]]))
+    rerun = (await changeStep(Number(a.n), f, question, __('Chat')).catch((e) => {
+      messages.value.push({ role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not change step {0}.', [a.n]) })
+      return 0
+    })) || rerun
+  }
+  actions = (actions || []).filter((x) => x.do !== 'step')
+  if (actions.length) await props.view?.openCalc?.()
   const calc = props.view?.calc?.()
-  for (const a of actions || []) {
+  for (const a of actions) {
     const before = snapshot()
     let d = null
     if (a.do === 'repairs_psf' && Number(a.value)) {
@@ -335,6 +451,7 @@ async function applyActions(actions, question) {
     if (d) await logChange(d, question, __('Chat'), 'Teach the agent').catch(() => {})
   }
   if (baseline.value) await settle()
+  if (rerun) runSteps({ stay: true })
 }
 
 async function send() {

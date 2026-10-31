@@ -46,6 +46,8 @@ DEFAULT_USERS = ("*",)
 MAX_QUESTION = 2000
 MAX_NOTES = 6
 MAX_PAGE = 4000
+SETUP_KEY = "comp_steps_setup"     # team-wide: how each of the 13 steps runs (tool, note, setting)
+TOOL_STEPS = (6, 9, 12)
 COMMENT_TITLE = "AI comping tool analysis"
 
 
@@ -207,6 +209,7 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		"history": hist,
 		"context": context,
 		"page": str(page or "")[:MAX_PAGE],
+		"setup": step_setup_dict() if kind in ("ask", "decide") else {},
 		"user": frappe.session.user,
 	}
 
@@ -403,6 +406,79 @@ def save_comment(lead: str, job: str):
 	)
 	doc.insert(ignore_permissions=True)
 	return {"comment": getattr(doc, "name", None)}
+
+
+def step_setup_dict() -> dict:
+	try:
+		d = json.loads(frappe.db.get_default(SETUP_KEY) or "{}")
+	except ValueError:
+		d = {}
+	return d if isinstance(d, dict) else {}
+
+
+@frappe.whitelist()
+def step_setup():
+	"""How each step runs now, for the rail's step cards: {"12": {"tool": "jev", "note": "..."}, "5": {...}}."""
+	_guard()
+	return step_setup_dict()
+
+
+def _tool_ok(t: str) -> bool:
+	return t in ("jev", "code") or (t.startswith("model:") and 6 < len(t) <= 120 and " " not in t)
+
+
+def _describe(n: int, key: str, v) -> str:
+	if key == "tool":
+		return {"jev": "Jev", "code": "Rule (code)"}.get(v or "jev", str(v).split(":", 1)[-1])
+	if key == "size_band":
+		return f"+-{float(v or 0.30):.0%}"
+	if key == "max_mi":
+		return f"{float(v or 2):g} mi"
+	return v or ""
+
+
+@frappe.whitelist(methods=["POST"])
+def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None, reason_type="", lead=None, chat=None):
+	"""Change how one of the 13 steps runs, for the whole team. Needs a reason; each change is logged on the lead
+	(chat + Changes tab) like a value override, so the team can see who changed a step and why."""
+	_guard()
+	n = int(n)
+	reason = (reason or "").strip()[:MAX_QUESTION]
+	if not reason:
+		frappe.throw(_("Say why you changed the step."))
+	setup = step_setup_dict()
+	cur = dict(setup.get(str(n)) or {})
+	new = {}
+	if tool is not None:
+		if n not in TOOL_STEPS or not _tool_ok(tool):
+			frappe.throw(_("Step {0} cannot use {1}.").format(n, tool))
+		new["tool"] = tool
+	if note is not None:
+		if n not in TOOL_STEPS:
+			frappe.throw(_("Only steps 6, 9 and 12 take a team rule."))
+		new["note"] = str(note).strip()[:500]
+	if size_band is not None:
+		if n != 5 or not 0.05 <= float(size_band) <= 1:
+			frappe.throw(_("Size band is step 5, between 5% and 100%."))
+		new["size_band"] = round(float(size_band), 2)
+	if max_mi is not None:
+		if n != 7 or not 0.25 <= float(max_mi) <= 5:
+			frappe.throw(_("Radius is step 7, between 0.25 and 5 miles."))
+		new["max_mi"] = round(float(max_mi), 2)
+	changed = {k: v for k, v in new.items() if cur.get(k) != v}
+	if not changed:
+		return {"setup": setup, "lines": []}
+	setup[str(n)] = {**cur, **changed}
+	frappe.db.set_default(SETUP_KEY, json.dumps(setup))
+	lines = []
+	label = {"tool": "tool", "note": "team rule", "size_band": "size band", "max_mi": "radius"}
+	for k, v in changed.items():
+		what = f"Step {n} {label[k]}"
+		if lead:
+			lines.append(log_change(lead, reason, what, _describe(n, k, cur.get(k)), _describe(n, k, v), step=n,
+			                        reason_type=reason_type, chat=chat)["text"])
+	frappe.db.commit()
+	return {"setup": setup, "lines": lines}
 
 
 CHANGE_KEYS = ("step", "changed", "old_value", "new_value", "reason_type", "scope")
