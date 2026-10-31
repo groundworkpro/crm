@@ -233,6 +233,7 @@ async function settle() {
 async function applyRun(d) {
   run.value = d
   steps.value = d.steps || []
+  await props.view?.openCalc?.()
   props.view?.calc?.()?.prefill?.({ arv: Number(d.arv) || 0, rehabPsf: Number(d.repairs?.per_sf) || 30, mult: 2 })
   const marks = {}
   for (const u of d.comps_used || []) {
@@ -312,6 +313,7 @@ function pageText() {
 
 // Apply what the agent said to change, and log each one with the rep's message as the reason.
 async function applyActions(actions, question) {
+  if (actions?.length) await props.view?.openCalc?.()
   const calc = props.view?.calc?.()
   for (const a of actions || []) {
     const before = snapshot()

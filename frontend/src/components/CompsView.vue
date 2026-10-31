@@ -3580,6 +3580,12 @@ defineExpose({
   subject: () => data.value?.subject || null,
   ready: () => Boolean(data.value?.comps),
   calc: () => calcRef.value,
+  // The steps fill the calculator, so it has to be on screen (not folded, not full map).
+  openCalc: async () => {
+    if (compsFocusMap.value) toggleCompsFocusMap()
+    calcOpen.value = true
+    await nextTick()
+  },
   setCompState,
   markSteps: (m) => (stepsUsed.value = m || {}),
 })
