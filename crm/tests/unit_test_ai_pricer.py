@@ -263,5 +263,38 @@ class AiCorrectionTest(_LogBase):
 		self.assertEqual(self._suggestions(), [])
 
 
+
+class CompsPageChangeTest(AiCorrectionTest):
+	"""The 13-step run and a rep's override of what it filled, with the reason."""
+
+	def test_decide_job_carries_page_and_logs_summary(self):
+		jid = ai_pricer.ask("CRM-LEAD-1", "decide", page="Repairs $30/sf")["job"]
+		job = json.loads(self.r.lists[ai_pricer.QUEUE][0])
+		self.assertEqual((job["kind"], job["page"]), ("decide", "Repairs $30/sf"))
+		self.assertEqual(self.rows[0]["text"], "Run the 13 steps")
+		d = {"arv": 210000, "arv_low": 200000, "arv_high": 230000, "confidence": "med", "repairs": {"per_sf": 30},
+		     "comps_used": [{"address": "2503 E 24th St", "role": "anchor", "adjusted": 211395}], "steps": []}
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "decide": d})
+		ai_pricer.get_job(jid)
+		self.assertIn("ARV $210,000", self.rows[1]["text"])
+		self.assertIn("2503 E 24th St (anchor) $211,395", self.rows[1]["text"])
+		row = types.SimpleNamespace(role="ai", text="x", job=jid, kind="decide", error=0, answer=self.rows[1]["answer"])
+		self.assertEqual(ai_pricer._history_row(row)["decide"]["arv"], 210000)
+
+	def test_change_needs_reason_and_lands_in_chat_and_suggestions(self):
+		with self.assertRaises(Exception):
+			ai_pricer.log_change("CRM-LEAD-1", "  ", "Repairs", "$30/sf", "$45/sf", step=12)
+		self.assertEqual(self.rows, [])
+		r = ai_pricer.log_change("CRM-LEAD-1", "Roof is shot", "Repairs", "$30/sf", "$45/sf", step="12",
+		                         reason_type="Photos show it", scope="Teach the agent", chat="e" * 32)
+		chat = [x for x in self.rows if x.get("doctype") == ai_pricer.CHAT_DOCTYPE]
+		(s,) = self._suggestions()
+		self.assertEqual(r["text"], "Changed Repairs: $30/sf -> $45/sf. Why: Photos show it: Roof is shot")
+		self.assertEqual((chat[0]["kind"], chat[0]["text"], chat[0]["chat"]), ("change", r["text"], "e" * 32))
+		self.assertEqual((s["source"], s["step"], s["old_value"], s["new_value"], s["scope"], s["correction"]),
+		                 ("Comps page", 12, "$30/sf", "$45/sf", "Teach the agent", "Roof is shot"))
+		self.assertTrue(s["lesson"].startswith("Step 12: Changed Repairs"))
+
+
 if __name__ == "__main__":
 	unittest.main()

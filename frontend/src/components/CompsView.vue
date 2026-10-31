@@ -575,7 +575,7 @@
                 :subject="data?.subject || null"
                 :active="hoveredComp === c.name"
                 :can-tag="canTagTypes"
-                :ai="ai.used.value[c.name] || null"
+                :ai="ai.used.value[c.name] || stepsUsed[c.name] || null"
                 :ref="(el) => setCardRef(c.name, el)"
                 @hover="hoverFromCard"
                 @open="openCompDetail"
@@ -3572,8 +3572,16 @@ function scrollHost(el) {
  * Observing the element means every show, hide and window resize fixes itself
  * and no host has to remember to tell us it revealed the map.
  */
+// The 13-steps rail on the comps page (CompStepsRail.vue) reads and fills the page through these.
+const stepsUsed = ref({})
 defineExpose({
   saveCalcs: () => calcRef.value?.save?.() || Promise.resolve(),
+  rows: () => [...comps.value, ...discarded.value],
+  subject: () => data.value?.subject || null,
+  ready: () => Boolean(data.value?.comps),
+  calc: () => calcRef.value,
+  setCompState,
+  markSteps: (m) => (stepsUsed.value = m || {}),
 })
 
 function observeMapSize() {

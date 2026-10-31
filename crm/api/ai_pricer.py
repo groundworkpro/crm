@@ -45,6 +45,7 @@ TTL = 86400
 DEFAULT_USERS = ("*",)
 MAX_QUESTION = 2000
 MAX_NOTES = 6
+MAX_PAGE = 4000
 COMMENT_TITLE = "AI comping tool analysis"
 
 
@@ -92,6 +93,12 @@ def _clean_chat(chat) -> str:
 def _summary(answer: dict) -> str:
 	"""One readable line for a price card; the full card is kept as JSON beside it."""
 	money = lambda n: f"${round(n):,}" if isinstance(n, (int, float)) else "?"  # noqa: E731
+	if "steps" in answer:
+		comps = "; ".join(f"{c.get('address')} ({c.get('role')}) {money(c.get('adjusted'))}" for c in answer.get("comps_used") or [])
+		return (
+			f"Ran the 13 steps: ARV {money(answer.get('arv'))} ({money(answer.get('arv_low'))}-{money(answer.get('arv_high'))}), "
+			f"{answer.get('confidence')} confidence, repairs ${(answer.get('repairs') or {}).get('per_sf')}/sf. Comps: {comps}"
+		)
 	offers = answer.get("offers") or {}
 	comps = "; ".join(f"{c.get('address')} {money(c.get('price'))}" for c in answer.get("comps_used") or [])
 	return (
@@ -120,7 +127,7 @@ def _log_reply(job_id: str, result: dict):
 		return
 	meta = json.loads(raw)
 	question = meta.pop("question", "")
-	answer = result.get("answer")
+	answer = result.get("answer") or result.get("decide")
 	error = result.get("status") == "error"
 	_write_log(
 		{
@@ -178,8 +185,8 @@ def _notes(lead: str) -> str:
 	return "\n".join(out)
 
 
-def build_job(kind: str, lead: str, address: str, question: str = "", history=None, context: str = "") -> dict:
-	if kind not in ("price", "ask"):
+def build_job(kind: str, lead: str, address: str, question: str = "", history=None, context: str = "", page: str = "") -> dict:
+	if kind not in ("price", "ask", "decide"):
 		frappe.throw(_("Unknown request {0}.").format(kind))
 	if not address:
 		frappe.throw(_("This lead has no property address to price."))
@@ -199,6 +206,7 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		"question": question,
 		"history": hist,
 		"context": context,
+		"page": str(page or "")[:MAX_PAGE],
 		"user": frappe.session.user,
 	}
 
@@ -221,7 +229,7 @@ def lead_info(lead: str):
 
 
 @frappe.whitelist(methods=["POST"])
-def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None):
+def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None, page: str = ""):
 	_guard()
 	frappe.has_permission("CRM Lead", "read", lead, throw=True)
 	if isinstance(history, str):
@@ -229,13 +237,13 @@ def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=N
 	if not _worker_up():
 		frappe.throw(_("The pricer is offline right now (agentbox worker not running). Try again in a minute."))
 	doc = frappe.get_doc("CRM Lead", lead)
-	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "")
+	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "", page)
 	_push(job)
 	meta = {"chat": _clean_chat(chat), "lead": lead, "user": job["user"], "kind": kind, "job": job["id"]}
 	if _log_supported():
 		r, base = _redis()
 		base.set(r, LOG + job["id"], json.dumps({**meta, "question": job["question"]}), ex=TTL)
-		_write_log({**meta, "role": "user", "text": job["question"] or "Price this house"})
+		_write_log({**meta, "role": "user", "text": job["question"] or ("Run the 13 steps" if kind == "decide" else "Price this house")})
 	return {"job": job["id"], "chat": meta["chat"]}
 
 
@@ -246,7 +254,7 @@ def _history_row(row) -> dict:
 		out["error"] = True
 	elif row.role == "ai" and row.answer:
 		try:
-			out["result"] = json.loads(row.answer)
+			out["decide" if row.kind == "decide" else "result"] = json.loads(row.answer)
 		except ValueError:
 			pass
 	return out
@@ -395,6 +403,54 @@ def save_comment(lead: str, job: str):
 	)
 	doc.insert(ignore_permissions=True)
 	return {"comment": getattr(doc, "name", None)}
+
+
+CHANGE_KEYS = ("step", "changed", "old_value", "new_value", "reason_type", "scope")
+
+
+@frappe.whitelist(methods=["POST"])
+def log_change(lead: str, reason: str, changed: str, old_value="", new_value="", step=None, reason_type="",
+               scope="Teach the agent", chat=None, job=None):
+	"""A rep overrode a value the 13 steps filled on the comps page. The reason is required; the change goes in the
+	lead's chat (so the agent and the team see it) and in CRM AI Suggestion (so it can be reviewed and taught)."""
+	from crm.api import ai_suggestions
+
+	_guard()
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	reason = (reason or "").strip()[:MAX_QUESTION]
+	if not reason:
+		frappe.throw(_("Say why you changed it."))
+	change = {"step": step, "changed": changed, "old_value": old_value, "new_value": new_value,
+	          "reason_type": reason_type, "scope": scope}
+	line = f"Changed {changed}: {old_value or '(empty)'} -> {new_value or '(empty)'}. Why: {reason_type + ': ' if reason_type else ''}{reason}"
+	user = frappe.session.user
+	_write_log({"chat": _clean_chat(chat), "lead": lead, "user": user, "kind": "change", "job": job, "role": "user", "text": line})
+	name = ai_suggestions.record(
+		"Comps page", user, reason, lead=lead, address=_address(frappe.get_doc("CRM Lead", lead)),
+		lesson=f"Step {step}: {line}" if step else line, chat=chat, job=job, change=change,
+	)
+	if name:
+		frappe.db.commit()
+	return {"ok": bool(name), "name": name if isinstance(name, str) else None, "text": line}
+
+
+@frappe.whitelist()
+def changes(lead: str):
+	"""Every comps page change on this lead, newest first: who, what, from, to, why."""
+	from crm.api import ai_suggestions
+
+	_guard()
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	if not ai_suggestions.supported():
+		return []
+	return frappe.get_all(
+		ai_suggestions.DOCTYPE,
+		filters={"lead": lead, "source": "Comps page"},
+		fields=["name", "creation", "user", "status", "correction", *CHANGE_KEYS],
+		order_by="creation desc",
+		limit=100,
+		ignore_permissions=True,
+	)
 
 
 @frappe.whitelist()

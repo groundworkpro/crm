@@ -1629,13 +1629,16 @@ async function save() {
   }
 }
 
-/** Ask AI handoff: put the AI's ARV and repair tier in the first cash column. */
-function prefill({ arv, rehabPsf, mult }) {
+/** Ask AI handoff: put the AI's ARV and repair tier in the first cash column.
+ *  Keys left undefined are kept, so the steps rail can set one value at a time. */
+function prefill(v) {
   kind.value = 'cash'
-  Object.assign(books.cash.s[0], { arv, rehabPsf, mult })
+  Object.assign(books.cash.s[0], Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined)))
 }
+/** What the steps rail compares against what the agent filled. */
+const current = () => ({ arv: Number(books.cash.s[0].arv) || 0, rehabPsf: Number(books.cash.s[0].rehabPsf) || 0 })
 
-defineExpose({ save, canSave, prefill })
+defineExpose({ save, canSave, prefill, current })
 
 function onKeys(e) {
   if (e.key === 'Escape' && menuFor.value >= 0) {

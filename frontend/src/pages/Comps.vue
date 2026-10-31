@@ -5,6 +5,13 @@
     </template>
     <template #right-header>
       <Button
+        v-if="stepsOn"
+        :label="railOpen ? __('Hide steps') : __('Steps and chat')"
+        iconLeft="list"
+        :title="__('The 13 comping steps, and a chat with the agent') + ' (T, /)'"
+        @click="railOpen = !railOpen"
+      />
+      <Button
         v-if="lead"
         :label="__('Open lead')"
         iconLeft="external-link"
@@ -18,8 +25,11 @@
        liens card cannot clip anything. Hosts that scroll of their own (the
        old comps page) made the phone paint a desktop form with a thumbnail
        map. -->
-  <div class="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-5 sm:py-4">
-    <CompsView v-if="leadId" :lead="leadId" :address="address" page-mode />
+  <div class="flex min-h-0 flex-1 gap-3 overflow-hidden px-3 py-3 sm:px-5 sm:py-4">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <CompsView v-if="leadId" ref="viewRef" :lead="leadId" :address="address" page-mode />
+    </div>
+    <CompStepsRail v-if="stepsOn && railOpen" ref="railRef" :lead="leadId" :address="address" :view="viewRef" class="hidden lg:flex" />
   </div>
 </template>
 
@@ -34,13 +44,34 @@
  */
 import LayoutHeader from '@/components/LayoutHeader.vue'
 import CompsView from '@/components/CompsView.vue'
-import { Breadcrumbs, Button, createResource } from 'frappe-ui'
-import { computed, onMounted, onUnmounted } from 'vue'
+import CompStepsRail from '@/components/CompStepsRail.vue'
+import { Breadcrumbs, Button, call, createResource } from 'frappe-ui'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
 import { useRouter } from 'vue-router'
 import { sidebarCollapsedOverride } from '@/composables/settings'
 
 const props = defineProps({ leadId: { type: String, required: true } })
 const router = useRouter()
+
+// The 13-steps rail, for the people Ask AI is turned on for. T opens Steps, / opens Chat.
+const viewRef = ref(null)
+const railRef = ref(null)
+const stepsOn = ref(false)
+const railOpen = ref(true)
+call('crm.api.ai_pricer.status').then((r) => (stepsOn.value = !!r?.enabled)).catch(() => {})
+async function openRail(tab) {
+  railOpen.value = true
+  await nextTick()
+  railRef.value?.show(tab)
+}
+useKeyboardShortcuts({
+  active: () => stepsOn.value,
+  shortcuts: [
+    { keys: ['t', 'T'], action: () => openRail('steps') },
+    { keys: '/', action: () => openRail('chat') },
+  ],
+})
 
 // This page is a map. Every pixel the nav holds is a pixel the map does not get,
 // and the page is opened in its own tab from the lead -- nobody arrives here to

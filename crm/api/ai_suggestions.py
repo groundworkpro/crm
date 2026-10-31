@@ -28,7 +28,9 @@ from frappe import _
 DOCTYPE = "CRM AI Suggestion"
 CHAT_DOCTYPE = "CRM AI Chat Message"
 STATUSES = ("New", "Accepted", "Rejected", "Added to skill")
-SOURCES = ("Disagree", "Chat")
+SOURCES = ("Disagree", "Chat", "Comps page")
+SCOPES = ("Teach the agent", "This house only")
+CHAT_KINDS = ("price", "ask", "decide", "change")
 MAX_TEXT = 8000
 
 FIELDS = [
@@ -52,6 +54,15 @@ FIELDS = [
 	 "in_list_view": 1, "read_only": 1},
 	{"fieldname": "context", "label": "AI's math / reply", "fieldtype": "Long Text", "read_only": 1},
 	{"fieldname": "review_note", "label": "Review note", "fieldtype": "Small Text"},
+	# Comps page changes: a rep overriding a value the 13 steps filled, with the reason.
+	{"fieldname": "sec_change", "label": "Comps page change", "fieldtype": "Section Break"},
+	{"fieldname": "step", "label": "Step", "fieldtype": "Int", "in_standard_filter": 1, "read_only": 1},
+	{"fieldname": "changed", "label": "What changed", "fieldtype": "Data", "read_only": 1},
+	{"fieldname": "old_value", "label": "Agent's value", "fieldtype": "Data", "read_only": 1},
+	{"fieldname": "new_value", "label": "Rep's value", "fieldtype": "Data", "read_only": 1},
+	{"fieldname": "col_change", "fieldtype": "Column Break"},
+	{"fieldname": "reason_type", "label": "Why (kind)", "fieldtype": "Data", "read_only": 1},
+	{"fieldname": "scope", "label": "Scope", "fieldtype": "Select", "options": "\n".join(SCOPES), "read_only": 1},
 ]
 
 
@@ -67,10 +78,14 @@ def _num(v):
 
 
 def build_row(source: str, user: str, correction: str, lead=None, address="", lesson="", ai_arv=None,
-              rep_arv=None, context="", chat=None, job=None) -> dict:
+              rep_arv=None, context="", chat=None, job=None, change=None) -> dict:
 	if source not in SOURCES:
 		raise ValueError(source)
+	change = change or {}
 	return {
+		**{k: str(change.get(k) or "")[:140] for k in ("changed", "old_value", "new_value", "reason_type") if change.get(k)},
+		**({"step": int(change["step"])} if str(change.get("step") or "").isdigit() else {}),
+		**({"scope": change["scope"]} if change.get("scope") in SCOPES else {}),
 		"doctype": DOCTYPE,
 		"status": "New",
 		"source": source,
@@ -174,19 +189,37 @@ def set_status(names, status: str, note: str = ""):
 	return {"updated": done}
 
 
+def _widen_options(doctype: str, fieldname: str, options, doc=None) -> bool:
+	"""Add new Select options to an existing field; saves only when it loaded the doc itself."""
+	if not frappe.db.exists("DocType", doctype):
+		return False
+	own = doc is None
+	doc = doc or frappe.get_doc("DocType", doctype)
+	field = next((f for f in doc.fields if f.fieldname == fieldname), None)
+	have = (field.options or "").split("\n") if field else []
+	if not field or all(o in have for o in options):
+		return False
+	field.options = "\n".join(have + [o for o in options if o not in have])
+	if own:
+		doc.save()
+	return True
+
+
 def ensure_doctype():
 	"""Create or extend the doctype (idempotent). bench execute crm.api.ai_suggestions.ensure_doctype"""
 	if frappe.session.user != "Administrator":
 		frappe.throw(_("Run this with bench execute."), frappe.PermissionError)
+	_widen_options(CHAT_DOCTYPE, "kind", CHAT_KINDS)
 	if supported():
 		doc = frappe.get_doc("DocType", DOCTYPE)
 		have = {f.fieldname for f in doc.fields}
 		missing = [f for f in FIELDS if f["fieldname"] not in have]
 		for f in missing:
 			doc.append("fields", f)
-		if missing:
+		widened = _widen_options(DOCTYPE, "source", SOURCES, doc)
+		if missing or widened:
 			doc.save()
-		return {"ok": True, "added": [f["fieldname"] for f in missing]}
+		return {"ok": True, "added": [f["fieldname"] for f in missing], "sources": widened}
 	frappe.get_doc(
 		{
 			"doctype": "DocType",
