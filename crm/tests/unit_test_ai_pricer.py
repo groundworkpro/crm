@@ -312,6 +312,7 @@ class CompsPageChangeTest(AiCorrectionTest):
 			self.assertEqual(r["lines"][0], "Changed Step 12 tool: Jev -> anthropic/claude-sonnet-5-5. Why: No photos: be safe")
 			self.assertEqual(len(self._suggestions()), 2)
 			self.assertEqual(ai_pricer.save_step(12, "again", note="Pre-1950: full rehab")["lines"], [])
+			self.assertEqual(ai_pricer.save_step(9, "same", tool="jev", note="", lead="CRM-LEAD-1")["lines"], [])
 			ai_pricer.save_step(5, "tighter", size_band=0.2)
 			ai_pricer.ask("CRM-LEAD-1", "decide")
 			job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])

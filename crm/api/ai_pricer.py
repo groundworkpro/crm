@@ -465,7 +465,8 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 		if n != 7 or not 0.25 <= float(max_mi) <= 5:
 			frappe.throw(_("Radius is step 7, between 0.25 and 5 miles."))
 		new["max_mi"] = round(float(max_mi), 2)
-	changed = {k: v for k, v in new.items() if cur.get(k) != v}
+	default = {"tool": "jev", "note": "", "size_band": 0.3, "max_mi": 2.0}
+	changed = {k: v for k, v in new.items() if cur.get(k, default[k]) != v}
 	if not changed:
 		return {"setup": setup, "lines": []}
 	setup[str(n)] = {**cur, **changed}
