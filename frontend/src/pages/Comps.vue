@@ -58,7 +58,7 @@ const router = useRouter()
 const viewRef = ref(null)
 const railRef = ref(null)
 const stepsOn = ref(false)
-const railOpen = ref(true)
+const railOpen = ref(false)
 call('crm.api.ai_pricer.status').then((r) => (stepsOn.value = !!r?.enabled)).catch(() => {})
 async function openRail(tab) {
   railOpen.value = true
