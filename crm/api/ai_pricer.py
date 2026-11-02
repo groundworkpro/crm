@@ -47,7 +47,8 @@ MAX_QUESTION = 2000
 MAX_NOTES = 6
 MAX_PAGE = 4000
 SETUP_KEY = "comp_steps_setup"     # team-wide: how each of the 13 steps runs (tool, note, setting)
-TOOL_STEPS = (6, 9, 12)
+TOOL_STEPS = tuple(range(1, 14))  # every step takes a tool (Exe, 2026-11-02); 6, 9, 12 default to Jev, the rest to code
+JEV_STEPS = (6, 9, 12)
 COMMENT_TITLE = "AI comping tool analysis"
 
 
@@ -279,7 +280,7 @@ def chat_history(lead: str):
 	user = frappe.session.user
 	last = frappe.get_all(
 		CHAT_DOCTYPE,
-		filters={"lead": lead, "user": user},
+		filters={"lead": lead, "user": user, "chat": ["not like", "avmtrain%"]},  # AVM training runs live on their page
 		fields=["chat"],
 		order_by="creation desc",
 		limit=1,
@@ -427,9 +428,13 @@ def _tool_ok(t: str) -> bool:
 	return t in ("jev", "code") or (t.startswith("model:") and 6 < len(t) <= 120 and " " not in t)
 
 
+def default_tool(n: int) -> str:
+	return "jev" if n in JEV_STEPS else "code"
+
+
 def _describe(n: int, key: str, v) -> str:
 	if key == "tool":
-		return {"jev": "Jev", "code": "Rule (code)"}.get(v or "jev", str(v).split(":", 1)[-1])
+		return {"jev": "Jev", "code": "Rule (code)"}.get(v or default_tool(n), str(v).split(":", 1)[-1])
 	if key == "size_band":
 		return f"+-{float(v or 0.30):.0%}"
 	if key == "max_mi":
@@ -455,7 +460,7 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 		new["tool"] = tool
 	if note is not None:
 		if n not in TOOL_STEPS:
-			frappe.throw(_("Only steps 6, 9 and 12 take a team rule."))
+			frappe.throw(_("Steps are 1 to 13."))
 		new["note"] = str(note).strip()[:500]
 	if size_band is not None:
 		if n != 5 or not 0.05 <= float(size_band) <= 1:
@@ -465,7 +470,7 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 		if n != 7 or not 0.25 <= float(max_mi) <= 5:
 			frappe.throw(_("Radius is step 7, between 0.25 and 5 miles."))
 		new["max_mi"] = round(float(max_mi), 2)
-	default = {"tool": "jev", "note": "", "size_band": 0.3, "max_mi": 2.0}
+	default = {"tool": default_tool(n), "note": "", "size_band": 0.3, "max_mi": 2.0}
 	changed = {k: v for k, v in new.items() if cur.get(k, default[k]) != v}
 	if not changed:
 		return {"setup": setup, "lines": []}

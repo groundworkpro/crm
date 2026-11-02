@@ -89,27 +89,31 @@
             <p v-if="settingText(s.n)" class="mt-1 pl-6 text-xs text-ink-gray-6">{{ settingText(s.n) }}</p>
             <!-- Change how this step runs, for the whole team. The reason goes in the Changes log. -->
             <div v-if="editing === s.n" class="mt-2 space-y-2 rounded bg-surface-gray-1 p-2 pl-6 text-xs">
-              <template v-if="TOOL_STEPS.includes(s.n)">
-                <label class="block text-ink-gray-7">{{ __('Who makes this call') }}
-                  <select v-model="form.tool" class="form-select mt-1 w-full text-sm">
-                    <option value="jev">{{ __('Jev (decision model)') }}</option>
+              <label class="block text-ink-gray-7">{{ __('Who makes this call') }}
+                <select v-model="form.tool" class="form-select mt-1 w-full text-sm">
+                  <optgroup :label="__('Code')">
                     <option value="code">{{ __('Rule (code, no AI)') }}</option>
+                  </optgroup>
+                  <optgroup :label="__('Decision model')">
+                    <option value="jev">{{ __('Jev') }}</option>
+                  </optgroup>
+                  <optgroup :label="__('Language model')">
                     <option v-for="m in models" :key="m" :value="'model:' + m">{{ m }}</option>
                     <option value="other">{{ __('Other model…') }}</option>
-                  </select>
-                </label>
-                <input v-if="form.tool === 'other'" v-model="form.other" class="form-input w-full text-sm" :placeholder="__('provider/model, or hf/org/model')" />
-                <label class="block text-ink-gray-7">{{ __('Team rule for this step (optional)') }}
-                  <textarea v-model="form.note" rows="2" class="form-textarea mt-1 w-full resize-none text-sm" :placeholder="__('e.g. Built before 1950 and no photos: full rehab')" />
-                </label>
-              </template>
-              <label v-else-if="s.n === 5" class="block text-ink-gray-7">{{ __('Comps within this % of the subject size') }}
+                  </optgroup>
+                </select>
+              </label>
+              <p class="text-ink-gray-6">{{ form.tool === 'code' ? __('Code runs the rule as written.') : __('The AI decides: {0}.', [STEP_CALLS[s.n]]) }}</p>
+              <input v-if="form.tool === 'other'" v-model="form.other" class="form-input w-full text-sm" :placeholder="__('provider/model, or hf/org/model')" />
+              <label class="block text-ink-gray-7">{{ __('Team rule for this step (optional, read by the AI)') }}
+                <textarea v-model="form.note" rows="2" class="form-textarea mt-1 w-full resize-none text-sm" :placeholder="__('e.g. Built before 1950 and no photos: full rehab')" />
+              </label>
+              <label v-if="s.n === 5" class="block text-ink-gray-7">{{ __('Comps within this % of the subject size') }}
                 <input v-model.number="form.size_band" type="number" min="5" max="100" step="5" class="form-input mt-1 w-24 text-sm" />
               </label>
-              <label v-else-if="s.n === 7" class="block text-ink-gray-7">{{ __('Farthest radius, miles') }}
+              <label v-if="s.n === 7" class="block text-ink-gray-7">{{ __('Farthest radius, miles') }}
                 <input v-model.number="form.max_mi" type="number" min="0.25" max="5" step="0.25" class="form-input mt-1 w-24 text-sm" />
               </label>
-              <p v-else class="text-ink-gray-6">{{ __('This step is a fixed rule in code. Describe the change in Chat and the agent will draft it for the team.') }}</p>
               <template v-if="editable(s.n)">
                 <textarea v-model="form.why" rows="2" class="form-textarea w-full resize-none text-sm" :placeholder="__('Why the change? The team sees this.')" />
                 <div class="flex gap-2">
@@ -174,6 +178,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { Button, LoadingIndicator, call, toast } from 'frappe-ui'
 import { addressMatchKey } from '@/utils/comps'
+import { JEV_STEPS, MODELS, STEP_CALLS, STEP_TITLES, toolLabel } from '@/utils/compSteps'
 
 const props = defineProps({
   lead: { type: String, required: true },
@@ -191,13 +196,6 @@ const CHIPS = {
   rehabPsf: [__('I saw it in person'), __('Seller told me'), __('Photos show it'), __('Model read it wrong'), __('Company rule')],
   comps: [__('I know the street'), __('Not really updated'), __('Different buyer pool'), __('Bad sale data'), __('Other')],
 }
-
-const STEP_TITLES = ['Subject facts', 'Area price feel', 'Ceiling', 'Same side of road and river', 'Similar size, type, era',
-  'Condition of each comp', 'Sold, days on market, recency', 'Flip history', 'Best comp is the anchor', 'Second comp to balance',
-  'Size adjustment, conservative', 'Repairs', 'Save the calcs']
-const TOOL_STEPS = [6, 9, 12]
-const MODELS = ['anthropic/claude-haiku-5-5', 'anthropic/claude-sonnet-5-5', 'openai-codex/gpt-6-luna', 'antigravity/gemini-3-8-flash',
-  'inco/deepseek-v4.1-flash', 'hf/Qwen/Qwen3-235B-A22B-Instruct-2507']
 
 const tab = ref('steps')
 const steps = ref([])
@@ -228,14 +226,15 @@ const street = (c) => (c?.address || '').split(',')[0]
 const cards = computed(() => (steps.value.length ? steps.value : STEP_TITLES.map((title, i) => ({ n: i + 1, title, text: '' }))))
 const models = computed(() => run.value?.models || MODELS)
 const conf = (n) => setup.value[String(n)] || {}
-const toolOf = (n) => (TOOL_STEPS.includes(n) ? conf(n).tool || 'jev' : 'code')
-const toolLabel = (t) => (t === 'jev' ? 'Jev' : t === 'code' ? __('Rule') : t.split(':').pop().split('/').pop())
-const editable = (n) => TOOL_STEPS.includes(n) || n === 5 || n === 7
+const toolOf = (n) => conf(n).tool || (JEV_STEPS.includes(n) ? 'jev' : 'code')
+const editable = (n) => n >= 1 && n <= 13
 function settingText(n) {
   const c = conf(n)
-  if (n === 5 && c.size_band) return __('Size band: within {0}%', [Math.round(c.size_band * 100)])
-  if (n === 7 && c.max_mi) return __('Radius: up to {0} mi', [c.max_mi])
-  return c.note ? __('Team rule: {0}', [c.note]) : ''
+  const out = []
+  if (n === 5 && c.size_band) out.push(__('Size band: within {0}%', [Math.round(c.size_band * 100)]))
+  if (n === 7 && c.max_mi) out.push(__('Radius: up to {0} mi', [c.max_mi]))
+  if (c.note) out.push(__('Team rule: {0}', [c.note]))
+  return out.join('. ')
 }
 function editStep(n) {
   if (editing.value === n) return (editing.value = null)
@@ -265,11 +264,10 @@ async function changeStep(n, fields, reason, reasonType) {
 async function saveStep(n) {
   const f = form.value
   const fields = {}
-  if (TOOL_STEPS.includes(n)) {
-    fields.tool = f.tool === 'other' ? 'model:' + f.other.trim() : f.tool
-    fields.note = f.note
-  } else if (n === 5) fields.size_band = Number(f.size_band) / 100
-  else if (n === 7) fields.max_mi = Number(f.max_mi)
+  fields.tool = f.tool === 'other' ? 'model:' + f.other.trim() : f.tool
+  fields.note = f.note
+  if (n === 5) fields.size_band = Number(f.size_band) / 100
+  if (n === 7) fields.max_mi = Number(f.max_mi)
   saving.value = true
   try {
     const changed = await changeStep(n, fields, f.why.trim(), '')

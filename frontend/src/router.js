@@ -207,6 +207,17 @@ const routes = [
     props: true,
   },
   {
+    path: '/avm-training',
+    name: 'AvmTraining',
+    component: () => import('@/pages/AvmTraining.vue'),
+  },
+  {
+    path: '/avm-training/:runId',
+    name: 'AvmTrainingRun',
+    component: () => import('@/pages/AvmTraining.vue'),
+    props: true,
+  },
+  {
     path: '/practice/:setId/run/:attemptId',
     name: 'PracticeRun',
     component: () => import('@/pages/PracticeRun.vue'),

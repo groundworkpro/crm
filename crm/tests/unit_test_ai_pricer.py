@@ -303,7 +303,8 @@ class CompsPageChangeTest(AiCorrectionTest):
 			with self.assertRaises(Exception):
 				ai_pricer.save_step(12, " ", tool="code")
 			with self.assertRaises(Exception):
-				ai_pricer.save_step(4, "x", tool="code")
+				ai_pricer.save_step(14, "x", tool="code")
+			self.assertEqual(ai_pricer.save_step(4, "already code", tool="code")["lines"], [])
 			with self.assertRaises(Exception):
 				ai_pricer.save_step(12, "x", tool="rm -rf")
 			r = ai_pricer.save_step("12", "No photos: be safe", tool="model:anthropic/claude-sonnet-5-5",
@@ -314,10 +315,13 @@ class CompsPageChangeTest(AiCorrectionTest):
 			self.assertEqual(ai_pricer.save_step(12, "again", note="Pre-1950: full rehab")["lines"], [])
 			self.assertEqual(ai_pricer.save_step(9, "same", tool="jev", note="", lead="CRM-LEAD-1")["lines"], [])
 			ai_pricer.save_step(5, "tighter", size_band=0.2)
+			r = ai_pricer.save_step(4, "Roads here do not split buyers", tool="jev", note="Side streets never count",
+			                        lead="CRM-LEAD-1")
+			self.assertEqual(r["lines"][0], "Changed Step 4 tool: Rule (code) -> Jev. Why: Roads here do not split buyers")
 			ai_pricer.ask("CRM-LEAD-1", "decide")
 			job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])
-			self.assertEqual((job["setup"]["12"]["tool"], job["setup"]["5"]["size_band"]),
-			                 ("model:anthropic/claude-sonnet-5-5", 0.2))
+			self.assertEqual((job["setup"]["12"]["tool"], job["setup"]["5"]["size_band"], job["setup"]["4"]["tool"]),
+			                 ("model:anthropic/claude-sonnet-5-5", 0.2, "jev"))
 		finally:
 			shim.db.get_default.side_effect = None
 

@@ -14,6 +14,7 @@ import LucideUsersRound from '~icons/lucide/users-round'
 import LucideListChecks from '~icons/lucide/list-checks'
 import LucideCircleDollarSign from '~icons/lucide/circle-dollar-sign'
 import LucideTarget from '~icons/lucide/target'
+import LucideFlaskConical from '~icons/lucide/flask-conical'
 import LucideMapPinHouse from '~icons/lucide/map-pin-house'
 import LucideHardHat from '~icons/lucide/hard-hat'
 
@@ -33,6 +34,8 @@ export const sidebarLinks = [
   { label: 'Today', icon: LucideListChecks, to: 'Today' },
   ...(import.meta.env.DEV ? [{ label: 'Phone Preview', icon: PhoneIcon, to: 'Phone Preview' }] : []),
   { label: 'Practice', icon: LucideTarget, to: 'Practice' },
+  // Rerun the 13 comp steps on many leads and mark steps right or wrong (Exe's AVM training).
+  { label: 'AVM training', icon: LucideFlaskConical, to: 'AvmTraining' },
   { label: 'Dashboard', icon: LucideLayoutDashboard, to: 'Dashboard' },
   { label: 'Leads', icon: LeadsIcon, to: 'Leads' },
   { label: 'Properties', icon: LucideMapPinHouse, to: 'Properties' },
