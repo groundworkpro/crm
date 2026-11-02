@@ -1,6 +1,6 @@
 """AI call-review bot — the daily "Integrity Report" (Groundwork).
 
-Once a day this reviews every recorded sales call from the prior day with Gemini
+Once a day this reviews every recorded sales call from the prior day with an LLM (Groq)
 and reports back to Lance on:
   1. INTEGRITY — anything not fully honest, or "salesy" instead of plainly clear
      (the floor: judged on every call).
@@ -16,8 +16,8 @@ Architecture mirrors the rest of this fork's app-code features:
     reading the key from site_config (`frappe.conf.get`), like the underwriting /
     e-sign features read their tokens.
   - The storage doctype (`CRM Call AI Review`) is an OPS-repo deliverable
-    (`../frappe-crm-deploy`); the `gemini_api_key` site-config value is mirrored from
-    the existing Infisical GEMINI_API_KEY. Everything here guards on
+    (`../frappe-crm-deploy`); the `groq_api_key` site-config value is mirrored from
+    the existing Infisical GROQ_API_KEY. Everything here guards on
     `frappe.db.exists` / `has_field` so it no-ops cleanly on an unprovisioned site.
 
 Reuses `crm.api.call_transcript._build_transcript` for clean rep/lead dialogue.
@@ -34,15 +34,11 @@ from frappe.utils import add_days, get_url, getdate, now_datetime, strip_html, t
 from crm.api.call_transcript import _build_transcript, _last10
 
 # --- config (model is swappable via site_config `call_review_model`) --------------
-# Gemini is used because Groundwork already has GEMINI_API_KEY in Infisical → mirror
-# it to prod site_config as `gemini_api_key`. 2.5 Flash is cheap and matches the ops
-# repo's transcript-chapter usage; bump to `gemini-2.5-pro` via `call_review_model`
-# if the integrity/tone judgment needs more nuance.
-MODEL = "gemini-2.5-flash"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-# Gemini 2.5 counts thinking tokens against maxOutputTokens — keep this generous so
-# the (small) JSON result is never truncated by the model's thinking. We don't pin
-# thinkingConfig so a `gemini-2.5-pro` swap (Pro always thinks) keeps working.
+# Groq gpt-oss-120b (key `groq_api_key` in site_config, from Infisical GROQ_API_KEY).
+# Gemini 2.5 Flash until 2026-11-02, when its prepaid credit ran out.
+MODEL = "openai/gpt-oss-120b"
+LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Reasoning tokens count against this cap — keep it generous so the JSON is never cut off.
 MAX_OUTPUT_TOKENS = 8000
 HTTP_TIMEOUT = 120
 MAX_RETRIES = 3
@@ -115,7 +111,7 @@ overall_flag:
 
 Be fair and concrete. Reps are busy; only flag things that actually matter."""
 
-# Gemini responseSchema dialect (OpenAPI subset): uppercase types, `nullable`,
+# Gemini responseSchema dialect (OpenAPI subset; _json_schema converts it for Groq): uppercase types, `nullable`,
 # `propertyOrdering`, no `additionalProperties`.
 RESULT_SCHEMA = {
 	"type": "OBJECT",
@@ -158,7 +154,7 @@ RESULT_SCHEMA = {
 }
 
 
-# When the reviewer replies, Gemini returns a revised review PLUS the lessons to
+# When the reviewer replies, the LLM returns a revised review PLUS the lessons to
 # remember (global house rules and/or per-contact facts).
 REPLY_SCHEMA = {
 	"type": "OBJECT",
@@ -194,8 +190,8 @@ def run_daily_integrity_report(date: str = None):
 	if not frappe.db.exists("DocType", AI_REVIEW_DOCTYPE):
 		frappe.logger("call_review_ai").info("CRM Call AI Review doctype not provisioned; skipping")
 		return
-	if not (frappe.conf.get("gemini_api_key") or "").strip():
-		frappe.logger("call_review_ai").info("gemini_api_key not configured; skipping")
+	if not (frappe.conf.get("groq_api_key") or "").strip():
+		frappe.logger("call_review_ai").info("groq_api_key not configured; skipping")
 		return
 
 	# Default to yesterday. Calls are stored in Chicago wall-clock (see reports.py /
@@ -259,7 +255,7 @@ def _candidate_calls(start, end):
 # Single-call review (shared by the daily job and the manual endpoint)
 # ---------------------------------------------------------------------------------
 def _review_one(call_log: str):
-	"""Build input → call Gemini → persist one CRM Call AI Review row.
+	"""Build input → call the LLM → persist one CRM Call AI Review row.
 	Returns the parsed+validated result dict, or None if there's no usable
 	transcript."""
 	doc = frappe.get_doc("CRM Call Log", call_log)
@@ -268,7 +264,7 @@ def _review_one(call_log: str):
 		return None
 
 	user_content = _build_llm_input(doc, transcript)
-	result = _normalize_result(_call_gemini(user_content))
+	result = _normalize_result(_call_llm(user_content))
 	_persist_review(doc, result)
 	return result
 
@@ -431,61 +427,69 @@ def _record_memory(items, doc):
 
 
 # ---------------------------------------------------------------------------------
-# Gemini call
+# LLM call (Groq, OpenAI-compatible; moved off Gemini 2026-11-02 when its credit ran out)
 # ---------------------------------------------------------------------------------
-def _call_gemini(user_content, schema=RESULT_SCHEMA, system=SYSTEM_PROMPT):
-	"""POST to the Gemini API with a JSON response schema + the shared system
-	rubric. Returns the parsed JSON object. Raises on persistent failure."""
-	api_key = (frappe.conf.get("gemini_api_key") or "").strip()
-	if not api_key:
-		frappe.throw(_("gemini_api_key is not configured."))
+def _json_schema(node):
+	"""Gemini schema dialect -> strict JSON Schema (lowercase types, nullable as a
+	type union, no propertyOrdering, closed objects)."""
+	out = {}
+	t = node["type"].lower()
+	out["type"] = [t, "null"] if node.get("nullable") else t
+	if "enum" in node:
+		out["enum"] = node["enum"]
+	if t == "object":
+		out["properties"] = {k: _json_schema(v) for k, v in node["properties"].items()}
+		out["required"] = node["required"]
+		out["additionalProperties"] = False
+	if t == "array":
+		out["items"] = _json_schema(node["items"])
+	return out
 
-	model = frappe.conf.get("call_review_model") or MODEL
-	url = GEMINI_URL.format(model=model)
+
+def _call_llm(user_content, schema=RESULT_SCHEMA, system=SYSTEM_PROMPT):
+	"""POST to Groq chat completions with a strict JSON schema + the shared system
+	rubric. Returns the parsed JSON object. Raises on persistent failure."""
+	api_key = (frappe.conf.get("groq_api_key") or "").strip()
+	if not api_key:
+		frappe.throw(_("groq_api_key is not configured."))
+
 	body = {
-		"system_instruction": {"parts": [{"text": system}]},
-		"contents": [{"role": "user", "parts": [{"text": user_content}]}],
-		"generationConfig": {
-			"responseMimeType": "application/json",
-			"responseSchema": schema,
-			"maxOutputTokens": MAX_OUTPUT_TOKENS,
-			"temperature": 0.2,
+		"model": frappe.conf.get("call_review_model") or MODEL,
+		"messages": [{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {"name": "review", "strict": True, "schema": _json_schema(schema)},
 		},
+		# Groq's default output cap is 3,072 tokens, reasoning included — always set it
+		"max_completion_tokens": MAX_OUTPUT_TOKENS,
+		"temperature": 0.2,
 	}
-	# key in a header, not the URL, so it never lands in logs
-	headers = {"content-type": "application/json", "x-goog-api-key": api_key}
+	headers = {"content-type": "application/json", "authorization": f"Bearer {api_key}"}
 
 	last_err = None
 	for attempt in range(MAX_RETRIES):
 		try:
-			resp = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT)
+			resp = requests.post(LLM_URL, headers=headers, json=body, timeout=HTTP_TIMEOUT)
 		except requests.RequestException as e:
 			last_err = e
 			time.sleep(2 ** attempt)
 			continue
 
 		if resp.status_code == 200:
-			data = resp.json()
-			candidates = data.get("candidates") or []
-			if not candidates:
-				reason = (data.get("promptFeedback") or {}).get("blockReason")
-				raise ValueError(f"Gemini returned no candidates (blockReason={reason})")
-			cand = candidates[0]
-			finish = cand.get("finishReason")
-			parts = (cand.get("content") or {}).get("parts") or []
-			text = "".join(p.get("text", "") for p in parts)
-			if not text:
-				raise ValueError(f"Gemini returned empty text (finishReason={finish})")
+			choice = (resp.json().get("choices") or [{}])[0]
+			text = (choice.get("message") or {}).get("content") or ""
+			if choice.get("finish_reason") != "stop" or not text:
+				raise ValueError(f"Groq returned no complete answer (finish_reason={choice.get('finish_reason')})")
 			return json.loads(text)
 
 		# 429 / 5xx → retry with backoff; other 4xx → fail fast
 		if resp.status_code == 429 or resp.status_code >= 500:
-			last_err = Exception(f"Gemini {resp.status_code}: {resp.text[:300]}")
+			last_err = Exception(f"Groq {resp.status_code}: {resp.text[:300]}")
 			time.sleep(2 ** attempt)
 			continue
-		raise Exception(f"Gemini {resp.status_code}: {resp.text[:500]}")
+		raise Exception(f"Groq {resp.status_code}: {resp.text[:500]}")
 
-	raise Exception(f"Gemini call failed after {MAX_RETRIES} attempts: {last_err}")
+	raise Exception(f"Groq call failed after {MAX_RETRIES} attempts: {last_err}")
 
 
 def _clean_issues(raw_issues):
@@ -755,7 +759,7 @@ def reply_to_review(call_log: str, feedback: str):
 		"dispo partner, not a seller'). Return an empty memory_items list if the reply teaches "
 		"nothing reusable. Keep each lesson one concise sentence."
 	)
-	data = _call_gemini(user_content, schema=REPLY_SCHEMA)
+	data = _call_llm(user_content, schema=REPLY_SCHEMA)
 	review = _normalize_result(data.get("review") or {})
 	_persist_review(doc, review, feedback=feedback)
 	learned = _record_memory(data.get("memory_items") or [], doc)
