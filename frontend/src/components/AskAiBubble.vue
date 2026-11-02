@@ -2,12 +2,25 @@
   <!-- Ask AI (mockup 1B): a bubble on every page that opens a chat with the
        property pricer. On a lead page it uses that lead; elsewhere the rep picks one.
        The pricing itself runs on agentbox (crm/api/ai_pricer.py explains why). -->
-  <div v-if="enabled" class="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-3">
+  <!-- Draggable (the bubble or the chat header) and minimizable to a small dot;
+       where it sits and whether it is minimized are kept per browser. The chat
+       opens on whichever side of the bubble has room. -->
+  <div
+    v-if="enabled"
+    class="fixed z-40 flex gap-3"
+    :class="[place.below ? 'flex-col-reverse' : 'flex-col', place.left ? 'items-start' : 'items-end']"
+    :style="anchor"
+  >
     <div
       v-if="open"
-      class="flex h-[min(640px,calc(100vh-7rem))] w-[400px] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-2xl"
+      class="flex w-[400px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-xl border bg-surface-white shadow-2xl"
+      :style="{ height: place.height + 'px' }"
     >
-      <div class="flex items-center gap-2 border-b px-3 py-2.5">
+      <div
+        class="flex cursor-move touch-none select-none items-center gap-2 border-b px-3 py-2.5"
+        :title="__('Drag to move')"
+        @pointerdown="startDrag"
+      >
         <FeatherIcon name="zap" class="h-4 w-4 text-ink-gray-7" />
         <div class="text-base font-semibold text-ink-gray-9">{{ __('Ask AI') }}</div>
         <span
@@ -183,13 +196,37 @@
     </div>
 
     <button
-      class="flex h-12 items-center gap-2 rounded-full bg-surface-gray-7 px-4 text-base font-medium text-ink-white shadow-xl hover:bg-surface-gray-6"
-      :title="__('Ask AI to price a house')"
-      @click="toggle"
+      v-if="mini"
+      ref="bubble"
+      class="flex h-9 w-9 cursor-move touch-none select-none items-center justify-center rounded-full bg-surface-gray-7 text-ink-white opacity-70 shadow-lg hover:opacity-100"
+      :title="__('Show Ask AI (drag to move)')"
+      @pointerdown="startDrag"
+      @click="!wasDrag() && setMini(false)"
     >
-      <FeatherIcon :name="open ? 'chevron-down' : 'zap'" class="h-4 w-4" />
-      {{ __('Ask AI') }}
+      <FeatherIcon name="zap" class="h-4 w-4" />
     </button>
+    <div
+      v-else
+      ref="bubble"
+      class="group flex h-12 cursor-move touch-none select-none items-center rounded-full bg-surface-gray-7 text-base font-medium text-ink-white shadow-xl"
+      @pointerdown="startDrag"
+    >
+      <button
+        class="flex h-full items-center gap-2 rounded-l-full pl-4 pr-3 hover:bg-surface-gray-6"
+        :title="__('Ask AI to price a house (drag to move)')"
+        @click="!wasDrag() && toggle()"
+      >
+        <FeatherIcon :name="open ? (place.below ? 'chevron-up' : 'chevron-down') : 'zap'" class="h-4 w-4" />
+        {{ __('Ask AI') }}
+      </button>
+      <button
+        class="flex h-full items-center rounded-r-full border-l border-white/20 pl-2 pr-3 hover:bg-surface-gray-6"
+        :title="__('Minimize')"
+        @click="!wasDrag() && setMini(true)"
+      >
+        <FeatherIcon name="minus" class="h-4 w-4" />
+      </button>
+    </div>
 
     <ArvFeedbackModal
       v-if="feedbackFor"
@@ -204,7 +241,7 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { Button, FeatherIcon, LoadingIndicator, TextInput, call, toast, getCachedResource } from 'frappe-ui'
 import SaveArvButton from '@/components/SaveArvButton.vue'
@@ -228,6 +265,110 @@ const input = ref(null)
 // Groups this conversation's rows in the server-side transcript (CRM AI Chat Message).
 const newChatId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
 let chatId = newChatId()
+
+// ---- Position, drag and minimize (kept in localStorage, per browser) ----
+const POS_KEY = 'crm-ask-ai-pos'
+const MINI_KEY = 'crm-ask-ai-mini'
+const EDGE = 8
+const bubble = ref(null)
+const mini = ref(localStorage.getItem(MINI_KEY) === '1')
+const pos = reactive({ right: 20, bottom: 20 })
+try {
+  const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null')
+  if (p && Number.isFinite(p.right) && Number.isFinite(p.bottom)) Object.assign(pos, p)
+} catch {}
+const view = reactive({ w: window.innerWidth, h: window.innerHeight })
+
+// Which side of the bubble the chat opens on, and how tall it can be there.
+const bubbleW = ref(132)
+const place = computed(() => {
+  const bh = mini.value ? 36 : 48
+  const above = view.h - pos.bottom - bh - 12 - EDGE
+  const below = pos.bottom - 12 - EDGE
+  const want = Math.min(640, view.h - 112)
+  const isBelow = above < want && below > above
+  return {
+    below: isBelow,
+    left: view.w - pos.right < 400 + EDGE,
+    height: Math.max(260, Math.min(want, isBelow ? below : above)),
+  }
+})
+
+// Pin the corner nearest the bubble, so the chat grows away from it and the
+// bubble itself never moves when the chat opens.
+const anchor = computed(() => {
+  const bh = mini.value ? 36 : 48
+  return {
+    ...(place.value.below ? { top: view.h - pos.bottom - bh + 'px' } : { bottom: pos.bottom + 'px' }),
+    ...(place.value.left ? { left: view.w - pos.right - bubbleW.value + 'px' } : { right: pos.right + 'px' }),
+  }
+})
+
+function clampPos() {
+  const el = bubble.value
+  const w = el?.offsetWidth || 120
+  if (el) bubbleW.value = w
+  const h = el?.offsetHeight || 48
+  pos.right = Math.min(Math.max(pos.right, EDGE), Math.max(EDGE, view.w - w - EDGE))
+  pos.bottom = Math.min(Math.max(pos.bottom, EDGE), Math.max(EDGE, view.h - h - EDGE))
+}
+
+let drag = null
+let dragged = false
+// A click that ends a drag must not also open/minimize.
+const wasDrag = () => {
+  const d = dragged
+  dragged = false
+  return d
+}
+function startDrag(e) {
+  if (e.button !== 0) return
+  if (!bubble.value?.contains(e.target) && e.target.closest('button')) return // header's own buttons
+  drag = { x: e.clientX, y: e.clientY, right: pos.right, bottom: pos.bottom, moved: false }
+  dragged = false
+  window.addEventListener('pointermove', onDrag)
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
+}
+function onDrag(e) {
+  if (!drag) return
+  const dx = e.clientX - drag.x
+  const dy = e.clientY - drag.y
+  if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 5) return
+  drag.moved = true
+  pos.right = drag.right - dx
+  pos.bottom = drag.bottom - dy
+  clampPos()
+}
+function endDrag() {
+  window.removeEventListener('pointermove', onDrag)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+  if (drag?.moved) {
+    dragged = true
+    setTimeout(() => (dragged = false), 0) // only the click from this same pointerup is swallowed
+    localStorage.setItem(POS_KEY, JSON.stringify({ right: Math.round(pos.right), bottom: Math.round(pos.bottom) }))
+  }
+  drag = null
+}
+function onResize() {
+  view.w = window.innerWidth
+  view.h = window.innerHeight
+  clampPos()
+}
+window.addEventListener('resize', onResize)
+watch(bubble, (el) => el && clampPos())
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  endDrag()
+})
+
+function setMini(v) {
+  mini.value = v
+  if (v) open.value = false
+  localStorage.setItem(MINI_KEY, v ? '1' : '0')
+  nextTick(clampPos)
+}
 
 function grow() {
   const el = input.value
