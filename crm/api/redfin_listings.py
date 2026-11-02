@@ -172,6 +172,24 @@ def _iso_date(v):
 		return None
 
 
+#: Redfin's `uiPropertyType` buckets, named the way the comps Type filter and
+#: the pin glyphs read them (same table as the scraper's `_ui_property_type`).
+#: Without this every Redfin listing boarded with no type, and an unknown type
+#: passes the Type filter, so "Single Family" still showed vacant lots
+#: (Exe, 2026-11-02: 52 of 86 Redfin listings near 1468 W 73rd St were land).
+UI_PROPERTY_TYPES = {
+	1: "Single Family", 2: "Condo", 3: "Townhouse",
+	4: "Multi-Family", 5: "Land", 6: "Manufactured",
+}
+
+
+def _property_type(home):
+	try:
+		return UI_PROPERTY_TYPES.get(int(home.get("ui_property_type")))
+	except (TypeError, ValueError):
+		return None
+
+
 def features(homes):
 	"""Listings homes -> the store-feature shape `comp_merge.apply_redfin` reads.
 
@@ -198,6 +216,7 @@ def features(homes):
 				"baths": h.get("baths"),
 				"sqft": h.get("sqft"),
 				"year_built": h.get("year_built"),
+				"property_type": _property_type(h),
 				"mls_status": _mls_status(h),
 				"sold_date": _iso_date(h.get("sold_date")) if sold else None,
 				"url": h.get("url"),

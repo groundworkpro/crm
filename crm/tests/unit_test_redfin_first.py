@@ -81,6 +81,21 @@ class Features(unittest.TestCase):
 		f = rl.features([home(1, "on_market", sold_date=1760400000000)])
 		self.assertIsNone(f[0]["properties"]["sold_date"])
 
+	def test_redfin_type_code_becomes_the_filter_label(self):
+		f = rl.features([home(1, "on_market", ui_property_type=5),
+						 home(2, "on_market", ui_property_type=1),
+						 home(3, "on_market", ui_property_type="4"),
+						 home(4, "on_market")])
+		types = [x["properties"]["property_type"] for x in f]
+		self.assertEqual(types, ["Land", "Single Family", "Multi-Family", None])
+
+	def test_single_family_filter_drops_redfin_land(self):
+		from datetime import date
+		from crm.api import comps
+		f = rl.features([home(1, "on_market", ui_property_type=5)])
+		row = {"property_type": f[0]["properties"]["property_type"], "status": "Active"}
+		self.assertFalse(comps._matches(row, {"property_types": ["Single Family"]}, date.today()))
+
 
 class Finish(unittest.TestCase):
 	def test_a_cached_answer_needs_no_thread(self):
