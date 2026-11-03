@@ -329,9 +329,108 @@ def _report_from_raw(p: dict) -> dict:
 	for key in ("transactions", "loans"):
 		report[key].sort(key=lambda r: r.get("recording_date") or r.get("sale_date") or "", reverse=True)
 	report["current_loans"].sort(key=lambda r: r.get("recording_date") or "", reverse=True)
+	_estimate_loans(report["current_loans"])
 	report["foreclosures"].sort(key=lambda r: r.get("recording_date") or "", reverse=True)
 	report["liens"].sort(key=lambda r: r.get("recording_date") or r.get("filing_date") or "", reverse=True)
 	return report
+
+
+# ---------------------------------------------------------------------------
+# Estimated rate / payment / balance for current loans. County records almost
+# never carry the interest rate (RealEstateAPI sends 0/null), so — like
+# BatchLeads — estimate it as the Freddie Mac 30-yr average (PMMS, FRED
+# MORTGAGE30US, monthly mean) for the month the loan was signed, then amortize
+# the recorded amount over its term. Only gaps are filled; a provider's own
+# figure always wins. Rows get `rate_estimated` so the UI can say so.
+# Refresh the table: see docs/upstream-diff.md ("estimated loan payments").
+# ---------------------------------------------------------------------------
+
+_RATES = None
+
+
+def _rate_table() -> dict:
+	global _RATES
+	if _RATES is None:
+		import os
+
+		path = os.path.join(os.path.dirname(__file__), "mortgage_rates_30y.json")
+		try:
+			with open(path) as f:
+				_RATES = json.load(f)
+		except (OSError, ValueError):
+			_RATES = {}
+	return _RATES
+
+
+def _market_rate(iso_date):
+	"""Average 30-yr fixed rate (%) for the month of `iso_date`, or None."""
+	table = _rate_table()
+	if not iso_date or not table:
+		return None
+	month = iso_date[:7]
+	if month in table:
+		return table[month]
+	keys = sorted(table)
+	if month > keys[-1]:
+		return table[keys[-1]]  # table older than the loan: newest known rate
+	return None  # before 1971
+
+
+def _months_between(start_iso, end_iso):
+	try:
+		sy, sm = int(start_iso[:4]), int(start_iso[5:7])
+		ey, em = int(end_iso[:4]), int(end_iso[5:7])
+	except (TypeError, ValueError):
+		return None
+	return (ey - sy) * 12 + (em - sm)
+
+
+def _is_hud_partial_claim(loan) -> bool:
+	"""FHA partial claim: a junior lien held by HUD — 0% and no monthly payment;
+	it is repaid in full at sale or refinance."""
+	lender = (loan.get("lender") or "").lower()
+	return ("housing & urban" in lender or "housing and urban" in lender or lender == "hud") and (
+		loan.get("position") or ""
+	).lower() != "first"
+
+
+def _estimate_loans(loans, today=None):
+	import datetime
+
+	today = today or datetime.date.today().isoformat()
+	for loan in loans:
+		amount = loan.get("amount")
+		if not amount:
+			continue
+		if _is_hud_partial_claim(loan) and not loan.get("rate"):
+			loan["rate"] = 0
+			loan["rate_estimated"] = True
+			loan["note"] = "HUD partial claim: no interest or monthly payment, repaid at sale/refi"
+			if loan.get("est_balance") is None:
+				loan["est_balance"] = amount
+			continue
+		start = loan.get("doc_date") or loan.get("recording_date")
+		rate = loan.get("rate")
+		if not rate:
+			rate = _market_rate(start)
+			if not rate:
+				continue
+			loan["rate"] = rate
+			loan["rate_estimated"] = True
+		term = loan.get("term_months")
+		if not term and start and loan.get("due_date"):
+			term = _months_between(start, loan["due_date"])
+		if not term or term <= 0:
+			continue
+		r = rate / 100 / 12
+		payment = amount * r / (1 - (1 + r) ** -term)
+		if loan.get("est_payment") is None:
+			loan["est_payment"] = round(payment)
+		if loan.get("est_balance") is None and start:
+			# first payment is due the month after signing
+			paid = min(max((_months_between(start, today) or 0) - 1, 0), term)
+			balance = amount * (1 + r) ** paid - payment * ((1 + r) ** paid - 1) / r
+			loan["est_balance"] = round(max(balance, 0))
 
 
 def _reapi_report(p: dict) -> dict:
@@ -364,6 +463,7 @@ def _reapi_report(p: dict) -> dict:
 			"term_months": _int(m.get("term")) if (m.get("termType") or "Month") == "Month" else None,
 			"rate": _num(m.get("interestRate")),
 			"position": m.get("position"),
+			"doc_date": _iso_date(m.get("documentDate")),
 			"open": m.get("open"),
 			"doc_number": m.get("documentNumber"),
 		}

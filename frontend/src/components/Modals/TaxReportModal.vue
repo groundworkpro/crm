@@ -51,6 +51,17 @@
             :rows="report.current_loans || []"
           />
           <div
+            v-if="(report.current_loans || []).some((l) => l.rate_estimated)"
+            class="-mt-2 space-y-0.5 text-xs text-ink-gray-6"
+          >
+            <div>
+              {{ __('* Rate not on record: estimated from the average 30-year rate when the loan was signed; payment and balance are worked out from it.') }}
+            </div>
+            <div v-for="l in (report.current_loans || []).filter((l) => l.note)" :key="l.recording_date + l.amount">
+              {{ date(l.recording_date) }} · {{ money(l.amount) }}: {{ l.note }}
+            </div>
+          </div>
+          <div
             v-if="report.loan_totals?.open_balance || report.loan_totals?.est_payment"
             class="-mt-2 text-xs text-ink-gray-6"
           >
@@ -149,6 +160,10 @@ const date = (v) => {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : NA
 }
 const percent = (v) => (v ? `${v}%` : NA)
+// Current-loan rate: county records rarely carry one, so the backend estimates
+// it (market average when signed) and flags it; HUD partial claims are 0%.
+const loanRate = (v, row) =>
+  v || (v === 0 && row?.rate_estimated) ? `${v}%${row?.rate_estimated ? '*' : ''}` : NA
 const months = (v) => (v ? String(v) : NA)
 
 const Field = (p) =>
@@ -183,7 +198,7 @@ const RecordTable = (p) =>
                     h(
                       'td',
                       { class: ['px-2 py-1.5 align-top', c[3] ? 'font-semibold' : ''] },
-                      c[2](row[c[1]]),
+                      c[2](row[c[1]], row),
                     ),
                   ),
                 ),
@@ -235,7 +250,7 @@ const currentLoanColumns = [
   [__('Loan Due Date'), 'due_date', date],
   [__('Est. Loan Payment'), 'est_payment', money, true],
   [__('Est. Balance'), 'est_balance', money, true],
-  [__('Interest'), 'rate', percent, true],
+  [__('Interest'), 'rate', loanRate, true],
 ]
 const loanColumns = [
   [__('Recording Date'), 'recording_date', date, true],

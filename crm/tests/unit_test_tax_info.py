@@ -6,7 +6,7 @@ from crm.tests.frappe_shim import install
 
 install()
 
-from crm.api.tax_info import _dd_from_raw, _is_reapi, _parse_property  # noqa: E402
+from crm.api.tax_info import _dd_from_raw, _estimate_loans, _is_reapi, _market_rate, _parse_property  # noqa: E402
 
 
 POPLAR = {
@@ -399,6 +399,83 @@ class LegacyBatchDataTests(unittest.TestCase):
 		self.assertEqual(out["apn"], "LEG-1")
 		self.assertEqual(out["annual_tax"], 1000)
 		self.assertEqual(_dd_from_raw(BATCHDATA)["open_lien_count"], 2)
+
+
+class LoanEstimateTests(unittest.TestCase):
+	"""Records carry no interest rate; estimate it like BatchLeads (Ginger Green, 2026-11-03)."""
+
+	def loans(self):
+		return [
+			{
+				"amount": 310337,
+				"term_months": 360,
+				"doc_date": "2024-07-12",
+				"recording_date": "2024-07-12",
+				"due_date": "2054-08-01",
+				"lender": "Swbc Mortgage Corp",
+				"position": "First",
+				"rate": None,
+			},
+			{
+				"amount": 8207,
+				"term_months": 340,
+				"doc_date": "2025-09-15",
+				"recording_date": "2025-10-07",
+				"lender": "Department Of Housing & Urban Dev",
+				"position": "Second",
+				"rate": None,
+			},
+		]
+
+	def test_market_rate_month_and_beyond_table(self):
+		self.assertEqual(_market_rate("2024-07-12"), 6.85)
+		self.assertIsNotNone(_market_rate("2199-01-01"))
+		self.assertIsNone(_market_rate("1960-01-01"))
+		self.assertIsNone(_market_rate(None))
+
+	def test_first_mortgage_amortized(self):
+		first, hud = self.loans()
+		_estimate_loans([first, hud], today="2026-11-03")
+		self.assertEqual(first["rate"], 6.85)
+		self.assertTrue(first["rate_estimated"])
+		self.assertAlmostEqual(first["est_payment"], 2034, delta=2)  # BatchLeads: $2,054 at 6.95%
+		self.assertTrue(300000 < first["est_balance"] < 310337)
+
+	def test_hud_partial_claim_has_no_payment(self):
+		_, hud = self.loans()
+		_estimate_loans([hud], today="2026-11-03")
+		self.assertEqual(hud["rate"], 0)
+		self.assertIsNone(hud.get("est_payment"))
+		self.assertEqual(hud["est_balance"], 8207)
+
+	def test_provider_values_win(self):
+		loan = dict(self.loans()[0], rate=3.5, est_payment=999, est_balance=1234)
+		_estimate_loans([loan], today="2026-11-03")
+		self.assertEqual((loan["rate"], loan["est_payment"], loan["est_balance"]), (3.5, 999, 1234))
+		self.assertNotIn("rate_estimated", loan)
+
+	def test_term_from_due_date(self):
+		loan = dict(self.loans()[0], term_months=None)
+		_estimate_loans([loan], today="2026-11-03")
+		self.assertIsNotNone(loan["est_payment"])
+
+	def test_reapi_two_loans_in_report(self):
+		rec = dict(
+			REAPI,
+			currentMortgages=[
+				{"amount": 310337, "documentDate": "2024-07-12T00:00:00.000Z", "recordingDate": "2024-07-12T00:00:00.000Z",
+				 "lenderName": "Swbc Mortgage Corp", "position": "First", "interestRate": 0, "term": "360", "termType": "Month",
+				 "maturityDate": "2054-08-01T00:00:00.000Z"},
+				{"amount": 8207, "documentDate": "2025-09-15T00:00:00.000Z", "recordingDate": "2025-10-07T00:00:00.000Z",
+				 "lenderName": "Department Of Housing & Urban Dev", "position": "Second", "interestRate": None,
+				 "term": "340", "termType": "Month", "maturityDate": "2054-08-01T00:00:00.000Z"},
+			],
+		)
+		cur = _dd_from_raw(rec)["report"]["current_loans"]
+		self.assertEqual(cur[1]["lender"], "Swbc Mortgage Corp")
+		self.assertTrue(cur[1]["est_payment"])
+		self.assertEqual(cur[0]["rate"], 0)
+
 
 if __name__ == "__main__":
 	unittest.main()
