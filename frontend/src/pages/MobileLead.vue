@@ -239,6 +239,7 @@
             :setAt="doc.first_call_at"
             @saved="document.reload()"
           />
+          <SequenceStatusCard :lead="leadId" />
           <RefundStatusCard
             :lead="leadId"
             :refundable="doc.custom_refundable"
@@ -359,6 +360,7 @@ import SLASection from '@/components/SLASection.vue'
 import StateRegulationBanner from '@/components/StateRegulationBanner.vue'
 import CustomActions from '@/components/CustomActions.vue'
 import FirstCallReadCard from '@/components/FirstCallReadCard.vue'
+import SequenceStatusCard from '@/components/SequenceStatusCard.vue'
 import RefundStatusCard from '@/components/RefundStatusCard.vue'
 import LeadPhonesCard from '@/components/LeadPhonesCard.vue'
 import PhotosCard from '@/components/PhotosCard.vue'

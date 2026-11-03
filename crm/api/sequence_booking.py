@@ -117,7 +117,7 @@ def cancel_engine_tasks(lead, names=None) -> list:
 		frappe.db.set_value("CRM Task", name, "status", "Canceled")
 	return names
 
-def enroll_next(lead, nxt, from_seq) -> bool:
+def enroll_next(lead, nxt, from_seq, why="follow-up booked") -> bool:
 	"""Enroll `lead` in `nxt` under the runner's chain_next gates: target
 	enabled, lead not converted, lead status inside its lead_statuses, never
 	enrolled in it before. Returns True if enrolled."""
@@ -137,7 +137,7 @@ def enroll_next(lead, nxt, from_seq) -> bool:
 			"lead": lead,
 			"sequence": nxt,
 			"status": "Active",
-			"last_log": "{0} enrolled: follow-up booked, ended {1} early".format(now_datetime(), from_seq),
+			"last_log": "{0} enrolled: {1}, ended {2} early".format(now_datetime(), why, from_seq),
 		}
 	).insert(ignore_permissions=True)
 	return True
