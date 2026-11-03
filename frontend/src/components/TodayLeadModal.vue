@@ -118,6 +118,9 @@
                 :set-at="leadDoc.first_call_at"
                 @saved="loadLead(true)"
               />
+              <!-- Sequences: why a sequence paused, Resume / Move to Long-Term
+                   right from Today (Exe, 2026-11-03) -->
+              <SequenceStatusCard :lead="item.lead" />
             </div>
             <div
               v-else-if="leadLoading"
@@ -203,6 +206,7 @@
                   v-else-if="leadLoading"
                   class="h-40 animate-pulse rounded-lg bg-surface-gray-2"
                 />
+                <SequenceStatusCard v-if="item?.lead" :lead="item.lead" />
               </div>
               <Activities
                 v-if="show && item?.lead"
@@ -251,6 +255,7 @@
 import Activities from '@/components/Activities/Activities.vue'
 import CompsView from '@/components/CompsView.vue'
 import FirstCallReadCard from '@/components/FirstCallReadCard.vue'
+import SequenceStatusCard from '@/components/SequenceStatusCard.vue'
 import ZillowAddressMatch from '@/components/ZillowAddressMatch.vue'
 import DispoBuyerBadges from '@/components/DispoBuyerBadges.vue'
 import { formatPhone } from '@/utils/phoneFormat'
