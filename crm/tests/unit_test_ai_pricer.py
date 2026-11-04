@@ -382,7 +382,7 @@ class CompsPageChangeTest(AiCorrectionTest):
 				self.assertEqual(r["setup"]["12"]["note"], "Full rehab")
 				self.assertNotIn(ai_pricer.SETUP_KEY, store)  # the team setup is untouched
 				sug = self._suggestions()[-1]
-				self.assertEqual((sug["step"], sug["scope"]), (12, "This run only"))
+				self.assertEqual((sug["step"], sug["scope"]), (12, "This house only"))
 				self.assertEqual(ai_pricer.step_setup("CRM-LEAD-1", detail=1)["mine"], ["12"])
 				self.assertEqual(ai_pricer.step_setup(), {})
 				ai_pricer.ask("CRM-LEAD-1", "decide")  # their rerun follows it

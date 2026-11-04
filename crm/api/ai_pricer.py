@@ -608,7 +608,7 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 		if lead:
 			lines.append(log_change(lead, reason, what, _describe(n, k, cur.get(k)), _describe(n, k, v), step=n,
 			                        reason_type=reason_type, chat=chat,
-			                        scope="Teach the agent" if team_wide else "This run only")["text"])
+			                        scope="Teach the agent" if team_wide else "This house only")["text"])
 	frappe.db.commit()
 	return {"setup": setup, "lines": lines, "team_wide": team_wide}
 
