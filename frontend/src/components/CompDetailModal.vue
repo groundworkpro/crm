@@ -294,6 +294,21 @@
                       {{ __('Manual') }}
                     </span>
                   </div>
+                  <div
+                    v-if="zillowSqftDiffers && !editingSqft"
+                    class="mt-0.5 flex items-center gap-1 text-2xs text-ink-amber-3"
+                    :title="__('The table and the offer calc use {0}. Zillow says {1}.', [fact.value, area(zillowSqftDiffers)])"
+                  >
+                    {{ __('Zillow says {0}', [area(zillowSqftDiffers)]) }}
+                    <button
+                      v-if="canEditCompSqft"
+                      type="button"
+                      class="rounded px-1 text-ink-gray-6 underline hover:text-ink-gray-9"
+                      @click="useZillowSqft"
+                    >
+                      {{ __('Use') }}
+                    </button>
+                  </div>
                 </template>
                 <div v-else class="mt-0.5 font-medium text-ink-gray-8">{{ fact.value }}</div>
               </div>
@@ -422,6 +437,28 @@ const compManualSqft = computed(() =>
 const subjectSqft = computed(() =>
   props.subjectMode && props.subject?.sqft_exact && props.subject?.sqft ? props.subject.sqft : null,
 )
+// A comp shows the BOARD's living area — the number the comp table and the
+// offer calc's $/sf use. Zillow's card used to win here, so 121 Parkview Ct read
+// 2,427 sf in this modal and 1,714 in the table (Dennis, 2026-11-04). Zillow's
+// number only fills a blank; when it disagrees it is shown beside it instead.
+const compSqft = computed(() =>
+  props.subjectMode
+    ? null
+    : compManualSqft.value ||
+      Number(props.comp?.square_footage) ||
+      Number(details.value?.sqft) ||
+      null,
+)
+const zillowSqftDiffers = computed(() => {
+  if (props.subjectMode || manualSqft.value) return null
+  const board = Number(props.comp?.square_footage)
+  const z = Number(details.value?.sqft)
+  if (!board || !z || Math.abs(board - z) / board < 0.05) return null
+  return z
+})
+function useZillowSqft() {
+  if (zillowSqftDiffers.value) emit('saveCompSqft', props.comp?.name, Math.round(zillowSqftDiffers.value))
+}
 
 const shareUrl = computed(() => {
   if (!props.canShare || !props.lead) return ''
@@ -445,7 +482,7 @@ function onShareClick(e) {
 function startSqftEdit() {
   const cur = props.subjectMode
     ? subjectSqft.value
-    : compManualSqft.value || details.value?.sqft || props.comp?.square_footage
+    : compSqft.value
   sqftDraft.value = cur ? String(Math.round(Number(cur))) : ''
   editingSqft.value = true
   nextTick(() => sqftInput.value?.focus())
@@ -740,7 +777,7 @@ const facts = computed(() => {
     { label: __('Baths'), value: decimal(d.baths || c.bathrooms) },
     {
       label: __('Living area'),
-      value: area(subjectSqft.value || compManualSqft.value || d.sqft || c.square_footage),
+      value: area(props.subjectMode ? subjectSqft.value || d.sqft || c.square_footage : compSqft.value),
       editable: props.subjectMode ? props.canEditSqft : props.canEditCompSqft,
     },
     {
