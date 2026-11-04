@@ -322,6 +322,10 @@ class CompsPageChangeTest(AiCorrectionTest):
 			job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])
 			self.assertEqual((job["setup"]["12"]["tool"], job["setup"]["5"]["size_band"], job["setup"]["4"]["tool"]),
 			                 ("model:anthropic/claude-sonnet-5-5", 0.2, "jev"))
+			ai_pricer.ask("CRM-LEAD-1")  # Ask AI's price card runs the 13 steps too, with the same team setup
+			job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])
+			self.assertEqual((job["kind"], job["setup"]["12"]["tool"], job["setup"]["5"]["size_band"]),
+			                 ("price", "model:anthropic/claude-sonnet-5-5", 0.2))
 		finally:
 			shim.db.get_default.side_effect = None
 

@@ -121,7 +121,7 @@
                 <div class="font-semibold text-ink-gray-9">{{ money(o.value) }}</div>
               </div>
               <div class="col-span-2 text-xs text-ink-gray-5">
-                {{ __('Repairs {0} (kitchen & baths tier), fee {1}', [money(m.result.offers.repairs), money(m.result.offers.fee)]) }}
+                {{ __('Repairs {0} ({1} tier), fee {2}', [money(m.result.offers.repairs), tierLabel(m.result.repair_tier), money(m.result.offers.fee)]) }}
               </div>
             </div>
             <p v-if="m.result.would_change_it" class="mt-2 text-xs text-ink-gray-5">
@@ -385,6 +385,8 @@ call('crm.api.ai_pricer.status')
   .catch(() => {})
 
 const money = (n) => (n || n === 0 ? '$' + Math.round(n).toLocaleString('en-US') : '—')
+const TIER_LABELS = { clean: 'clean-up', paint_carpet: 'paint & carpet', kitchen_baths: 'kitchen & baths', full_rehab: 'full rehab', studs: 'down to studs' }
+const tierLabel = (t) => __(TIER_LABELS[t] || TIER_LABELS.kitchen_baths)
 const confLabel = (c) => ({ high: __('High confidence'), med: __('Medium confidence'), low: __('Low confidence') })[c] || c
 const confClass = (c) =>
   c === 'high' ? 'bg-surface-green-2 text-ink-green-7' : c === 'low' ? 'bg-surface-amber-2 text-ink-amber-7' : 'bg-surface-gray-2 text-ink-gray-7'

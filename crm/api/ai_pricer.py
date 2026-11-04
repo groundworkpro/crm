@@ -210,7 +210,7 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		"history": hist,
 		"context": context,
 		"page": str(page or "")[:MAX_PAGE],
-		"setup": step_setup_dict() if kind in ("ask", "decide") else {},
+		"setup": step_setup_dict(),  # price too: Ask AI prices with the 13 steps, so it uses the team setup
 		"user": frappe.session.user,
 	}
 
