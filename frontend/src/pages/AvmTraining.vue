@@ -118,7 +118,10 @@
             <span class="text-ink-gray-5">{{ n }}</span> {{ STEP_TITLES[n - 1] }}: {{ setupText(detail.team_setup, n) }} → <b>{{ setupText(detail.setup, n) }}</b>
           </li>
         </ul>
-        <div v-if="detail.differs.length" class="mt-2 flex flex-wrap items-center gap-2">
+        <p v-if="detail.differs.length && !detail.team_wide" class="mt-2 text-xs text-ink-gray-6">
+          {{ __("Only the pricer's owner changes the team setup. Your marks go to them as suggestions.") }}
+        </p>
+        <div v-if="detail.differs.length && detail.team_wide" class="mt-2 flex flex-wrap items-center gap-2">
           <input v-model="applyWhy" class="min-w-64 flex-1 rounded border-outline-gray-2 py-1 text-sm" :placeholder="__('Why make this the team setup? The team sees this.')" />
           <Button :label="__('Make this the team setup')" :disabled="!applyWhy.trim()" :loading="applying" @click="apply" />
         </div>

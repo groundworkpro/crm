@@ -29,7 +29,7 @@
         <s class="text-ink-gray-5">{{ d.old_value }}</s> {{ __('to') }} <b>{{ d.new_value }}</b>
         <span class="text-xs text-ink-gray-5">({{ __('step {0}', [d.step]) }})</span>
       </div>
-      <div class="text-xs text-ink-gray-7">{{ __('Why the change? The team sees this, and the agent learns from it.') }}</div>
+      <div class="text-xs text-ink-gray-7">{{ __('Why the change? It is saved as a suggestion for review; the agent does not change until it is accepted.') }}</div>
       <div class="flex flex-wrap gap-1">
         <button
           v-for="c in chips"
@@ -50,7 +50,7 @@
       />
       <div class="flex items-center gap-2">
         <Button size="sm" variant="solid" :disabled="!why.trim()" :loading="saving" @click="saveChange('Teach the agent')">
-          {{ __('Save change') }}
+          {{ __('Suggest for all houses') }}
         </Button>
         <Button size="sm" :disabled="!why.trim()" :loading="saving" @click="saveChange('This house only')">
           {{ __('This house only') }}
@@ -64,6 +64,11 @@
         <p v-if="!steps.length" class="pt-1 text-ink-gray-5">
           {{ running ? __('Running the steps…') : __('Run the 13 steps to fill the comps, the value and the repairs. Change any step first if you like.') }}
         </p>
+        <!-- A team member's step changes are suggestions: they run on this house for them only (Exe, 2026-11-04). -->
+        <div v-if="mine.length" class="rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-2 text-xs text-ink-gray-8">
+          {{ __('Your changes to step {0} apply only to your runs of this house. They are saved as suggestions for review and do not change the team setup.', [mine.join(', ')]) }}
+          <button type="button" class="ml-1 underline" :disabled="running" @click="useTeamSetup">{{ __('Use the team setup') }}</button>
+        </div>
         <template v-if="cards.length">
           <div v-if="run && steps.length" class="rounded-md bg-surface-gray-1 px-3 py-2">
             <div class="flex items-baseline gap-2">
@@ -83,6 +88,7 @@
             <div class="flex items-center gap-1.5">
               <span class="w-5 text-ink-gray-5">{{ s.n }}</span>
               <span class="font-medium text-ink-gray-9">{{ s.title }}</span>
+              <span v-if="mine.includes(String(s.n))" class="rounded bg-surface-amber-2 px-1 text-2xs text-ink-amber-3" :title="__('Your change, this house only')">{{ __('yours') }}</span>
               <span
                 class="ml-auto rounded px-1.5 py-0.5 text-2xs"
                 :class="toolOf(s.n) === 'code' ? 'bg-surface-gray-2 text-ink-gray-7' : 'bg-surface-gray-7 text-ink-white'"
@@ -94,7 +100,7 @@
             </div>
             <p v-if="s.text" class="mt-1 whitespace-pre-line pl-6 text-ink-gray-7">{{ s.text }}</p>
             <p v-if="settingText(s.n)" class="mt-1 pl-6 text-xs text-ink-gray-6">{{ settingText(s.n) }}</p>
-            <!-- Change how this step runs, for the whole team. The reason goes in the Changes log. -->
+            <!-- Change how this step runs (team setup for the owner, this house only for anyone else). The reason goes in the Changes log. -->
             <div v-if="editing === s.n" class="mt-2 space-y-2 rounded bg-surface-gray-1 p-2 pl-6 text-xs">
               <label class="block text-ink-gray-7">{{ __('Who makes this call') }}
                 <select v-model="form.tool" class="form-select mt-1 w-full text-sm">
@@ -112,7 +118,7 @@
               </label>
               <p class="text-ink-gray-6">{{ form.tool === 'code' ? __('Code runs the rule as written.') : __('The AI decides: {0}.', [STEP_CALLS[s.n]]) }}</p>
               <input v-if="form.tool === 'other'" v-model="form.other" class="form-input w-full text-sm" :placeholder="__('provider/model, or hf/org/model')" />
-              <label class="block text-ink-gray-7">{{ __('Team rule for this step (optional, read by the AI)') }}
+              <label class="block text-ink-gray-7">{{ teamWide ? __('Team rule for this step (optional, read by the AI)') : __('Rule for this house (optional, read by the AI)') }}
                 <textarea v-model="form.note" rows="2" class="form-textarea mt-1 w-full resize-none text-sm" :placeholder="__('e.g. Built before 1950 and no photos: full rehab')" />
               </label>
               <label v-if="s.n === 5" class="block text-ink-gray-7">{{ __('Comps within this % of the subject size') }}
@@ -122,7 +128,7 @@
                 <input v-model.number="form.max_mi" type="number" min="0.25" max="5" step="0.25" class="form-input mt-1 w-24 text-sm" />
               </label>
               <template v-if="editable(s.n)">
-                <textarea v-model="form.why" rows="2" class="form-textarea w-full resize-none text-sm" :placeholder="__('Why the change? The team sees this.')" />
+                <textarea v-model="form.why" rows="2" class="form-textarea w-full resize-none text-sm" :placeholder="teamWide ? __('Why the change? It changes the team setup.') : __('Why the change? Saved as a suggestion for review.')" />
                 <div class="flex gap-2">
                   <Button size="sm" variant="solid" :disabled="!form.why.trim()" :loading="saving" @click="saveStep(s.n)">{{ __('Save and rerun') }}</Button>
                   <Button size="sm" variant="ghost" @click="editing = null">{{ __('Cancel') }}</Button>
@@ -218,6 +224,8 @@ const why = ref('')
 const reasonType = ref('')
 const saving = ref(false)
 const setup = ref({})
+const mine = ref([]) // steps this user changed for this house only
+const teamWide = ref(false) // the pricer's owner: step changes go to the team setup
 const editing = ref(null)
 const form = ref({})
 const scroller = ref(null)
@@ -243,7 +251,7 @@ function settingText(n) {
   const out = []
   if (n === 5 && c.size_band) out.push(__('Size band: within {0}%', [Math.round(c.size_band * 100)]))
   if (n === 7 && c.max_mi) out.push(__('Radius: up to {0} mi', [c.max_mi]))
-  if (c.note) out.push(__('Team rule: {0}', [c.note]))
+  if (c.note) out.push(mine.value.includes(String(n)) ? __('Your rule: {0}', [c.note]) : __('Team rule: {0}', [c.note]))
   return out.join('. ')
 }
 function editStep(n) {
@@ -255,19 +263,35 @@ function editStep(n) {
     size_band: Math.round((c.size_band || 0.3) * 100), max_mi: c.max_mi || 2, why: '' }
   editing.value = n
 }
+function takeSetup(r) {
+  if (!r) return
+  setup.value = r.setup || {}
+  mine.value = r.mine || []
+  teamWide.value = !!r.team_wide
+}
 async function loadSetup() {
   try {
-    setup.value = (await call('crm.api.ai_pricer.step_setup')) || {}
+    takeSetup(await call('crm.api.ai_pricer.step_setup', { lead: props.lead, detail: 1 }))
   } catch {
     /* Ask AI off */
   }
 }
-loadSetup()
+watch(() => props.lead, loadSetup, { immediate: true })
+async function useTeamSetup() {
+  try {
+    takeSetup(await call('crm.api.ai_pricer.clear_run_setup', { lead: props.lead }))
+    runSteps()
+  } catch (e) {
+    toast.error(e?.messages?.[0] || e?.message || __('Could not reset the steps.'))
+  }
+}
 
-// One step change for the team (from the card or from chat), logged on this lead with its reason.
+// One step change (from the card or from chat), logged on this lead with its reason and filed as a
+// suggestion. The pricer's owner changes the team setup; anyone else changes their own runs of this house.
 async function changeStep(n, fields, reason, reasonType) {
   const r = await call('crm.api.ai_pricer.save_step', { n, reason, reason_type: reasonType, lead: props.lead, chat: chatId, ...fields })
   setup.value = r.setup || setup.value
+  if (!r.team_wide && (r.lines || []).length && !mine.value.includes(String(n))) mine.value = [...mine.value, String(n)].sort((a, b) => a - b)
   for (const t of r.lines || []) messages.value.push({ role: 'user', kind: 'change', text: t })
   return (r.lines || []).length
 }
@@ -396,7 +420,7 @@ async function saveChange(scope) {
     reasonType.value = ''
     await settle()
     if (tab.value === 'changes') loadChanges()
-    toast.success(__('Change saved for the team'))
+    toast.success(__('Saved as a suggestion'))
   } catch (e) {
     toast.error(e?.messages?.[0] || e?.message || __('Could not save the change.'))
   } finally {

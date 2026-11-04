@@ -368,5 +368,37 @@ class CompsPageChangeTest(AiCorrectionTest):
 			shim.db.get_default.side_effect = None
 
 
+	def test_rep_step_change_is_a_suggestion_for_their_run_of_this_house_only(self):
+		store = {}
+		shim.db.get_default.side_effect = lambda k, *a: store.get(k)
+		shim.db.set_default = mock.MagicMock(side_effect=lambda k, v, *a: store.__setitem__(k, v))
+		shim.session.user = "german@groundworkpro.com"
+		try:
+			with mock.patch.object(shim, "get_roles", return_value=["Sales User"]):
+				with self.assertRaises(Exception):  # off a lead it would have nowhere to apply
+					ai_pricer.save_step(12, "be safe", tool="code")
+				r = ai_pricer.save_step(12, "Roof is shot", note="Full rehab", lead="CRM-LEAD-1", chat="f" * 32)
+				self.assertFalse(r["team_wide"])
+				self.assertEqual(r["setup"]["12"]["note"], "Full rehab")
+				self.assertNotIn(ai_pricer.SETUP_KEY, store)  # the team setup is untouched
+				sug = self._suggestions()[-1]
+				self.assertEqual((sug["step"], sug["scope"]), (12, "This run only"))
+				self.assertEqual(ai_pricer.step_setup("CRM-LEAD-1", detail=1)["mine"], ["12"])
+				self.assertEqual(ai_pricer.step_setup(), {})
+				ai_pricer.ask("CRM-LEAD-1", "decide")  # their rerun follows it
+				self.assertEqual(json.loads(self.r.lists[ai_pricer.QUEUE][-1])["setup"]["12"]["note"], "Full rehab")
+				ai_pricer.ask("CRM-LEAD-2", "decide")  # another house does not
+				self.assertNotIn("12", json.loads(self.r.lists[ai_pricer.QUEUE][-1])["setup"])
+			shim.session.user = "exe.ortiz@groundworkpro.com"  # nor does anyone else's run of the same house
+			ai_pricer.ask("CRM-LEAD-1", "decide")
+			self.assertNotIn("12", json.loads(self.r.lists[ai_pricer.QUEUE][-1])["setup"])
+			shim.session.user = "german@groundworkpro.com"
+			self.assertEqual(ai_pricer.clear_run_setup("CRM-LEAD-1")["mine"], [])
+			ai_pricer.ask("CRM-LEAD-1", "decide")
+			self.assertNotIn("12", json.loads(self.r.lists[ai_pricer.QUEUE][-1])["setup"])
+		finally:
+			shim.db.get_default.side_effect = None
+
+
 if __name__ == "__main__":
 	unittest.main()

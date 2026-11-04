@@ -29,7 +29,7 @@ DOCTYPE = "CRM AI Suggestion"
 CHAT_DOCTYPE = "CRM AI Chat Message"
 STATUSES = ("New", "Accepted", "Rejected", "Added to skill")
 SOURCES = ("Disagree", "Chat", "Comps page")
-SCOPES = ("Teach the agent", "This house only")
+SCOPES = ("Teach the agent", "This house only", "This run only")
 CHAT_KINDS = ("price", "ask", "decide", "change")
 MAX_TEXT = 8000
 
@@ -115,11 +115,17 @@ def record(source: str, user: str, correction: str, **kw):
 		return None
 
 
-def _check_reviewer():
+def is_reviewer(user: str | None = None) -> bool:
+	"""The pricer's owner (arv_feedback_to, default Exe), System Manager or Administrator: reviews suggestions
+	and is the only one whose step changes reach the team setup."""
 	from crm.api.arv_feedback import recipient
 
-	user = frappe.session.user
-	if user == "Administrator" or user.lower() == recipient() or "System Manager" in frappe.get_roles(user):
+	user = user or frappe.session.user
+	return user == "Administrator" or user.lower() == recipient() or "System Manager" in frappe.get_roles(user)
+
+
+def _check_reviewer():
+	if is_reviewer():
 		return
 	frappe.throw(_("Only the pricer's owner reviews suggestions."), frappe.PermissionError)
 

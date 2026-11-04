@@ -50,6 +50,7 @@ SETUP_KEY = "comp_steps_setup"     # team-wide: how each of the 13 steps runs (t
 TOOL_STEPS = tuple(range(1, 14))  # every step takes a tool (Exe, 2026-11-02); 6, 9, 12 default to Jev, the rest to code
 JEV_STEPS = (6, 9, 12)
 COMMENT_TITLE = "AI comping tool analysis"
+RUN_SETUP_KEY = "ai_step_override:"  # + lead + ":" + user: a team member's step changes, used only on their runs of that lead
 FACTS_KEY = "ai_subject_facts:"    # + lead: house facts a rep typed in when the steps flagged them (low confidence)
 FACT_FIELDS = ("type", "sqft", "beds", "baths", "year_built", "lot_sqft")
 HOME_TYPES = ("single_family", "townhouse", "condo", "multi_family", "manufactured", "land")
@@ -259,7 +260,9 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		"history": hist,
 		"context": context,
 		"page": str(page or "")[:MAX_PAGE],
-		"setup": step_setup_dict(),  # price too: Ask AI prices with the 13 steps, so it uses the team setup
+		# price too: Ask AI prices with the 13 steps. A team member's own step changes on this lead ride on top of
+		# the team setup for their runs only (Exe, 2026-11-04: suggestions never change the model in general).
+		"setup": effective_setup(lead),
 		"subject_facts": clean_facts(facts),
 		"user": frappe.session.user,
 	}
@@ -480,11 +483,53 @@ def step_setup_dict() -> dict:
 	return d if isinstance(d, dict) else {}
 
 
+def _run_key(lead: str, user: str | None = None) -> str:
+	return f"{RUN_SETUP_KEY}{lead}:{user or frappe.session.user}"
+
+
+def run_setup(lead: str | None, user: str | None = None) -> dict:
+	"""This user's step changes for this lead only (never the team's)."""
+	if not lead:
+		return {}
+	try:
+		d = json.loads(frappe.db.get_default(_run_key(lead, user)) or "{}")
+	except ValueError:
+		d = {}
+	return d if isinstance(d, dict) else {}
+
+
+def effective_setup(lead: str | None, user: str | None = None) -> dict:
+	"""The team setup with this user's own changes for this lead on top: what their runs of it use."""
+	team, mine = step_setup_dict(), run_setup(lead, user)
+	return {**team, **{k: {**(team.get(k) or {}), **v} for k, v in mine.items() if isinstance(v, dict)}}
+
+
 @frappe.whitelist()
-def step_setup():
-	"""How each step runs now, for the rail's step cards: {"12": {"tool": "jev", "note": "..."}, "5": {...}}."""
+def step_setup(lead: str | None = None, detail=0):
+	"""How each step runs now, for the rail's step cards: {"12": {"tool": "jev", "note": "..."}, "5": {...}}.
+
+	With `lead` it is what this user's runs of that lead use. With `detail`, {setup, team, mine, team_wide}:
+	`mine` are the steps this user changed for this lead only, `team_wide` whether their changes reach the team."""
+	from crm.api import ai_suggestions
+
 	_guard()
-	return step_setup_dict()
+	if lead:
+		frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	setup = effective_setup(lead)
+	if not int(detail or 0):
+		return setup
+	return {"setup": setup, "team": step_setup_dict(), "mine": sorted(run_setup(lead), key=int),
+	        "team_wide": ai_suggestions.is_reviewer()}
+
+
+@frappe.whitelist(methods=["POST"])
+def clear_run_setup(lead: str):
+	"""Drop this user's own step changes on this lead: their next run uses the team setup again."""
+	_guard()
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	frappe.db.set_default(_run_key(lead), "{}")
+	frappe.db.commit()
+	return step_setup(lead, detail=1)
 
 
 def _tool_ok(t: str) -> bool:
@@ -507,14 +552,25 @@ def _describe(n: int, key: str, v) -> str:
 
 @frappe.whitelist(methods=["POST"])
 def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None, reason_type="", lead=None, chat=None):
-	"""Change how one of the 13 steps runs, for the whole team. Needs a reason; each change is logged on the lead
-	(chat + Changes tab) like a value override, so the team can see who changed a step and why."""
+	"""Change how one of the 13 steps runs. Needs a reason; each change is logged on the lead (chat + Changes tab)
+	and filed as a suggestion for the pricer's owner.
+
+	Only the owner (ai_suggestions.is_reviewer) changes the team setup. Anyone else's change is a suggestion: it
+	applies to their own runs of this lead only (Exe, 2026-11-04: "they will not change how the model operates in
+	general ... it's okay for the model to follow the suggestion for that particular case")."""
+	from crm.api import ai_suggestions
+
 	_guard()
 	n = int(n)
 	reason = (reason or "").strip()[:MAX_QUESTION]
 	if not reason:
 		frappe.throw(_("Say why you changed the step."))
-	setup = step_setup_dict()
+	team_wide = ai_suggestions.is_reviewer()
+	if not team_wide:
+		if not lead:
+			frappe.throw(_("Step changes are made on a lead's comps page."))
+		frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	setup = step_setup_dict() if team_wide else effective_setup(lead)
 	cur = dict(setup.get(str(n)) or {})
 	new = {}
 	if tool is not None:
@@ -536,18 +592,25 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 	default = {"tool": default_tool(n), "note": "", "size_band": 0.3, "max_mi": 2.0}
 	changed = {k: v for k, v in new.items() if cur.get(k, default[k]) != v}
 	if not changed:
-		return {"setup": setup, "lines": []}
-	setup[str(n)] = {**cur, **changed}
-	frappe.db.set_default(SETUP_KEY, json.dumps(setup))
+		return {"setup": setup, "lines": [], "team_wide": team_wide}
+	if team_wide:
+		setup[str(n)] = {**cur, **changed}
+		frappe.db.set_default(SETUP_KEY, json.dumps(setup))
+	else:
+		mine = run_setup(lead)
+		mine[str(n)] = {**(mine.get(str(n)) or {}), **changed}
+		frappe.db.set_default(_run_key(lead), json.dumps(mine))
+		setup = effective_setup(lead)
 	lines = []
-	label = {"tool": "tool", "note": "team rule", "size_band": "size band", "max_mi": "radius"}
+	label = {"tool": "tool", "note": "team rule" if team_wide else "rule", "size_band": "size band", "max_mi": "radius"}
 	for k, v in changed.items():
 		what = f"Step {n} {label[k]}"
 		if lead:
 			lines.append(log_change(lead, reason, what, _describe(n, k, cur.get(k)), _describe(n, k, v), step=n,
-			                        reason_type=reason_type, chat=chat)["text"])
+			                        reason_type=reason_type, chat=chat,
+			                        scope="Teach the agent" if team_wide else "This run only")["text"])
 	frappe.db.commit()
-	return {"setup": setup, "lines": lines}
+	return {"setup": setup, "lines": lines, "team_wide": team_wide}
 
 
 CHANGE_KEYS = ("step", "changed", "old_value", "new_value", "reason_type", "scope")

@@ -254,6 +254,8 @@ def run(name: str):
 	"""One run: per lead the AI's ARV, the team's saved ARV, the step cards, and the marks."""
 	P._guard()
 	run = _run(name)
+	from crm.api import ai_suggestions
+
 	res, marks, team = _results(run), _marks(name), P.step_setup_dict()
 	arvs = team_arvs([x["lead"] for x in run["leads"]])
 	rows = []
@@ -265,7 +267,8 @@ def run(name: str):
 		                 "team_arv": team_arv, "team_at": (arvs.get(x["lead"]) or {}).get("at"), "gap": _gap(d.get("arv"), team_arv),
 		                 "steps": d.get("steps") or [], "comps": [c.get("address") for c in d.get("comps_used") or []]})
 	return run | {"rows": rows, "marks": marks, "summary": summary(run, res, marks, arvs),
-	              "differs": [n for n in range(1, 14) if _norm(run["setup"], n) != _norm(team, n)]}
+	              "differs": [n for n in range(1, 14) if _norm(run["setup"], n) != _norm(team, n)],
+	              "team_wide": ai_suggestions.is_reviewer()}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -300,8 +303,13 @@ def mark(name: str, lead: str, step, right, reason: str = ""):
 
 @frappe.whitelist(methods=["POST"])
 def apply_setup(name: str, reason: str):
-	"""Make this run's trial setup the team's, one logged change per step (same log as the comps page)."""
+	"""Make this run's trial setup the team's, one logged change per step (same log as the comps page).
+	The pricer's owner only: the team's suggestions never change the model in general (Exe, 2026-11-04)."""
+	from crm.api import ai_suggestions
+
 	P._guard()
+	if not ai_suggestions.is_reviewer():
+		frappe.throw(_("Only the pricer's owner changes the team setup. Your marks are saved as suggestions."), frappe.PermissionError)
 	run = _run(name)
 	reason = (reason or "").strip()
 	if not reason:

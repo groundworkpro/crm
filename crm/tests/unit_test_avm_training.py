@@ -90,6 +90,9 @@ class AvmTrainingTest(_LogBase):
 		name = T.start("t", ["CRM-LEAD-1"], setup={"4": {"tool": "jev", "note": "only highways"}})["name"]
 		with self.assertRaises(Exception):
 			T.apply_setup(name, "")
+		with mock.patch.object(shim, "get_roles", return_value=["Sales User"]), \
+				mock.patch.object(shim.session, "user", "german@groundworkpro.com"), self.assertRaises(Exception):
+			T.apply_setup(name, "Rep tries the team setup")
 		out = T.apply_setup(name, "Right on 9 of 10")
 		self.assertEqual(out["setup"]["4"], {"tool": "jev", "note": "only highways"})
 		self.assertEqual(len(out["lines"]), 2)  # tool and team rule; untouched steps log nothing
