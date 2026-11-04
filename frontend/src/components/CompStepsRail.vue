@@ -183,6 +183,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { Button, LoadingIndicator, call, toast } from 'frappe-ui'
 import { addressMatchKey } from '@/utils/comps'
 import LowConfidenceWhy from '@/components/LowConfidenceWhy.vue'
@@ -223,6 +224,7 @@ const scroller = ref(null)
 const input = ref(null)
 const newChatId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
 let chatId = newChatId()
+const route = useRoute()
 
 const money = (n) => (Number(n) ? '$' + Math.round(Number(n)).toLocaleString() : '—')
 const when = (d) => (d ? new Date(d.replace(' ', 'T')).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '')
@@ -495,6 +497,17 @@ async function loadChanges() {
   }
 }
 
+// A price job's step cards while it is still in Redis (cards logged before 2026-11-04 kept only the price).
+async function jobSteps(job) {
+  if (!job) return null
+  try {
+    const r = await call('crm.api.ai_pricer.get_job', { job })
+    return r?.status === 'done' ? r.decide || null : null
+  } catch {
+    return null
+  }
+}
+
 // Pick the last chat back up, with its last 13-step run shown (not re-applied: the page
 // keeps what was saved; Run again refills it).
 watch(
@@ -502,15 +515,22 @@ watch(
   async (lead) => {
     try {
       const h = await call('crm.api.ai_pricer.chat_history', { lead })
-      if (!h?.chat) return
-      chatId = h.chat
-      messages.value = h.messages
-        .filter((m) => !m.decide)
-        .map((m) => ({ role: m.role, kind: m.kind, text: m.text, error: m.error }))
-      const last = [...h.messages].reverse().find((m) => m.decide)
-      if (last) {
-        run.value = last.decide
-        steps.value = last.decide.steps || []
+      let d = null
+      if (h?.chat) {
+        chatId = h.chat
+        messages.value = h.messages
+          .filter((m) => !m.decide)
+          .map((m) => ({ role: m.role, kind: m.kind, text: m.text, error: m.error }))
+        // The last 13-step run: a "Run the 13 steps" here, or an Ask AI price card (also the 13 steps).
+        const last = [...h.messages].reverse().find((m) => m.decide || m.steps_run || (m.kind === 'price' && m.result))
+        d = last?.decide || last?.steps_run || (await jobSteps(last?.job))
+      }
+      // Opened from an Ask AI card ("Finish on comps page", ?ai=<job>): show that run's steps.
+      const ai = route.query.ai
+      if (ai && typeof ai === 'string') d = (await jobSteps(ai)) || d
+      if (d?.steps) {
+        run.value = d
+        steps.value = d.steps
       }
     } catch {
       /* Ask AI off or offline: the rail stays empty */

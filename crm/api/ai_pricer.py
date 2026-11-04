@@ -134,6 +134,10 @@ def _log_reply(job_id: str, result: dict):
 	meta = json.loads(raw)
 	question = meta.pop("question", "")
 	answer = result.get("answer") or result.get("decide")
+	if result.get("answer") and result.get("decide"):
+		# A price card from the 13 steps: keep the step cards too, or the comps page steps rail
+		# has nothing to show for it (Exe, 2026-11-04).
+		answer = {**result["answer"], "decide": result["decide"]}
 	error = result.get("status") == "error"
 	_write_log(
 		{
@@ -308,9 +312,15 @@ def _history_row(row) -> dict:
 		out["error"] = True
 	elif row.role == "ai" and row.answer:
 		try:
-			out["decide" if row.kind == "decide" else "result"] = json.loads(row.answer)
+			a = json.loads(row.answer)
 		except ValueError:
-			pass
+			return out
+		if row.kind == "decide":
+			out["decide"] = a
+		else:
+			if isinstance(a, dict) and isinstance(a.get("decide"), dict):
+				out["steps_run"] = a.pop("decide")  # the price card's 13 steps, for the comps page rail
+			out["result"] = a
 	return out
 
 

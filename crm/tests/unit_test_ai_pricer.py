@@ -308,6 +308,17 @@ class CompsPageChangeTest(AiCorrectionTest):
 		row = types.SimpleNamespace(role="ai", text="x", job=jid, kind="decide", error=0, answer=self.rows[1]["answer"])
 		self.assertEqual(ai_pricer._history_row(row)["decide"]["arv"], 210000)
 
+	def test_price_card_keeps_its_13_steps_for_the_rail(self):
+		jid = ai_pricer.ask("CRM-LEAD-1", "price")["job"]
+		d = {"arv": 210000, "steps": [{"n": 1, "title": "Subject", "text": "3 bd"}]}
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "answer": {"arv": 210000}, "decide": d})
+		ai_pricer.get_job(jid)
+		row = types.SimpleNamespace(role="ai", text="x", job=jid, kind="price", error=0, answer=self.rows[1]["answer"])
+		h = ai_pricer._history_row(row)
+		self.assertEqual(h["result"], {"arv": 210000})
+		self.assertEqual(h["steps_run"]["steps"][0]["text"], "3 bd")
+		self.assertNotIn("decide", h)
+
 	def test_change_needs_reason_and_lands_in_chat_and_suggestions(self):
 		with self.assertRaises(Exception):
 			ai_pricer.log_change("CRM-LEAD-1", "  ", "Repairs", "$30/sf", "$45/sf", step=12)
