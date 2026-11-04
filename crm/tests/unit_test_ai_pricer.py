@@ -81,6 +81,33 @@ class AiPricerTest(_Base):
 		job = ai_pricer.build_job("ask", "L", "addr", "full rehab?", hist)
 		self.assertEqual(len(job["history"]), 11)
 
+	def test_facts_cleaned_saved_and_sent(self):
+		self.assertEqual(ai_pricer.clean_facts({"type": "single_family", "sqft": "1,240", "baths": "1.5", "beds": "",
+		                                        "year_built": "abc", "color": "red"}),
+		                 {"type": "single_family", "sqft": 1240, "baths": 1.5})
+		self.assertEqual(ai_pricer.clean_facts({"type": "castle"}), {})
+		self.r.kv[ai_pricer.SEEN] = "1"
+		store = {}
+		shim.db.get_default.side_effect = lambda k, *a: store.get(k)
+		shim.db.set_default = lambda k, v: store.__setitem__(k, v)
+		try:
+			ai_pricer.ask("CRM-LEAD-1", facts=json.dumps({"type": "single_family"}))
+			ai_pricer.ask("CRM-LEAD-1", kind="decide", facts={"sqft": 1100})
+			ai_pricer.ask("CRM-LEAD-1")
+		finally:
+			shim.db.get_default.side_effect = None
+		jobs = [json.loads(x) for x in self.r.lists[ai_pricer.QUEUE]]
+		self.assertEqual(jobs[0]["subject_facts"], {"type": "single_family"})
+		self.assertEqual(jobs[1]["subject_facts"], {"type": "single_family", "sqft": 1100})
+		self.assertEqual(jobs[2]["subject_facts"], {"type": "single_family", "sqft": 1100})
+
+	def test_comment_lists_why_low(self):
+		html = ai_pricer.comment_html({"arv": 1, "confidence": "low", "would_change_it": "x",
+		                               "low_why": [{"text": "Records say condo <b>"}]})
+		self.assertIn("Why low confidence", html)
+		self.assertIn("condo &lt;b&gt;", html)
+		self.assertNotIn("Would change it", html)
+
 	def test_get_job_rejects_bad_ids(self):
 		with self.assertRaises(shim.ValidationError):
 			ai_pricer.get_job("../etc")

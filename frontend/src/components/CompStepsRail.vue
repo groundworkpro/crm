@@ -71,6 +71,13 @@
               <span class="text-ink-gray-6">{{ money(run.arv_low) }} to {{ money(run.arv_high) }}</span>
               <span class="ml-auto text-xs text-ink-gray-6">{{ __('{0} confidence', [run.confidence]) }}</span>
             </div>
+            <LowConfidenceWhy
+              v-if="run.confidence === 'low'"
+              :why="run.low_why"
+              :subject="run.subject"
+              :busy="running"
+              @rerun="(facts) => runSteps({ facts })"
+            />
           </div>
           <div v-for="s in cards" :key="s.n" class="rounded-md border border-outline-gray-2 px-3 py-2">
             <div class="flex items-center gap-1.5">
@@ -178,6 +185,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { Button, LoadingIndicator, call, toast } from 'frappe-ui'
 import { addressMatchKey } from '@/utils/comps'
+import LowConfidenceWhy from '@/components/LowConfidenceWhy.vue'
 import { JEV_STEPS, MODELS, STEP_CALLS, STEP_TITLES, toolLabel } from '@/utils/compSteps'
 
 const props = defineProps({
@@ -356,7 +364,9 @@ async function runSteps(opts) {
   running.value = true
   if (opts?.stay !== true) tab.value = 'steps'
   try {
-    const { job } = await call('crm.api.ai_pricer.ask', { lead: props.lead, kind: 'decide', chat: chatId })
+    const { job } = await call('crm.api.ai_pricer.ask', {
+      lead: props.lead, kind: 'decide', chat: chatId, ...(opts?.facts ? { facts: JSON.stringify(opts.facts) } : {}),
+    })
     const r = await poll(job)
     await applyRun(r.decide)
     messages.value.push({ role: 'ai', text: __('Ran the 13 steps: ARV {0}, repairs ${1}/sf.', [money(r.decide.arv), r.decide.repairs?.per_sf]) })

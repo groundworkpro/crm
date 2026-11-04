@@ -14,7 +14,10 @@
         {{ m.address }} ({{ money(m.price) }}){{ i < missing.length - 1 ? ', ' : '' }}
       </span>
     </div>
-    <p v-if="run.would_change_it" class="mt-1 line-clamp-2 text-ink-gray-5" :title="run.would_change_it">
+    <ul v-if="run.confidence === 'low' && run.low_why?.length" class="mt-1 space-y-0.5 text-ink-amber-7">
+      <li v-for="w in run.low_why" :key="w.key">{{ __('Low confidence, step {0}:', [w.step]) }} {{ w.text }}</li>
+    </ul>
+    <p v-else-if="run.would_change_it" class="mt-1 line-clamp-2 text-ink-gray-5" :title="run.would_change_it">
       {{ __('Would change it:') }} {{ run.would_change_it }}
     </p>
   </div>

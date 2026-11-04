@@ -124,7 +124,14 @@
                 {{ __('Repairs {0} ({1} tier), fee {2}', [money(m.result.offers.repairs), tierLabel(m.result.repair_tier), money(m.result.offers.fee)]) }}
               </div>
             </div>
-            <p v-if="m.result.would_change_it" class="mt-2 text-xs text-ink-gray-5">
+            <LowConfidenceWhy
+              v-if="m.result.confidence === 'low' && m.result.low_why?.length"
+              :why="m.result.low_why"
+              :subject="m.result.subject"
+              :busy="busy"
+              @rerun="(facts) => run('price', '', facts)"
+            />
+            <p v-else-if="m.result.would_change_it" class="mt-2 text-xs text-ink-gray-5">
               {{ __('Would change it:') }} {{ m.result.would_change_it }}
             </p>
 
@@ -246,6 +253,7 @@ import { useRoute } from 'vue-router'
 import { Button, FeatherIcon, LoadingIndicator, TextInput, call, toast, getCachedResource } from 'frappe-ui'
 import SaveArvButton from '@/components/SaveArvButton.vue'
 import PricerCompsLink from '@/components/PricerCompsLink.vue'
+import LowConfidenceWhy from '@/components/LowConfidenceWhy.vue'
 import ArvFeedbackModal from '@/components/Modals/ArvFeedbackModal.vue'
 
 const route = useRoute()
@@ -494,7 +502,7 @@ function history() {
     )
 }
 
-async function run(kind, question = '') {
+async function run(kind, question = '', facts = null) {
   const forLead = lead.value?.name
   busy.value = true
   const waiting = {
@@ -504,6 +512,7 @@ async function run(kind, question = '') {
   }
   const hist = history()
   if (question) messages.value.push({ role: 'user', text: question })
+  if (facts) messages.value.push({ role: 'user', text: __('Re-price with: {0}', [factsText(facts)]) })
   messages.value.push(waiting)
   scrollDown()
   const idx = messages.value.length - 1
@@ -514,6 +523,7 @@ async function run(kind, question = '') {
       question,
       history: JSON.stringify(hist),
       chat: chatId,
+      ...(facts ? { facts: JSON.stringify(facts) } : {}),
     })
     await poll(job, forLead, kind, idx)
   } catch (e) {
@@ -535,7 +545,7 @@ async function poll(job, forLead, kind, idx) {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: r.answer, job } : { role: 'ai', text: r.text, job })
+      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: { subject: r.subject, ...r.answer }, job } : { role: 'ai', text: r.text, job })
       if (r.status === 'error') return settleAt(forLead, idx, { role: 'ai', error: true, text: r.error })
       if (r.status === 'running' && kind === 'price' && messages.value[idx]) messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
@@ -546,6 +556,8 @@ async function poll(job, forLead, kind, idx) {
 }
 
 const price = () => run('price')
+const FACT_WORDS = { type: 'home type', sqft: 'sqft', beds: 'beds', baths: 'baths', year_built: 'built', lot_sqft: 'lot sqft' }
+const factsText = (f) => Object.entries(f).map(([k, v]) => `${FACT_WORDS[k] || k} ${String(v).replace('_', ' ')}`).join(', ')
 
 // Post this AI reply on the lead's timeline (the server rebuilds it from the stored reply).
 async function saveComment(m) {

@@ -50,6 +50,9 @@ SETUP_KEY = "comp_steps_setup"     # team-wide: how each of the 13 steps runs (t
 TOOL_STEPS = tuple(range(1, 14))  # every step takes a tool (Exe, 2026-11-02); 6, 9, 12 default to Jev, the rest to code
 JEV_STEPS = (6, 9, 12)
 COMMENT_TITLE = "AI comping tool analysis"
+FACTS_KEY = "ai_subject_facts:"    # + lead: house facts a rep typed in when the steps flagged them (low confidence)
+FACT_FIELDS = ("type", "sqft", "beds", "baths", "year_built", "lot_sqft")
+HOME_TYPES = ("single_family", "townhouse", "condo", "multi_family", "manufactured", "land")
 
 
 def _allowed(user=None) -> bool:
@@ -188,7 +191,49 @@ def _notes(lead: str) -> str:
 	return "\n".join(out)
 
 
-def build_job(kind: str, lead: str, address: str, question: str = "", history=None, context: str = "", page: str = "") -> dict:
+def clean_facts(facts) -> dict:
+	"""The subject facts a rep may set: a known home type, or a positive number. Blank or junk is dropped."""
+	if isinstance(facts, str):
+		try:
+			facts = json.loads(facts or "{}")
+		except ValueError:
+			facts = {}
+	out = {}
+	for k, v in (facts if isinstance(facts, dict) else {}).items():
+		if k not in FACT_FIELDS or v in (None, ""):
+			continue
+		if k == "type":
+			if v in HOME_TYPES:
+				out[k] = v
+			continue
+		try:
+			n = float(str(v).replace(",", ""))
+		except ValueError:
+			continue
+		if 0 < n < 10_000_000:
+			out[k] = n if k == "baths" else int(round(n))
+	return out
+
+
+def subject_facts(lead: str) -> dict:
+	try:
+		return clean_facts(frappe.db.get_default(FACTS_KEY + lead) or "{}")
+	except Exception:
+		return {}
+
+
+def save_facts(lead: str, facts) -> dict:
+	"""Merge what the rep typed into the lead's saved facts; every later price / 13-steps run on it uses them."""
+	new = clean_facts(facts)
+	if not new:
+		return subject_facts(lead)
+	merged = {**subject_facts(lead), **new}
+	frappe.db.set_default(FACTS_KEY + lead, json.dumps(merged))
+	return merged
+
+
+def build_job(kind: str, lead: str, address: str, question: str = "", history=None, context: str = "", page: str = "",
+              facts=None) -> dict:
 	if kind not in ("price", "ask", "decide"):
 		frappe.throw(_("Unknown request {0}.").format(kind))
 	if not address:
@@ -211,6 +256,7 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		"context": context,
 		"page": str(page or "")[:MAX_PAGE],
 		"setup": step_setup_dict(),  # price too: Ask AI prices with the 13 steps, so it uses the team setup
+		"subject_facts": clean_facts(facts),
 		"user": frappe.session.user,
 	}
 
@@ -233,7 +279,8 @@ def lead_info(lead: str):
 
 
 @frappe.whitelist(methods=["POST"])
-def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None, page: str = ""):
+def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None, page: str = "", facts=None):
+	"""facts: house facts the rep fixed on a low-confidence card; saved on the lead and used from then on."""
 	_guard()
 	frappe.has_permission("CRM Lead", "read", lead, throw=True)
 	if isinstance(history, str):
@@ -241,7 +288,10 @@ def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=N
 	if not _worker_up():
 		frappe.throw(_("The pricer is offline right now (agentbox worker not running). Try again in a minute."))
 	doc = frappe.get_doc("CRM Lead", lead)
-	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "", page)
+	if facts:
+		frappe.has_permission("CRM Lead", "write", lead, throw=True)
+	saved = save_facts(lead, facts) if facts else subject_facts(lead)
+	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "", page, saved)
 	_push(job)
 	meta = {"chat": _clean_chat(chat), "lead": lead, "user": job["user"], "kind": kind, "job": job["id"]}
 	if _log_supported():
@@ -350,7 +400,10 @@ def comment_html(answer: dict | None, text: str = "", question: str = "") -> str
 				+ f"<br>Repairs {_money(offers.get('repairs'))} (tier {html.escape(str(answer.get('repair_tier') or '?'))}), "
 				f"fee {_money(offers.get('fee'))}</p>"
 			)
-		if answer.get("would_change_it"):
+		why = [w.get("text") for w in answer.get("low_why") or [] if isinstance(w, dict) and w.get("text")]
+		if why:
+			out.append("<p>Why low confidence:</p><ul>" + "".join(f"<li>{html.escape(str(w))}</li>" for w in why) + "</ul>")
+		elif answer.get("would_change_it"):
 			out.append(_para("Would change it: " + str(answer["would_change_it"])))
 	else:
 		out.append(_para(text))
