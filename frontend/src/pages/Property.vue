@@ -22,6 +22,16 @@
              labeled buttons beside the breadcrumb is what overflowed the
              viewport and side-scrolled the whole page. -->
         <div class="hidden items-center gap-2 sm:flex">
+          <!-- Same 13-steps rail and chat as a lead's comps page (Dennis, 2026-11-05: the AI comp
+               tool on a lead's additional properties). -->
+          <Button
+            v-if="stepsOn"
+            :label="railOpen ? __('Hide steps') : __('Steps and chat')"
+            variant="subtle"
+            iconLeft="list"
+            :title="__('The 13 comping steps, and a chat with the agent')"
+            @click="railOpen = !railOpen"
+          />
           <Button
             v-if="prop.data?.listing_url"
             :label="__('Listing')"
@@ -74,21 +84,31 @@
   </LayoutHeader>
 
   <!-- Same bounded-height host as pages/Comps.vue: CompsView owns the scrolling. -->
-  <div class="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-5 sm:py-4">
-    <div
-      v-if="prop.data?.notes"
-      class="mb-2 truncate text-xs text-ink-gray-5"
-      :title="prop.data.notes"
-    >
-      {{ prop.data.notes }}
+  <div class="flex min-h-0 flex-1 gap-3 overflow-hidden px-3 py-3 sm:px-5 sm:py-4">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        v-if="prop.data?.notes"
+        class="mb-2 truncate text-xs text-ink-gray-5"
+        :title="prop.data.notes"
+      >
+        {{ prop.data.notes }}
+      </div>
+      <CompsView
+        v-if="propertyId && prop.data"
+        :key="mapKey"
+        ref="viewRef"
+        :lead="propertyId"
+        :address="address"
+        :prefer-kind="prop.data?.source === 'Auction.com' ? 'auction' : ''"
+        page-mode
+      />
     </div>
-    <CompsView
-      v-if="propertyId && prop.data"
-      :key="mapKey"
+    <CompStepsRail
+      v-if="stepsOn && railOpen && prop.data"
       :lead="propertyId"
       :address="address"
-      :prefer-kind="prop.data?.source === 'Auction.com' ? 'auction' : ''"
-      page-mode
+      :view="viewRef"
+      class="hidden lg:flex"
     />
   </div>
 
@@ -186,6 +206,7 @@
  */
 import LayoutHeader from '@/components/LayoutHeader.vue'
 import CompsView from '@/components/CompsView.vue'
+import CompStepsRail from '@/components/CompStepsRail.vue'
 import CashOfferComment from '@/components/Activities/CashOfferComment.vue'
 import LeadPicker from '@/components/LeadPicker.vue'
 import { sidebarCollapsedOverride } from '@/composables/settings'
@@ -207,6 +228,12 @@ import { useRouter } from 'vue-router'
 
 const props = defineProps({ propertyId: { type: String, required: true } })
 const router = useRouter()
+
+// The 13-steps rail, for the people Ask AI is turned on for (as on a lead's comps page).
+const viewRef = ref(null)
+const stepsOn = ref(false)
+const railOpen = ref(false)
+call('crm.api.ai_pricer.status').then((r) => (stepsOn.value = !!r?.enabled)).catch(() => {})
 
 // Same override the lead comps page uses: this is a map, and every pixel the
 // nav holds is one the map does not get. Not a write to the stored preference.
