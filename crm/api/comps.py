@@ -2377,7 +2377,6 @@ def _picked_outside_radius(selected, have, lat, lng, self_key, hidden, today):
 	return out
 
 
-@frappe.whitelist()
 def _ai_run_comps(doc, ai_job=None):
 	"""Ask AI's comps on this lead's latest run (or `ai_job`), for the board to carry.
 
@@ -2498,6 +2497,7 @@ def _ai_board_rows(ai_list, doc, rows, lat, lng, selected, hidden, today, **whic
 	return added
 
 
+@frappe.whitelist()
 def get_lead_comps(
 	lead, radius_mi=None, limit=None, filters=None, auto=0, include_hidden=0, state=None,
 	inventory=None, settle=0, ai_job=None,
