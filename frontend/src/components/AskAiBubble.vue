@@ -40,7 +40,20 @@
       <div class="flex items-center gap-2 border-b bg-surface-gray-1 px-3 py-2 text-sm">
         <template v-if="lead">
           <FeatherIcon name="home" class="h-3.5 w-3.5 shrink-0 text-ink-gray-5" />
-          <span class="truncate text-ink-gray-8" :title="lead.address">{{ lead.address || lead.name }}</span>
+          <!-- A seller with more than one house: pick which one to price (the lead or an additional property). -->
+          <select
+            v-if="lead.houses?.length > 1"
+            class="min-w-0 flex-1 truncate rounded border-none bg-transparent py-0 pl-0 pr-6 text-sm text-ink-gray-8 focus:ring-0"
+            :value="lead.name"
+            :title="__('This seller has {0} houses: pick the one to price', [lead.houses.length])"
+            :disabled="busy"
+            @change="(e) => pickLead(e.target.value)"
+          >
+            <option v-for="(h, i) in lead.houses" :key="h.name" :value="h.name">
+              {{ h.address || h.name }} · {{ h.kind === 'lead' ? __('lead') : __('property {0}', [i + (lead.houses[0].kind === 'lead' ? 0 : 1)]) }}
+            </option>
+          </select>
+          <span v-else class="truncate text-ink-gray-8" :title="lead.address">{{ lead.address || lead.name }}</span>
           <button class="ml-auto shrink-0 text-ink-gray-5 hover:text-ink-gray-8" @click="clearLead">
             {{ __('Change') }}
           </button>
@@ -48,7 +61,7 @@
         <div v-else class="relative w-full">
           <TextInput
             v-model="search"
-            :placeholder="__('Which lead? Type part of the address…')"
+            :placeholder="__('Which house? Type part of the address…')"
             class="w-full"
             @update:modelValue="findLeads"
           />
@@ -60,7 +73,7 @@
               @click="pickLead(m.name)"
             >
               {{ m.property_address || m.lead_name || m.name }}
-              <span class="text-ink-gray-5">· {{ m.lead_name || m.name }}</span>
+              <span class="text-ink-gray-5">· {{ m.lead_name || (m.name.startsWith('PROP-') ? __('property') : m.name) }}</span>
             </button>
           </div>
         </div>
@@ -137,6 +150,7 @@
 
             <div class="mt-3 flex flex-wrap gap-2">
               <SaveArvButton
+                v-if="lead?.kind !== 'property'"
                 :lead="lead?.name"
                 :arv="m.result.arv"
                 :arv-low="m.result.arv_low"
@@ -460,25 +474,28 @@ function findLeads(q) {
   clearTimeout(searchTimer)
   if (!q || q.trim().length < 3) return (matches.value = [])
   searchTimer = setTimeout(async () => {
-    matches.value = await call('frappe.client.get_list', {
-      doctype: 'CRM Lead',
-      filters: [['property_address', 'like', `%${q.trim()}%`]],
-      fields: ['name', 'lead_name', 'property_address'],
-      order_by: 'modified desc',
-      limit_page_length: 6,
-    }).catch(() => [])
+    // Leads and additional properties (CRM Property) both: any house can be priced.
+    const [leads, props] = await Promise.all([
+      call('frappe.client.get_list', {
+        doctype: 'CRM Lead',
+        filters: [['property_address', 'like', `%${q.trim()}%`]],
+        fields: ['name', 'lead_name', 'property_address'],
+        order_by: 'modified desc',
+        limit_page_length: 6,
+      }).catch(() => []),
+      call('crm.api.properties.search_properties', { q: q.trim() }).catch(() => []),
+    ])
+    matches.value = [...leads, ...(props || []).slice(0, 4)]
   }, 250)
 }
 
-// Follow the lead page the rep is on; leave a picked lead alone elsewhere.
-watch(
-  () => route.params.leadId,
-  (id) => id && open.value && pickLead(id),
-)
+// Follow the lead or property page the rep is on; leave a picked house alone elsewhere.
+const routeHouse = () => route.params.leadId || route.params.propertyId
+watch(routeHouse, (id) => id && open.value && pickLead(id))
 
 function toggle() {
   open.value = !open.value
-  if (open.value && route.params.leadId) pickLead(route.params.leadId)
+  if (open.value && routeHouse()) pickLead(routeHouse())
   call('crm.api.ai_pricer.status').then((r) => (online.value = !!r?.online)).catch(() => {})
 }
 
@@ -565,10 +582,11 @@ async function saveComment(m) {
   if (!forLead || !m.job) return
   m.commenting = true
   try {
-    await call('crm.api.ai_pricer.save_comment', { lead: forLead, job: m.job })
+    // An additional property's analysis lands on its seller's lead (`on`).
+    const r = await call('crm.api.ai_pricer.save_comment', { lead: forLead, job: m.job })
     m.commented = true
-    toast.success(__('Saved as a comment on the lead'))
-    getCachedResource(['activity', forLead])?.reload()
+    toast.success(r?.on ? __('Saved as a comment on the lead') : __('Saved as a comment on the property'))
+    if (r?.on) getCachedResource(['activity', r.on])?.reload()
   } catch (e) {
     toast.error(e?.messages?.[0] || e?.message || __('Could not save the comment.'))
   } finally {

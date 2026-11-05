@@ -34,7 +34,8 @@ def _money(value) -> str:
 def build_message(site: str, lead: str | None, address: str, ai_arv, feedback: str, user_arv=None, details: str = "") -> str:
 	where = address or lead or _("a property")
 	if lead:
-		where = f"[{where}]({site}/crm/leads/{lead}/comps)"
+		path = f"properties/{lead}" if str(lead).startswith("PROP-") else f"leads/{lead}/comps"
+		where = f"[{where}]({site}/crm/{path})"
 	lines = [f"I think the AI's ARV is off on {where}.", ""]
 	ai = _money(ai_arv)
 	mine = _money(user_arv)
@@ -58,7 +59,12 @@ def send(ai_arv=None, feedback: str = "", lead: str | None = None, address: str 
 		frappe.throw(_("Say what looks wrong with the math first."))
 	if len(feedback) > MAX_FEEDBACK:
 		frappe.throw(_("That feedback is too long."))
-	if lead:
+	if lead and str(lead).startswith("PROP-"):
+		# Ask AI on a lead's additional property (CRM Property): same checks the pricer makes.
+		from crm.api.ai_pricer import _check
+
+		_check(lead)
+	elif lead:
 		if not frappe.db.exists("CRM Lead", lead):
 			frappe.throw(_("Lead not found"), frappe.DoesNotExistError)
 		frappe.get_doc("CRM Lead", lead).check_permission("read")

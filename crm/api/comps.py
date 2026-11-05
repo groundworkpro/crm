@@ -2383,7 +2383,7 @@ def _ai_run_comps(doc, ai_job=None):
 
 	Empty for practice and scratch subjects, for users without Ask AI, and when the
 	lead has no run. Best-effort: a missing or bad run never costs the board."""
-	if doc.doctype != "CRM Lead":
+	if doc.doctype not in ("CRM Lead", SCRATCH_DOCTYPE):
 		return []
 	try:
 		from crm.api import ai_pricer
@@ -2402,10 +2402,10 @@ def _ai_run_comps(doc, ai_job=None):
 
 def _ai_locality(doc):
 	"""(city, state) of the subject, which an Ask AI comp's street-only address lacks."""
-	city = (doc.get("property_city") or "").strip()
-	state = (doc.get("property_state") or "").strip().upper()[:2]
+	city = (doc.get("property_city") or doc.get("city") or "").strip()
+	state = (doc.get("property_state") or doc.get("state") or "").strip().upper()[:2]
 	if not (city and state):
-		m = re.search(r",\s*([^,]+?),\s*([A-Za-z]{2})\b", doc.get("property_address") or "")
+		m = re.search(r",\s*([^,]+?),\s*([A-Za-z]{2})\b", _full_address(doc) or "")
 		if m:
 			city, state = city or m.group(1).strip(), state or m.group(2).upper()
 	return city, state

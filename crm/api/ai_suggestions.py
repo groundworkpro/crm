@@ -108,6 +108,9 @@ def record(source: str, user: str, correction: str, **kw):
 		if not supported() or not (correction or "").strip():
 			return None
 		doc = frappe.get_doc(build_row(source, user, correction, **kw))
+		# `lead` is a Link to CRM Lead; an additional property's PROP- name is kept in it as-is.
+		if str(kw.get("lead") or "").startswith("PROP-"):
+			doc.flags.ignore_links = True
 		doc.insert(ignore_permissions=True)
 		return getattr(doc, "name", None) or True
 	except Exception:

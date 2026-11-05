@@ -89,8 +89,8 @@ class PoolRow(unittest.TestCase):
 
 
 class RunComps(unittest.TestCase):
-	def test_not_a_lead_reads_nothing(self):
-		self.assertEqual(comps._ai_run_comps(types.SimpleNamespace(doctype="CRM Property", name="P")), [])
+	def test_practice_reads_nothing(self):
+		self.assertEqual(comps._ai_run_comps(types.SimpleNamespace(doctype="CRM Practice", name="P")), [])
 
 	def test_comps_without_a_point_are_dropped(self):
 		from crm.api import ai_pricer

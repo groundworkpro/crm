@@ -120,7 +120,11 @@ def _write_log(row: dict):
 	try:
 		if not _log_supported():
 			return
-		frappe.get_doc({"doctype": CHAT_DOCTYPE, **row}).insert(ignore_permissions=True)
+		doc = frappe.get_doc({"doctype": CHAT_DOCTYPE, **row})
+		# `lead` is a Link to CRM Lead; an additional property's PROP- name is stored in it as-is.
+		if _is_property(row.get("lead")):
+			doc.flags.ignore_links = True
+		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception:
 		frappe.log_error(title="Ask AI: chat log write failed")
@@ -158,7 +162,7 @@ def _file_correction(meta: dict, question: str, lesson: str, reply: str):
 
 	address = ""
 	try:
-		address = _address(frappe.get_doc("CRM Lead", meta.get("lead")))
+		address = _address(_doc(meta.get("lead")))
 	except Exception:
 		pass
 	if ai_suggestions.record(
@@ -179,8 +183,69 @@ def _address(doc) -> str:
 	return _full_address(doc)
 
 
+# ---- Subjects: a lead, or an additional property (CRM Property, PROP-) ----
+# Dennis, 2026-11-05: "make it so the AI comp tool will work for second properties / additional
+# properties in the lead". The worker prices by address, so a property is priced exactly like a
+# lead; only the CRM side (permission, notes, comment) needs to know which it is.
+
+def _is_property(name) -> bool:
+	from crm.api.comps import SCRATCH_PREFIX
+
+	return str(name or "").startswith(SCRATCH_PREFIX)
+
+
+def _check(name: str, ptype: str = "read"):
+	"""Lead: the lead's own permission. Property: the same sales-role check the properties pages use."""
+	if not _is_property(name):
+		frappe.has_permission("CRM Lead", ptype, name, throw=True)
+		return
+	from crm.api import comps
+
+	comps._guard()
+	if not frappe.db.exists(comps.SCRATCH_DOCTYPE, name):
+		frappe.throw(_("Property {0} does not exist.").format(name), frappe.DoesNotExistError)
+
+
+def _doc(name: str):
+	from crm.api.comps import subject_doctype
+
+	return frappe.get_doc(subject_doctype(name), name)
+
+
+def _parent_lead(name: str) -> str:
+	"""The lead a property belongs to ("" when unlinked); a lead is its own."""
+	if not _is_property(name):
+		return name
+	from crm.api import properties
+
+	return properties.linked_lead_and_street(name)[0]
+
+
+def _houses(lead: str) -> list:
+	"""The seller's lead first, then every property linked to it: what the bubble lets the rep switch between."""
+	from crm.api import properties
+
+	out = []
+	if lead and frappe.db.exists("CRM Lead", lead):
+		out.append({"name": lead, "address": _address(frappe.get_doc("CRM Lead", lead)), "kind": "lead"})
+	if lead and properties._available() and properties._lead_supported():
+		for n in frappe.get_all(properties.SCRATCH_DOCTYPE, filters={"lead": lead}, pluck="name", order_by="creation asc", limit=20):
+			out.append({"name": n, "address": _address(frappe.get_doc(properties.SCRATCH_DOCTYPE, n)), "kind": "property"})
+	return out
+
+
 def _notes(lead: str) -> str:
-	"""Recent notes on the lead, newest first, as plain text for the model."""
+	"""Recent notes on the lead, newest first, as plain text for the model. For a property, its seller's lead
+	notes (that is where the reps write about the deal) after the property's own note."""
+	pre = ""
+	if _is_property(lead):
+		doc = _doc(lead)
+		pre = f"- This is an additional property of the seller ({_address(doc)}); notes below are the seller's lead notes.\n"
+		if (doc.get("notes") or "").strip():
+			pre += f"- Property note: {doc.notes.strip()[:600]}\n"
+		lead = _parent_lead(lead)
+		if not lead:
+			return pre.strip()
 	rows = frappe.get_all(
 		"FCRM Note",
 		filters={"reference_doctype": "CRM Lead", "reference_docname": lead},
@@ -193,7 +258,7 @@ def _notes(lead: str) -> str:
 		text = frappe.utils.strip_html(n.get("content") or "").strip()
 		if text:
 			out.append(f"- {str(n.get('creation'))[:10]} {n.get('title') or ''}: {text[:600]}")
-	return "\n".join(out)
+	return (pre + "\n".join(out)).strip()
 
 
 def clean_facts(facts) -> dict:
@@ -278,25 +343,41 @@ def status():
 
 @frappe.whitelist()
 def lead_info(lead: str):
-	"""Address and name for the bubble's lead chip."""
+	"""Address and name for the bubble's house chip. `lead` may be a lead or an additional property (PROP-);
+	`houses` is the seller's lead and all its linked properties, so the rep can price any of them."""
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
-	doc = frappe.get_doc("CRM Lead", lead)
-	return {"name": doc.name, "address": _address(doc), "title": doc.get("lead_name") or doc.name}
+	_check(lead)
+	doc = _doc(lead)
+	prop = _is_property(lead)
+	parent = _parent_lead(lead)
+	try:
+		houses = _houses(parent) if parent else []
+	except Exception:
+		houses = []
+	if not any(h["name"] == doc.name for h in houses):
+		houses.append({"name": doc.name, "address": _address(doc), "kind": "property" if prop else "lead"})
+	return {
+		"name": doc.name,
+		"address": _address(doc),
+		"title": doc.name if prop else (doc.get("lead_name") or doc.name),
+		"kind": "property" if prop else "lead",
+		"lead": parent or None,
+		"houses": houses if len(houses) > 1 else [],
+	}
 
 
 @frappe.whitelist(methods=["POST"])
 def ask(lead: str, kind: str = "price", question: str = "", history=None, chat=None, page: str = "", facts=None):
 	"""facts: house facts the rep fixed on a low-confidence card; saved on the lead and used from then on."""
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	if isinstance(history, str):
 		history = json.loads(history or "[]")
 	if not _worker_up():
 		frappe.throw(_("The pricer is offline right now (agentbox worker not running). Try again in a minute."))
-	doc = frappe.get_doc("CRM Lead", lead)
+	doc = _doc(lead)
 	if facts:
-		frappe.has_permission("CRM Lead", "write", lead, throw=True)
+		_check(lead, "write")
 	saved = save_facts(lead, facts) if facts else subject_facts(lead)
 	job = build_job(kind, lead, _address(doc), question, history, _notes(lead) if kind == "ask" else "", page, saved)
 	_push(job)
@@ -336,7 +417,7 @@ def chat_history(lead: str):
 	its reply (asked, then the tab was reloaded), so the bubble can resume polling it.
 	"""
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	empty = {"chat": None, "messages": [], "pending": None}
 	if not _log_supported():
 		return empty
@@ -414,7 +495,7 @@ def ai_comps(lead: str, job: str | None = None):
 	`?ai=<job>`) is read from Redis; otherwise the latest finished run on the lead by anyone
 	(price card or "Run the 13 steps"; AVM training runs excluded). None when there is no run."""
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	return latest_run(lead, job)
 
 
@@ -464,13 +545,15 @@ def _para(text: str) -> str:
 	return "<p>" + html.escape(str(text)).replace("\n", "<br>") + "</p>"
 
 
-def comment_html(answer: dict | None, text: str = "", question: str = "") -> str:
+def comment_html(answer: dict | None, text: str = "", question: str = "", for_house: str = "") -> str:
 	"""The AI's reply as a timeline comment: a price card in full, or the reply text.
 
 	Wrapped in `data-ai-comping` so the timeline can tag it "AI comping tool"
 	(CommentArea.vue); the bold title says the same where the tag is not drawn.
 	"""
 	out = ['<div data-ai-comping="1">', f"<p><b>{COMMENT_TITLE}</b></p>"]
+	if for_house:
+		out.append("<p><b>For " + html.escape(for_house[:200]) + "</b></p>")
 	if question and question != "Price this house":
 		out.append("<p><i>Asked: " + html.escape(question[:500]) + "</i></p>")
 	if answer:
@@ -544,21 +627,31 @@ def save_comment(lead: str, job: str):
 	"""
 	_guard()
 	_check_job_id(job)
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	answer, text, question = _reply_for(lead, job)
+	for_house = ""
+	# An additional property's analysis goes on its seller's lead (where the reps work the deal, like a
+	# property's saved calc does), saying which house it is for; an unlinked property keeps it itself.
+	ref_dt, ref = "CRM Lead", lead
+	if _is_property(lead):
+		from crm.api import properties
+
+		parent, street = properties.linked_lead_and_street(lead)
+		ref_dt, ref = ("CRM Lead", parent) if parent else (properties.SCRATCH_DOCTYPE, lead)
+		for_house = f"{street or lead} ({lead})"
 	doc = frappe.get_doc(
 		{
 			"doctype": "Comment",
 			"comment_type": "Comment",
-			"reference_doctype": "CRM Lead",
-			"reference_name": lead,
-			"content": comment_html(answer, text, question),
+			"reference_doctype": ref_dt,
+			"reference_name": ref,
+			"content": comment_html(answer, text, question, for_house),
 			"comment_email": frappe.session.user,
 			"comment_by": frappe.session.user,
 		}
 	)
 	doc.insert(ignore_permissions=True)
-	return {"comment": getattr(doc, "name", None)}
+	return {"comment": getattr(doc, "name", None), "on": ref if ref_dt == "CRM Lead" else None}
 
 
 def step_setup_dict() -> dict:
@@ -600,7 +693,7 @@ def step_setup(lead: str | None = None, detail=0):
 
 	_guard()
 	if lead:
-		frappe.has_permission("CRM Lead", "read", lead, throw=True)
+		_check(lead)
 	setup = effective_setup(lead)
 	if not int(detail or 0):
 		return setup
@@ -612,7 +705,7 @@ def step_setup(lead: str | None = None, detail=0):
 def clear_run_setup(lead: str):
 	"""Drop this user's own step changes on this lead: their next run uses the team setup again."""
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	frappe.db.set_default(_run_key(lead), "{}")
 	frappe.db.commit()
 	return step_setup(lead, detail=1)
@@ -655,7 +748,7 @@ def save_step(n, reason: str, tool=None, note=None, size_band=None, max_mi=None,
 	if not team_wide:
 		if not lead:
 			frappe.throw(_("Step changes are made on a lead's comps page."))
-		frappe.has_permission("CRM Lead", "read", lead, throw=True)
+		_check(lead)
 	setup = step_setup_dict() if team_wide else effective_setup(lead)
 	cur = dict(setup.get(str(n)) or {})
 	new = {}
@@ -710,7 +803,7 @@ def log_change(lead: str, reason: str, changed: str, old_value="", new_value="",
 	from crm.api import ai_suggestions
 
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	reason = (reason or "").strip()[:MAX_QUESTION]
 	if not reason:
 		frappe.throw(_("Say why you changed it."))
@@ -720,7 +813,7 @@ def log_change(lead: str, reason: str, changed: str, old_value="", new_value="",
 	user = frappe.session.user
 	_write_log({"chat": _clean_chat(chat), "lead": lead, "user": user, "kind": "change", "job": job, "role": "user", "text": line})
 	name = ai_suggestions.record(
-		"Comps page", user, reason, lead=lead, address=_address(frappe.get_doc("CRM Lead", lead)),
+		"Comps page", user, reason, lead=lead, address=_address(_doc(lead)),
 		lesson=f"Step {step}: {line}" if step else line, chat=chat, job=job, change=change,
 	)
 	if name:
@@ -734,7 +827,7 @@ def changes(lead: str):
 	from crm.api import ai_suggestions
 
 	_guard()
-	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	_check(lead)
 	if not ai_suggestions.supported():
 		return []
 	return frappe.get_all(

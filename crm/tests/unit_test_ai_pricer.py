@@ -450,3 +450,99 @@ class AiCompsListTest(_LogBase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class AiPropertySubjectTest(_LogBase):
+	"""Dennis, 2026-11-05: Ask AI on a lead's additional properties (CRM Property, PROP-)."""
+
+	def setUp(self):
+		super().setUp()
+		from crm.api import comps, properties
+
+		self.flags = []
+		lead = types.SimpleNamespace(name="CRM-LEAD-1", get=lambda k, d=None: {"lead_name": "Mark"}.get(k, d))
+		prop = types.SimpleNamespace(name="PROP-00022", notes="Vacant duplex", get=lambda k, d=None: {"notes": "Vacant duplex"}.get(k, d))
+
+		def get_doc(arg, *a):
+			if isinstance(arg, dict):
+				flags = types.SimpleNamespace(ignore_links=False)
+				self.flags.append((arg, flags))
+				return types.SimpleNamespace(insert=lambda **k: self.rows.append(arg), flags=flags)
+			return prop if (a and str(a[0]).startswith("PROP-")) else lead
+
+		shim.get_doc.side_effect = get_doc
+		shim.db.values[("CRM Property", "PROP-00022")] = 1
+		shim.db.values[("CRM Lead", "CRM-LEAD-1")] = 1
+		self.g = mock.patch.object(comps, "_guard")
+		self.guard = self.g.start()
+		self.l = mock.patch.object(properties, "linked_lead_and_street", return_value=("CRM-LEAD-1", "112 Highland Ave"))
+		self.l.start()
+		shim.has_permission.reset_mock()
+
+	def tearDown(self):
+		self.g.stop()
+		self.l.stop()
+		shim.db.values.pop(("CRM Property", "PROP-00022"), None)
+		shim.db.values.pop(("CRM Lead", "CRM-LEAD-1"), None)
+		super().tearDown()
+
+	def test_property_is_priced_and_logged_under_its_own_name(self):
+		ai_pricer.ask("PROP-00022")
+		job = json.loads(self.r.lists[ai_pricer.QUEUE][0])
+		self.assertEqual(job["lead"], "PROP-00022")
+		self.guard.assert_called()  # the properties pages' sales-role check, not CRM Lead's
+		shim.has_permission.assert_not_called()
+		(row, flags), = [(r, f) for r, f in self.flags if r.get("doctype") == ai_pricer.CHAT_DOCTYPE]
+		self.assertEqual(row["lead"], "PROP-00022")
+		self.assertTrue(flags.ignore_links)
+
+	def test_missing_property_refused(self):
+		with self.assertRaises(Exception):
+			ai_pricer.ask("PROP-99999")
+
+	def test_ask_gets_the_property_note_and_the_sellers_lead_notes(self):
+		shim.get_all.return_value = [shim._dict(title="Call", content="<p>Seller wants 90k for both</p>", creation="2026-11-04 10:00")]
+		import re
+
+		try:
+			with mock.patch.object(shim.utils, "strip_html", lambda h: re.sub("<[^>]+>", "", h), create=True):
+				ai_pricer.ask("PROP-00022", "ask", "what about the duplex?")
+		finally:
+			shim.get_all.return_value = []
+		job = json.loads(self.r.lists[ai_pricer.QUEUE][0])
+		self.assertIn("additional property", job["context"])
+		self.assertIn("Vacant duplex", job["context"])
+		self.assertIn("Seller wants 90k for both", job["context"])
+
+	def test_lead_info_lists_the_sellers_houses(self):
+		from crm.api import properties
+
+		with mock.patch.object(properties, "_available", return_value=True), \
+				mock.patch.object(properties, "_lead_supported", return_value=True):
+			shim.get_all.return_value = ["PROP-00022"]
+			try:
+				info = ai_pricer.lead_info("PROP-00022")
+			finally:
+				shim.get_all.return_value = []
+		self.assertEqual((info["kind"], info["lead"]), ("property", "CRM-LEAD-1"))
+		self.assertEqual([(h["name"], h["kind"]) for h in info["houses"]], [("CRM-LEAD-1", "lead"), ("PROP-00022", "property")])
+
+	def test_comment_goes_on_the_sellers_lead_naming_the_house(self):
+		jid = ai_pricer.ask("PROP-00022", "ask", "rent?")["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "text": "About $1,400."})
+		out = ai_pricer.save_comment("PROP-00022", jid)
+		(c,) = [r for r in self.rows if r.get("doctype") == "Comment"]
+		self.assertEqual((c["reference_doctype"], c["reference_name"]), ("CRM Lead", "CRM-LEAD-1"))
+		self.assertIn("For 112 Highland Ave (PROP-00022)", c["content"])
+		self.assertEqual(out["on"], "CRM-LEAD-1")
+
+	def test_unlinked_property_keeps_its_comment(self):
+		from crm.api import properties
+
+		jid = ai_pricer.ask("PROP-00022", "ask", "rent?")["job"]
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "text": "About $1,400."})
+		with mock.patch.object(properties, "linked_lead_and_street", return_value=("", "112 Highland Ave")):
+			out = ai_pricer.save_comment("PROP-00022", jid)
+		(c,) = [r for r in self.rows if r.get("doctype") == "Comment"]
+		self.assertEqual((c["reference_doctype"], c["reference_name"]), ("CRM Property", "PROP-00022"))
+		self.assertIsNone(out["on"])
