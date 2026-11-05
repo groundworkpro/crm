@@ -5,7 +5,7 @@
 // Takes a 13-step run (`decide`: repairs {tier, per_sf, total}, offers {classic, two_x,
 // fee, recommend}) or an older one-shot price card (repair_tier, offers {repairs, ...}).
 // The formulas are comping/decide.py step 13's: classic = 70% of value - repairs - fee,
-// 2x = 88% of value - 2 x repairs - fee, each rounded to the nearest $1,000.
+// 2x = 88% (90% on older runs) of value - 2 x repairs - fee, each rounded to the nearest $1,000.
 
 const TIER_LABEL = {
   clean: 'clean-up',
@@ -46,14 +46,18 @@ export function aiCalcText(d, sqft) {
     lines.push(__('Repairs: {0}{1}', [tier ? `${TIER_LABEL[tier] || tier}, ` : '', how + money(total)]))
   }
   if (fee) lines.push(__('Fee: {0}', [money(fee)]))
-  // Show the formula only when it gives back the AI's own figure (older cards used 90% for 2x).
-  const shown = (label, val, mult, times) => {
-    const calc = arv * mult - times * total - fee
-    if (total && fee && (val == null || Math.abs(calc - Number(val)) <= 1000))
+  // Show the formula that gives back the AI's own figure. 2x used 90% of value before
+  // 2026-10 and 88% since, so old runs in the chat history match the 90% one.
+  const shown = (label, val, mults, times) => {
+    const fits = (m) => Math.abs(arv * m - times * total - fee - Number(val)) <= 1000
+    const mult = total && fee ? (val == null ? mults[0] : mults.find(fits)) : null
+    if (mult != null) {
+      const calc = arv * mult - times * total - fee
       return `${label}: ${money(arv)} × ${mult.toFixed(2)} − ${times > 1 ? `${times} × ` : ''}${money(total)} − ${money(fee)} ≈ ${money(val ?? Math.round(calc / 1000) * 1000)}`
+    }
     return val != null ? `${label}: ${money(val)}` : ''
   }
-  for (const l of [shown(__('Classic 70%'), o.classic, 0.7, 1), shown(__('2× repairs'), o.two_x, 0.88, 2)]) if (l) lines.push(l)
+  for (const l of [shown(__('Classic 70%'), o.classic, [0.7], 1), shown(__('2× repairs'), o.two_x, [0.88, 0.9], 2)]) if (l) lines.push(l)
   if (o.recommend) lines.push(__('Leads with: {0}', [o.recommend === 'classic' ? __('Classic 70%') : __('2× repairs')]))
   return lines.join('\n')
 }
