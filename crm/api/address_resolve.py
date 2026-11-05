@@ -242,6 +242,14 @@ def _cached_zillow_point(doc):
 	queried = str(facts.get("_queried_address") or "").strip()
 	if not queried or _address_key(queried) != _address_key(current):
 		return None
+	# Same query, different house: Zillow answered "112 Highland Ave 13203" with
+	# North Syracuse 13212. Its rooftop must not become this subject's parcel.
+	try:
+		from crm.api.comps import _zillow_address_disagrees
+		if _zillow_address_disagrees(doc, facts):
+			return None
+	except Exception:
+		pass
 	return _exact_point(facts)
 
 

@@ -538,6 +538,7 @@ def _normalize(raw):
 	sale, listing = _price_history(raw)
 
 	home_type = str(raw.get("homeType") or "").strip().upper()
+	addr = raw.get("address") if isinstance(raw.get("address"), dict) else {}
 	# GOTCHA — on an off-market home `price` mirrors taxAssessedValue rather than
 	# any list price (verified: Macon price 6005 == taxAssessedValue 6005). It is
 	# deliberately NOT surfaced as a price.
@@ -559,6 +560,14 @@ def _normalize(raw):
 			"home_status": raw.get("homeStatus"),
 		"is_for_auction": _is_for_auction(raw),
 		"address": raw.get("streetAddress"),
+		# Carried so `comps._zillow_wrong_house` can tell "112 Highland Ave,
+		# Syracuse 13203" from the North Syracuse 13212 house Zillow matched instead
+		# (PROP-00023, 2026-11-05). NOT in REQUIRED_FACT_KEYS: blobs cached before
+		# this simply lack the keys and fall back to the distance test alone,
+		# rather than re-billing ~1,150 leads to backfill them.
+		"city": raw.get("city") or addr.get("city"),
+		"state": raw.get("state") or addr.get("state"),
+		"zip": raw.get("zipcode") or addr.get("zipcode"),
 		# Carried so a lead whose facts we already paid for can show its own photo
 		# without a second call. Leads cached before this shipped simply have no key
 		# and fall back to the area search's self-match, which is also free.

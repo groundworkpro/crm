@@ -102,7 +102,11 @@ RECORD_PROVIDER = "redfin"
 #: the others are read defensively so a Redfin-first subject keeps its record
 #: — and with it the Redfin Estimate and the listing URL, which ride the same
 #: fetch and have nothing to do with the discrepancy flag.
-VENDOR_PRESENCE_FLAGS = ("has_zillow", "has_redfin", "has_realtor")
+#:
+#: `zillow_answered` (2026-11-05) opens the gate on a Zillow MISS or a rejected
+#: wrong-house hit too: that is when the Redfin record is the subject's only
+#: facts, and a cold miss used to never fetch it (112 Highland Ave, Syracuse).
+VENDOR_PRESENCE_FLAGS = ("has_zillow", "has_redfin", "has_realtor", "zillow_answered")
 
 
 def _base_url():

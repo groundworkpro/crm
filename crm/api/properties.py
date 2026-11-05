@@ -179,6 +179,114 @@ def _resolve_address(address: str) -> tuple[dict, str]:
 	return {"address": address, "city": "", "state": "", "zip": ""}, ""
 
 
+#: A trailing ZIP (or ZIP+4) on a typed address line.
+_RE_ZIP_TAIL = re.compile(r"[\s,]+(\d{5})(?:-\d{4})?\s*$")
+
+
+def _census_parts(address: str):
+	"""One address -> {city, state, zip, lat, lng} from the free Census geocoder,
+	or None. Same endpoint `comps._census_geocode` uses for the subject point."""
+	import urllib.parse
+	import urllib.request
+
+	from crm.api.comps import CENSUS_URL, UA
+
+	qs = urllib.parse.urlencode({"address": address, "benchmark": "Public_AR_Current", "format": "json"})
+	try:
+		req = urllib.request.Request(f"{CENSUS_URL}?{qs}", headers=UA)
+		with urllib.request.urlopen(req, timeout=10) as resp:
+			body = json.loads(resp.read().decode("utf-8", "replace"))
+		matches = (body.get("result") or {}).get("addressMatches") or []
+		if len(matches) != 1:
+			# None, or several houses the line could be: not ours to pick.
+			return None
+		m = matches[0]
+		comp = m.get("addressComponents") or {}
+		coords = m.get("coordinates") or {}
+		return {
+			"city": str(comp.get("city") or "").strip(),
+			"state": str(comp.get("state") or "").strip().upper(),
+			"zip": str(comp.get("zip") or "").strip(),
+			"lat": float(coords["y"]),
+			"lng": float(coords["x"]),
+		}
+	except Exception:
+		# A geocoder outage must not stop a rep adding a house.
+		return None
+
+
+def _strip_tail(street: str, city: str, state: str, zip5: str) -> str:
+	""""112 Highland Ave, Syracuse NY 13203" -> "112 Highland Ave".
+
+	Only trailing tokens that ARE the geocoded city/state/ZIP come off, so a
+	street that merely contains a city's name keeps it."""
+	s = street.strip().rstrip(" ,.")
+	tails = [rf"[\s,]+{re.escape(zip5)}(?:-\d{{4}})?"] if zip5 else []
+	if state:
+		tails.append(rf"[\s,]+{re.escape(state)}\.?")
+	if city:
+		tails.append(r"[\s,]+" + r"\s+".join(re.escape(w) for w in city.split()))
+	changed = True
+	while changed:
+		changed = False
+		for tail in tails:
+			m = re.search(tail + r"\s*$", s, re.I)
+			if not m:
+				continue
+			rest = s[: m.start()].rstrip(" ,.")
+			# Never strip down to less than "<number> <street>".
+			if re.match(r"^\S+\s+\S+", rest):
+				s = rest
+				changed = True
+	return s
+
+
+def _complete_address(parts: dict):
+	"""Fill a typed address's missing city/state/ZIP -> (parts, point or None).
+
+	"112 Highland Ave 13203" was stored street+ZIP with no city or state
+	(PROP-00022, 2026-11-05), and Zillow resolved that line to a house in
+	another town. Anchored lines only: the text must already carry a ZIP or a
+	comma-separated city, and Census must agree with it (same ZIP, or the city
+	named in the text). A bare "112 Highland Ave" is left alone — Census would
+	have to guess the town, and a wrong town is worse than a blank one.
+	"""
+	if parts.get("city") and parts.get("state") and parts.get("zip"):
+		return parts, None
+	text = (parts.get("address") or "").strip()
+	typed_zip = _RE_ZIP_TAIL.search(text)
+	if not typed_zip and "," not in text:
+		return parts, None
+	hit = _census_parts(", ".join(
+		p for p in (text, parts.get("city"), parts.get("state"), parts.get("zip")) if p
+	))
+	if not hit or not hit["zip"]:
+		return parts, None
+	if typed_zip:
+		if typed_zip.group(1) != hit["zip"][:5]:
+			return parts, None
+	elif not hit["city"] or hit["city"].lower() not in text.lower():
+		return parts, None
+	city = parts.get("city") or hit["city"].title()
+	state = parts.get("state") or hit["state"]
+	zip_code = parts.get("zip") or hit["zip"]
+	out = {
+		**parts,
+		"address": _strip_tail(text, hit["city"], hit["state"], hit["zip"][:5]),
+		"city": city,
+		"state": state,
+		"zip": zip_code,
+	}
+	return out, (hit["lat"], hit["lng"])
+
+
+def _set_point(doc, point) -> None:
+	"""Store the Census point the completion already paid for, so the first
+	comps open does not geocode the same line again."""
+	if point and frappe.db.has_column(SCRATCH_DOCTYPE, "property_lat"):
+		doc.property_lat, doc.property_lng = point
+
+
 def _stage(doc) -> str:
 	val = (doc.get("status") or "").strip()
 	return val if val in STAGES else DEFAULT_STAGE
@@ -351,16 +459,24 @@ def create_property(
 	if not _clean(address):
 		frappe.throw(_("Type the property address or paste a listing link first."))
 	parts, listing_url = _resolve_address(address)
+	parts = {
+		**parts,
+		"city": _clean(city) or parts["city"],
+		"state": (_clean(state) or parts["state"]).upper()[:2],
+		"zip": _clean(zip_code) or parts["zip"],
+	}
+	parts, point = _complete_address(parts)
 	doc = frappe.get_doc(
 		{
 			"doctype": SCRATCH_DOCTYPE,
 			"property_address": parts["address"],
-			"property_city": _clean(city) or parts["city"],
-			"property_state": (_clean(state) or parts["state"]).upper()[:2],
-			"property_zip": _clean(zip_code) or parts["zip"],
+			"property_city": parts["city"],
+			"property_state": parts["state"],
+			"property_zip": parts["zip"],
 			"notes": (notes or "").strip(),
 		}
 	)
+	_set_point(doc, point)
 	if _status_supported():
 		doc.status = DEFAULT_STAGE
 	if listing_url and _listing_url_supported():
@@ -407,6 +523,20 @@ def update_property(
 		doc.property_state = _clean(state).upper()[:2]
 	if zip_code is not None:
 		doc.property_zip = _clean(zip_code)
+	point = None
+	if address is not None and city is None and state is None and zip_code is None:
+		# A retyped one-line address gets the same completion as a new one.
+		done, point = _complete_address({
+			"address": doc.property_address,
+			"city": "" if not listing_url else doc.get("property_city") or "",
+			"state": "" if not listing_url else doc.get("property_state") or "",
+			"zip": "" if not listing_url else doc.get("property_zip") or "",
+		})
+		if point:
+			doc.property_address = done["address"]
+			doc.property_city = done["city"]
+			doc.property_state = done["state"]
+			doc.property_zip = done["zip"]
 	if notes is not None:
 		doc.notes = (notes or "").strip()
 	if lead is not None:
@@ -422,6 +552,7 @@ def update_property(
 	if before != after:
 		doc.property_lat = None
 		doc.property_lng = None
+		_set_point(doc, point)
 		doc.zillow_facts = ""
 		doc.zillow_fetched_at = None
 		doc.zillow_zpid = ""

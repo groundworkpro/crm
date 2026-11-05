@@ -24,8 +24,25 @@
       />
     </div>
   </div>
+  <!-- Zillow has no (right) house but Redfin does: the facts come from Redfin,
+       so this is a note, not a request to re-confirm a good address
+       (112 Highland Ave, Syracuse, 2026-11-05). -->
   <div
-    v-if="unavailable && !visible"
+    v-if="coveredByRedfin"
+    class="rounded-md border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-7"
+  >
+    <template v-if="rejected">
+      <span class="font-medium">{{ __('Zillow matched a different house.') }}</span>
+      {{ rejectedDetail }}
+      {{ __('Ignored — using Redfin’s details.') }}
+    </template>
+    <template v-else>
+      <span class="font-medium">{{ __('Not on Zillow.') }}</span>
+      {{ __('Using Redfin’s details for this house.') }}
+    </template>
+  </div>
+  <div
+    v-else-if="unavailable && !visible"
     class="rounded-md border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-7"
   >
     <span class="font-medium">{{ __('Zillow isn’t answering right now.') }}</span>
@@ -35,7 +52,12 @@
     v-else-if="visible"
     class="flex flex-col gap-2 rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-2 text-xs text-ink-amber-3"
   >
-    <div>
+    <div v-if="rejected">
+      <span class="font-medium">{{ __('Zillow matched a different house.') }}</span>
+      {{ rejectedDetail }}
+      {{ __('Ignored. Ask the seller to confirm the address.') }}
+    </div>
+    <div v-else>
       <span class="font-medium">{{ __('Zillow doesn’t recognize this address.') }}</span>
       {{ __('Ask the seller to confirm it.') }}
     </div>
@@ -135,6 +157,14 @@ const unavailableDetail = computed(() => {
   return __('The address was not checked and Zillow sales/listings are missing. Our own comp index and BatchData still load; try again in a few minutes.')
 })
 const miss = computed(() => Boolean(props.match?.tried && !props.match?.matched))
+// Zillow's hit was another house (comps._zillow_wrong_house): {address, distance_mi}.
+const rejected = computed(() => props.match?.rejected || null)
+const rejectedDetail = computed(() => {
+  const r = rejected.value
+  if (!r) return ''
+  const where = r.address ? `${r.address}, ` : ''
+  return __('({0}{1} mi away)', [where, r.distance_mi])
+})
 const dirty = computed(() => {
   if (savedSinceFetch.value) return true
   const now = norm(savedAddress.value)
@@ -142,6 +172,9 @@ const dirty = computed(() => {
   return Boolean(now && was && now !== was)
 })
 const visible = computed(() => miss.value || dirty.value)
+const coveredByRedfin = computed(
+  () => miss.value && !dirty.value && Boolean(props.match?.redfin_matched),
+)
 const canSave = computed(() => {
   const next = norm(draft.value)
   return Boolean(next) && next !== norm(savedAddress.value)

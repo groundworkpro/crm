@@ -558,6 +558,149 @@ def _redfin_first_for(doc) -> bool:
 	return created >= cutover
 
 
+#: How far Zillow's rooftop may sit from our own point for the house before its
+#: answer is read as a DIFFERENT house. Zillow's `/property?address=` resolves
+#: loosely: "112 Highland Ave 13203" (Syracuse) came back as 112 Highland Ave,
+#: North Syracuse 13212, 5.7 mi away, and the subject card printed that house's
+#: 2 bd / 1 ba / 1955 (PROP-00023, 2026-11-05). Measured on prod the same day:
+#: 1,141 of 1,154 cached hits sit within 0.25 mi of our point; the tail past
+#: 0.5 mi is ten subjects, most of them the wrong-house kind.
+ZILLOW_MAX_OFFSET_MI = 0.5
+
+#: `parcel_source` values that are an independent, exact fix on the house.
+#: "zillow" is excluded on purpose: a parcel copied from Zillow's own rooftop
+#: cannot vouch for Zillow.
+_EXACT_PARCEL_SOURCES = ("redfin", "google")
+
+_RE_TRAILING_ZIP = re.compile(r"(?:^|[\s,])(\d{5})(?:-\d{4})?\s*$")
+
+
+def _zip_of(doc) -> str:
+	"""The subject's 5-digit ZIP: the field, else a trailing ZIP on the street
+	line. Never "the first 5-digit run" — that is the house number on
+	"18067 N Villa Rita Dr"."""
+	z = re.sub(r"\D", "", str(doc.get("property_zip") or ""))[:5]
+	if len(z) == 5:
+		return z
+	m = _RE_TRAILING_ZIP.search(str(doc.get("property_address") or "").strip())
+	return m.group(1) if m else ""
+
+
+def _zillow_reference_point(doc, redfin_rec=None):
+	"""(lat, lng, kind) to check Zillow's rooftop against, or None.
+
+	Best first: Redfin's own exact point for the matched record, then an exact
+	parcel (Redfin/Google), then the comp-circle centre (usually a Census
+	geocode: street-interpolated, and occasionally plain wrong — the Dolton IL
+	lead's sits 238 mi off while Zillow is right). Only the first two are exact;
+	see `_zillow_wrong_house` for why that matters.
+	"""
+	rec = redfin_rec if (redfin_rec or {}).get("matched") else None
+	if rec and rec.get("point_exact") is True:
+		lat, lng = _num(rec.get("lat")), _num(rec.get("lng"))
+		if lat is not None and lng is not None:
+			return lat, lng, "redfin"
+	if str(doc.get("parcel_source") or "") in _EXACT_PARCEL_SOURCES:
+		lat, lng = _num(doc.get("parcel_lat")), _num(doc.get("parcel_lng"))
+		if lat and lng:
+			return lat, lng, "parcel"
+	lat, lng = _num(doc.get("property_lat")), _num(doc.get("property_lng"))
+	if lat and lng:
+		return lat, lng, "geocode"
+	return None
+
+
+def _zillow_address_disagrees(doc, zillow) -> bool:
+	"""Zillow's own address names another house: other ZIP, number or street."""
+	z_zip = re.sub(r"\D", "", str(zillow.get("zip") or ""))[:5]
+	ours_zip = _zip_of(doc)
+	if len(z_zip) == 5 and ours_zip and z_zip != ours_zip:
+		return True
+	theirs = str(zillow.get("address") or "").strip()
+	if not theirs:
+		return False
+	from crm.api.address_resolve import classify_address
+
+	return classify_address(_full_address(doc), theirs) == "different"
+
+
+def _zillow_wrong_house(doc, zillow, redfin_rec=None):
+	"""None when Zillow's hit is plausibly this house, else why it is not.
+
+	Rejected only when Zillow's rooftop is more than ZILLOW_MAX_OFFSET_MI from
+	our point AND either that point is an exact fix (Redfin / an exact parcel) or
+	Zillow's own address disagrees with ours. Distance alone against a Census
+	geocode is not enough: that geocode is the wrong one often enough
+	(CRM-LEAD-2026-00939) that it must not overrule a same-address hit.
+
+	Read-side only: the cached blob stays as Zillow sent it, so the verdict is
+	recomputed each request — the Redfin record arriving later can turn it.
+	"""
+	if not zillow or not zillow.get("zpid"):
+		return None
+	zlat, zlng = _num(zillow.get("lat")), _num(zillow.get("lng"))
+	ref = _zillow_reference_point(doc, redfin_rec)
+	if zlat is None or zlng is None or not ref:
+		return None
+	dist = _haversine_mi(ref[0], ref[1], zlat, zlng)
+	if dist <= ZILLOW_MAX_OFFSET_MI:
+		return None
+	if ref[2] == "geocode" and not _zillow_address_disagrees(doc, zillow):
+		return None
+	state_zip = " ".join(str(x).strip() for x in (zillow.get("state"), zillow.get("zip")) if x)
+	where = ", ".join(
+		str(p).strip() for p in (zillow.get("address"), zillow.get("city"), state_zip)
+		if p and str(p).strip()
+	)
+	return {
+		"zpid": str(zillow.get("zpid") or ""),
+		"address": where,
+		"distance_mi": round(dist, 1),
+		"checked_against": ref[2],
+	}
+
+
+def subject_zillow(doc, redfin_rec=None):
+	"""(Zillow facts or None, rejection or None) for the subject.
+
+	A rejected hit comes back as a remembered MISS (`{}` plus the queried
+	address), so every consumer treats it exactly like "Zillow does not know
+	this house": no beds, no Zestimate, no photo, no Street View aim taken from
+	the wrong house.
+	"""
+	from crm.api import zillow as zillow_api
+
+	zillow = zillow_api.facts_for_lead(doc)
+	rejected = _zillow_wrong_house(doc, zillow, redfin_rec)
+	if rejected:
+		zillow = {"_queried_address": (zillow or {}).get("_queried_address") or ""}
+	return zillow, rejected
+
+
+def _fill_from_redfin(subject, rec) -> None:
+	"""Cold-load top-up: Zillow has no house and Redfin's record only just
+	arrived (nothing was cached when `_subject_facts` ran). Fills the facts the
+	seller's pick-list bands or nothing were standing in for, so the card is
+	right on the FIRST open; the next open derives them in `_subject_facts`.
+	A manual sqft override is never touched. Mutates `subject`."""
+	src = subject.setdefault("source", {})
+	for key, unit, group in (("beds", "", False), ("baths", "", False),
+	                         ("sqft", "", True), ("year_built", "", False)):
+		val = _num(rec.get(key))
+		if not val or src.get(key) in ("manual", "redfin", "zillow", "listing"):
+			continue
+		band = (val, val, True)
+		subject[f"{key}_band"] = [val, val]
+		subject[f"{key}_exact"] = True
+		subject[key] = val
+		subject[f"{key}_label"] = _band_label(band, unit, group)
+		src[key] = "redfin"
+	if not subject.get("property_type") and rec.get("property_type"):
+		subject["property_type"] = rec["property_type"]
+		src["property_type"] = "redfin"
+	subject["has_redfin"] = bool(rec.get("property_id")) or subject.get("has_redfin")
+
+
 def _subject_facts(doc, redfin_rec=None):
 	"""Everything we can honestly say about the subject, best source first.
 
@@ -619,10 +762,9 @@ def _subject_facts(doc, redfin_rec=None):
 	"""
 	listing = _self_listing(doc)
 	zillow = None
+	zillow_rejected = None
 	try:
-		from crm.api import zillow as zillow_api
-
-		zillow = zillow_api.facts_for_lead(doc)
+		zillow, zillow_rejected = subject_zillow(doc, redfin_rec)
 	except Exception:
 		# A third-party lookup must never take the comps map down with it.
 		frappe.log_error(frappe.get_traceback(), "Comps: Zillow facts failed")
@@ -634,7 +776,14 @@ def _subject_facts(doc, redfin_rec=None):
 	# provably identical to the pre-cascade behaviour: `take`, `property_type` and
 	# `last_sale` all consult `redfin_facts`, so one assignment closes all three
 	# and no future rung can miss the gate by forgetting to check it.
-	redfin_facts = redfin_matched if _redfin_first_for(doc) else None
+	#
+	# The one exception: when Zillow has no house (a miss, a rejected wrong
+	# house, or no answer at all) Redfin's record answers for every subject,
+	# cutover or not. There is no Zillow number to keep stable, and the
+	# alternative is the seller's pick-list bands or nothing (112 Highland Ave,
+	# 2026-11-05: Redfin had 4,116 sqft while the card showed blanks).
+	zillow_hit = bool((zillow or {}).get("zpid"))
+	redfin_facts = redfin_matched if (_redfin_first_for(doc) or not zillow_hit) else None
 	facts = {"source": {}}
 
 	def take(key, lead_field, listing_field=None, zillow_key=None, unit="", group=False,
@@ -724,6 +873,12 @@ def _subject_facts(doc, redfin_rec=None):
 	facts["zpid"] = (zillow or {}).get("zpid") or None
 	# A cached miss is `{}` (plus `_queried_address`) and must not read as a hit.
 	facts["has_zillow"] = bool(facts["zpid"])
+	# Zillow answered for this subject at all: a hit, a miss or a rejected wrong
+	# house. A presence flag for `redfin.subject_has_vendor_facts`. A Zillow MISS
+	# is exactly when the Redfin record matters most, and without this flag a
+	# cold miss (no zpid, no cached Redfin record yet) never fetched it at all.
+	facts["zillow_answered"] = zillow is not None
+	facts["zillow_rejected"] = zillow_rejected
 	# Sibling flag for `redfin.subject_has_vendor_facts`, so a subject Redfin
 	# resolved but Zillow did not still gets its record fetched — and with it the
 	# Redfin Estimate and the listing URL, which ride the same fetch.
@@ -2000,11 +2155,22 @@ def get_subject_details(lead):
 	_guard()
 	doc = _load_subject(lead)
 
-	from crm.api import zillow as zillow_api
+	try:
+		from crm.api import redfin as redfin_api
 
-	# Free past the first open: cached on the lead for 30 days.
-	facts = zillow_api.facts_for_lead(doc) or {}
+		redfin_rec = redfin_api.cached_subject_record(doc.name)
+	except Exception:
+		redfin_rec = None
+	# Free past the first open: cached on the lead for 30 days. A wrong-house
+	# hit reads as a miss here too, or the gallery would show that house.
+	facts, _rejected = subject_zillow(doc, redfin_rec)
+	facts = facts or {}
 	zpid = str(facts.get("zpid") or "")
+	# Zillow has no house: Redfin's record fills the numbers the panel shows.
+	rf = redfin_rec if not zpid and (redfin_rec or {}).get("matched") else {}
+	for key in ("beds", "baths", "sqft", "year_built", "property_type"):
+		if not facts.get(key) and rf.get(key):
+			facts[key] = rf[key] if key == "property_type" else _num(rf[key])
 	address = _full_address(doc)
 	if not zpid and not address:
 		return {
@@ -2074,7 +2240,10 @@ def _zillow_match(doc, subject=None):
 	with no Zillow zpid is the 310 Asbury case: the street exists, the house does
 	not, and the setter needs to hear that out loud.
 	"""
-	zpid = str((subject or {}).get("zpid") or doc.get("zillow_zpid") or "")
+	rejected = (subject or {}).get("zillow_rejected") or None
+	# A rejected wrong-house hit still has its zpid stamped on the row; it must
+	# read as the miss it is, not fall back to that stamp.
+	zpid = "" if rejected else str((subject or {}).get("zpid") or doc.get("zillow_zpid") or "")
 	queried = (subject or {}).get("zillow_queried_address") or ""
 	if not queried and doc.get("zillow_facts"):
 		try:
@@ -2092,10 +2261,18 @@ def _zillow_match(doc, subject=None):
 	unavailable = None if zpid else zillow_api.unavailable_reason()
 	return {
 		"matched": bool(zpid),
-		"tried": tried,
+		"tried": tried or bool(rejected),
 		"zpid": zpid,
 		"queried_address": queried,
 		"unavailable": unavailable,
+		# Zillow matched ANOTHER house (see `_zillow_wrong_house`): its address
+		# and distance, so the banner can say what was ignored and why.
+		"rejected": rejected,
+		# Redfin knows this house, so a Zillow miss is not a reason to ask the
+		# seller to re-confirm the address (Exe, 2026-11-05). `parcel_source`
+		# covers the cold first load, before the Redfin record is cached.
+		"redfin_matched": bool((subject or {}).get("has_redfin"))
+		or str(doc.get("parcel_source") or "") == "redfin",
 	}
 
 
@@ -2482,6 +2659,10 @@ def get_lead_comps(
 			base["subject"]["redfin_check"] = redfin.compare_subject_facts(base["subject"], rec)
 			base["subject"]["redfin_estimate"] = redfin.subject_estimate(rec)
 			base["subject"]["redfin_url"] = rec.get("url") if rec and rec.get("matched") else None
+			if rec and rec.get("matched") and not base["subject"].get("zpid"):
+				_fill_from_redfin(base["subject"], rec)
+				if base.get("zillow_match"):
+					base["zillow_match"]["redfin_matched"] = True
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Comps: Redfin check failed")
 	if realtor_job is not None:
