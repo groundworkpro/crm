@@ -747,7 +747,9 @@
     :can-tag="canTagTypes"
     :can-edit-sqft="!isPractice"
     :can-edit-comp-sqft="!isPractice && !!data?.comp_sqft_supported"
-    :can-share="!isPractice"
+    :can-share="!isPractice && !isAiOnlyComp(detailComp)"
+    :can-use="!isAiOnlyComp(detailComp)"
+    :ai-note="aiNoteFor(detailComp)"
     @use="toggleUse"
     @street="openStreetView(subjectDetail ? null : detailComp?.name)"
     @set-type="setCompType"
@@ -809,6 +811,7 @@ import {
   propertyTypeGlyphHtml,
   propertyTypeGlyphSvg,
   propertyTypeKind,
+  addressMatchKey,
 } from '@/utils/comps'
 import { copyToClipboard } from '@/utils'
 import CompDetailModal from '@/components/CompDetailModal.vue'
@@ -1595,7 +1598,7 @@ watch(
 
 async function loadCompStreetView() {
   if (!focusedComp.value) return
-  const c = comps.value.find((x) => x.name === focusedComp.value)
+  const c = findCompByName(focusedComp.value)
   if (!c || c.lat == null || c.lng == null) return
   if (compStreetViewAttempted.value && !compStreetView.value?.retryable) return
   compStreetViewLoading.value = true
@@ -2686,6 +2689,7 @@ function findCompByName(name) {
   return (
     comps.value.find((c) => c.name === name) ||
     discarded.value.find((c) => c.name === name) ||
+    aiOffRows.value.find((c) => c.name === name) ||
     null
   )
 }
@@ -2709,6 +2713,7 @@ function copyCompLink(name, { subject = false } = {}) {
 function currentCompQuery() {
   if (!showCompDetail.value) return ''
   if (subjectDetail.value) return COMP_QUERY_SUBJECT
+  if (isAiOnlyComp(detailComp.value)) return ''
   return detailComp.value?.name || ''
 }
 
@@ -3051,6 +3056,7 @@ async function setCompState(comp, state) {
 }
 
 function toggleUse(name) {
+  if (String(name || '').startsWith('ai::')) return
   const c = comps.value.find((x) => x.name === name) || discarded.value.find((x) => x.name === name)
   const picking = !c?.selected
   setCompState(name, picking ? 'selected' : 'none')
@@ -3340,6 +3346,68 @@ watch(
   },
 )
 
+/**
+ * An AI comp the board does not show, shaped like a board row so the pin, the
+ * gallery (CompDetailModal) and Street View can show it like any other house.
+ * The facts are the 13-step run's own (sold price and date, beds, baths, sqft,
+ * year); locality is the subject's, since the run keeps only the street.
+ * Exe, 2026-11-05: an off-board AI pin "doesn't have any information".
+ */
+const aiOffRows = computed(() => {
+  const [, city = '', tail = ''] = String(data.value?.address || '').split(',').map((x) => x.trim())
+  const [st = '', zip = ''] = tail.split(/\s+/)
+  return aiComps.list.value
+    .filter((a) => a.state === 'off_board' && a.lat != null && a.lng != null)
+    .map((a) => ({
+      // Locality in the name: the gallery is cached by it, and a street alone repeats across towns.
+      name: `ai::${zip || city}:${addressMatchKey(a.address) || a.key}`,
+      ai_key: a.key,
+      address: a.address,
+      city,
+      state: st,
+      zip,
+      lat: a.lat,
+      lng: a.lng,
+      price: a.price,
+      status: 'Sold',
+      price_basis: 'ai_sale',
+      listing_state: a.kind && a.kind !== 'sold' ? '' : 'sold',
+      removed_date: a.date || null,
+      bedrooms: a.beds ?? null,
+      bathrooms: a.baths ?? null,
+      square_footage: a.sqft ?? null,
+      year_built: a.year_built ?? null,
+      distance_mi: a.dist_mi ?? null,
+      recency_days: a.date ? Math.max(0, Math.round((Date.now() - Date.parse(a.date)) / 86400000)) : null,
+      selected: false,
+      hidden: false,
+      ai: a,
+    }))
+})
+
+function isAiOnlyComp(c) {
+  return String(c?.name || '').startsWith('ai::')
+}
+
+/** The AI's view of this house, for the gallery header: role, adjusted price, why. */
+function aiNoteFor(c) {
+  if (!c || subjectDetail.value) return ''
+  const a = c.ai || aiComps.byName.value[c.name] || aiComps.list.value.find((x) => x.comp?.name === c.name)
+  if (!a) return ''
+  const bits = [
+    __('Ask AI comp') + (a.role ? ` (${a.role})` : ''),
+    a.adjusted ? __('adjusted to {0}', [fmtMoney(a.adjusted)]) : '',
+    a.adjustments?.length ? a.adjustments.join(', ') : '',
+    a.condition ? __('condition: {0}', [a.condition]) : '',
+  ].filter(Boolean)
+  const where = isAiOnlyComp(c)
+    ? __('Not on your board (outside the filters or not found), so it cannot be added from here.')
+    : c.hidden
+      ? __('You discarded this one.')
+      : ''
+  return [bits.join(' · '), where].filter(Boolean).join(' ')
+}
+
 /** Pins for AI comps that are not on the board (or the rep discarded), from the run's lat/lng. */
 function placeAiPins() {
   if (!map) return
@@ -3349,43 +3417,62 @@ function placeAiPins() {
       markersByName.delete(k)
     }
   }
+  const offRows = new Map(aiOffRows.value.map((r) => [r.ai_key, r]))
   for (const a of aiComps.list.value) {
     if (a.state !== 'off_board' && a.state !== 'discarded') continue
-    const lat = a.lat ?? a.comp?.lat
-    const lng = a.lng ?? a.comp?.lng
-    if (lat == null || lng == null) continue
+    // A discarded comp is a board row; an off-board one is the run's own facts.
+    const row = a.state === 'discarded' ? a.comp : offRows.get(a.key)
+    if (!row || row.lat == null || row.lng == null) continue
     const key = a.key
-    const price = priceShort(a.adjusted || a.price)
-    const w = Math.max(48, Math.ceil(30 + price.length * 7.4))
-    const marker = L.marker([lat, lng], {
-      zIndexOffset: AI_PIN_Z,
-      icon: L.divIcon({
-        className: 'comps-price-pill',
-        html: `<div class="comps-pill-body" title="${escapeHtml(`Ask AI: ${a.address}`)}"
-            style="position:relative;display:flex;align-items:center;justify-content:center;gap:3px;
-            box-sizing:border-box;width:${w}px;height:24px;background:#fff;color:#161614;
-            --pill-bg-solid:#fff;--pill-border-solid:#161614;
-            font:700 11px/1 ui-sans-serif,system-ui,sans-serif;border-radius:999px;
-            border:2px dashed #161614;box-shadow:0 1px 3px rgba(0,0,0,.35);white-space:nowrap">${aiChip(true)}${price}</div>`,
-        iconSize: [w, 24],
-        iconAnchor: [w / 2, 12],
-        popupAnchor: [0, -14],
-      }),
-    }).addTo(map)
-    const why = a.why ? `<div style="margin-top:4px;color:#555">${escapeHtml(a.why)}</div>` : ''
-    const note = a.state === 'discarded' ? __('You discarded this one.') : __('Not on your board (outside the filters or not found).')
-    marker.bindPopup(
-      `<div style="font:12px/1.35 ui-sans-serif,system-ui;max-width:240px">
-        <div style="font-weight:600">${escapeHtml(a.address)}</div>
-        <div>${escapeHtml(__('Ask AI'))}${a.role ? ' · ' + escapeHtml(a.role) : ''} · ${escapeHtml(fmtMoney(a.adjusted || a.price) || '')}</div>
-        ${why}<div style="margin-top:4px;color:#888">${escapeHtml(note)}</div></div>`,
-    )
+    const marker = L.marker([row.lat, row.lng], { zIndexOffset: AI_PIN_Z, icon: aiPinIcon(row, a) }).addTo(map)
+    marker.on('click', () => {
+      focusedComp.value = row.name
+      openCompDetail(row.name)
+    })
     marker.on('mouseover', () => hoverFromMap(key))
     marker.on('mouseout', () => {
       if (hoveredComp.value === key) hoveredComp.value = null
     })
     markersByName.set(key, marker)
   }
+}
+
+/** Dashed white pill: the AI chip, the sold price, and (Details on) year, date, beds/baths and size. */
+function aiPinIcon(row, a) {
+  const price = priceShort(row.price || a.adjusted)
+  const { year, line2 } = pillBits(row)
+  const age = soldOnShort(row.removed_date)
+  const title = escapeHtml([`Ask AI: ${a.address}`, pillFacts(row)].filter(Boolean).join(' · '))
+  const base = `position:relative;box-sizing:border-box;background:#fff;color:#161614;
+      --pill-bg-solid:#fff;--pill-border-solid:#161614;border:2px dashed #161614;
+      box-shadow:0 1px 3px rgba(0,0,0,.35);white-space:nowrap;cursor:pointer;`
+  const small = 'font:500 9px/1 ui-sans-serif,system-ui,sans-serif;opacity:.72;margin-left:3px'
+  if (!(showDetail.value && (year || line2 || age))) {
+    const w = Math.max(48, Math.ceil(30 + price.length * 7.4))
+    return L.divIcon({
+      className: 'comps-price-pill',
+      html: `<div class="comps-pill-body" title="${title}" style="${base}display:flex;align-items:center;
+          justify-content:center;gap:3px;width:${w}px;height:24px;border-radius:999px;
+          font:700 11px/1 ui-sans-serif,system-ui,sans-serif">${aiChip(true)}${price}</div>`,
+      iconSize: [w, 24],
+      iconAnchor: [w / 2, 12],
+      popupAnchor: [0, -14],
+    })
+  }
+  const top = 20 + price.length * 7.0 + (year ? 3 + year.length * 5 : 0) + (age ? 3 + age.length * 5 : 0)
+  const w = Math.max(56, Math.ceil(14 + Math.max(top, line2.length * 5.05)))
+  return L.divIcon({
+    className: 'comps-price-pill',
+    html: `<div class="comps-pill-body" title="${title}" style="${base}width:${w}px;height:34px;border-radius:8px;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
+        <div style="display:flex;align-items:center;gap:3px;font:700 11px/1 ui-sans-serif,system-ui,sans-serif">${aiChip(true)}${price}${
+          year ? `<span style="${small}">${year}</span>` : ''
+        }${age ? `<span style="${small}">${age}</span>` : ''}</div>
+        ${line2 ? `<div style="font:500 9px/1 ui-sans-serif,system-ui,sans-serif">${escapeHtml(line2)}</div>` : ''}</div>`,
+    iconSize: [w, 34],
+    iconAnchor: [w / 2, 17],
+    popupAnchor: [0, -19],
+  })
 }
 
 /** "AI" chip: top-left corner of a board pin, inline on an AI-only pin. */
@@ -3405,8 +3492,9 @@ function focusAiComp(a) {
   }
   map.panTo(marker.getLatLng())
   hoverFromCard(key)
-  if (key.startsWith('ai:')) marker.openPopup()
-  else scrollCardIntoView(key)
+  // No tray card to scroll to for an AI-only house, so open its gallery instead.
+  if (!key.startsWith('ai:')) scrollCardIntoView(key)
+  else openCompDetail(a.state === 'discarded' ? a.comp.name : aiOffRows.value.find((r) => r.ai_key === key)?.name)
 }
 
 const zillowLine = computed(() => {

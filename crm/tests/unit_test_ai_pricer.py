@@ -409,7 +409,8 @@ class AiCompsListTest(_LogBase):
 		{"address": "2503 E 24th St", "price": 205000, "adjusted": 211395, "role": "anchor",
 		 "sqft": 1200, "dist_mi": 0.2, "adjustments": ["+$6k size"], "cond_p": {"a": 1}},
 		{"address": "", "price": 1}],
-		"rows": [{"address": "2503 E 24th St", "lat": 35.1, "lng": -97.5, "step": "used"}]}
+		"rows": [{"address": "2503 E 24th St", "lat": 35.1, "lng": -97.5, "step": "used", "beds": 3,
+		          "baths": 1.5, "year_built": 1950, "kind": "sold", "sqft": 999, "why": "anchor"}]}
 
 	def test_job_from_redis_merges_the_steps_comps(self):
 		jid = "a" * 32
@@ -420,6 +421,9 @@ class AiCompsListTest(_LogBase):
 		c = out["comps"][0]
 		self.assertEqual((c["role"], c["adjusted"], c["lat"], c["lng"], c["why"]), ("anchor", 211395, 35.1, -97.5, "anchor, 0.20 mi"))
 		self.assertNotIn("cond_p", c)
+		# Facts the comps list lacks come from the trace row; the list's own values win.
+		self.assertEqual((c["beds"], c["baths"], c["year_built"], c["kind"], c["sqft"]), (3, 1.5, 1950, "sold", 1200))
+		self.assertEqual(c["adjustments"], ["+$6k size"])
 
 	def test_latest_logged_run_by_anyone_when_no_job(self):
 		R = shim._dict

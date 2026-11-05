@@ -365,7 +365,10 @@ def chat_history(lead: str):
 	return {"chat": chat, "messages": [_history_row(r) for r in rows], "pending": pending}
 
 
-AI_COMP_KEYS = ("address", "price", "adjusted", "role", "why", "lat", "lng", "sqft", "date", "dist_mi", "condition")
+AI_COMP_KEYS = (
+	"address", "price", "adjusted", "role", "why", "lat", "lng", "sqft", "date", "dist_mi", "condition",
+	"beds", "baths", "year_built", "kind", "adjustments",
+)
 
 
 def _run_comps(answer: dict) -> dict:
@@ -386,8 +389,11 @@ def _run_comps(answer: dict) -> dict:
 		row = {k: c.get(k) for k in AI_COMP_KEYS if c.get(k) not in (None, "")}
 		if not row.get("why") and why.get(c["address"]):
 			row["why"] = why[c["address"]]
-		if row.get("lat") is None and c["address"] in point:
-			row["lat"], row["lng"] = point[c["address"]]["lat"], point[c["address"]]["lng"]
+		# The trace row has the facts the comps list leaves out (beds, baths, year,
+		# lat/lng), so a comp that is not on the rep's board can still be shown in full.
+		for k, v in (point.get(c["address"]) or {}).items():
+			if k in AI_COMP_KEYS and k not in ("why", "role") and row.get(k) in (None, "", []) and v not in (None, "", []):
+				row[k] = v
 		out.append(row)
 	return {
 		"arv": d.get("arv") or answer.get("arv"),

@@ -69,6 +69,9 @@
             <div class="mt-0.5 text-sm text-ink-gray-5">
               {{ compLocation }}
             </div>
+            <div v-if="aiNote" class="mt-1 max-w-2xl text-xs text-ink-gray-7">
+              <span class="mr-1 rounded bg-ink-gray-9 px-1 py-px text-[10px] font-extrabold text-ink-white">AI</span>{{ aiNote }}
+            </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
             <Button
@@ -81,7 +84,7 @@
             <!-- A house cannot be a comp for itself, so the subject gets no
                  add-as-comp button rather than one that would corrupt the calc. -->
             <Button
-              v-if="!subjectMode"
+              v-if="!subjectMode && canUse"
               class="hidden sm:inline-flex"
               :variant="comp?.selected ? 'subtle' : 'solid'"
               :label="comp?.selected ? __('Remove from table') : __('Add as comp')"
@@ -373,7 +376,7 @@
             @click="$emit('street')"
           />
           <Button
-            v-if="!subjectMode"
+            v-if="!subjectMode && canUse"
             class="flex-1"
             :variant="comp?.selected ? 'subtle' : 'solid'"
             :label="comp?.selected ? __('Remove') : __('Add as comp')"
@@ -414,6 +417,10 @@ const props = defineProps({
   // Practice writes to an attempt, not the lead — a comps-page link would open
   // the real house, which is the wrong surface mid-run.
   canShare: { type: Boolean, default: true },
+  // False for an Ask AI comp the board does not show: there is no board row to pick.
+  canUse: { type: Boolean, default: true },
+  // Ask AI's view of this house (role, adjusted price), shown under the address.
+  aiNote: { type: String, default: '' },
 })
 
 const show = defineModel({ type: Boolean })
@@ -758,6 +765,10 @@ const displayPriceLabel = computed(() => {
     return when ? __('Last sold · {0}', [dateOnly(when)]) : __('Last sold')
   }
   if (props.comp?.price_basis === 'adc_sale') return __('ADC reported sale')
+  // An Ask AI comp off the board: its price is the sale the run comped off.
+  if (props.comp?.price_basis === 'ai_sale' && props.comp?.price) {
+    return props.comp.removed_date ? __('Sold · {0}', [dateOnly(props.comp.removed_date)]) : __('Sold')
+  }
   if (props.comp?.price) return __('Last known list price')
   return details.value?.zestimate ? __('Zestimate — no listing price on record') : ''
 })
@@ -816,7 +827,8 @@ const timeline = computed(() => {
     rows.push({ label: __('Listed'), value: dateOnly(props.comp.listed_date) })
   }
   if (props.comp?.removed_date) {
-    rows.push({ label: __('Went off market'), value: dateOnly(props.comp.removed_date) })
+    const sold = props.comp?.price_basis === 'ai_sale'
+    rows.push({ label: sold ? __('Sold') : __('Went off market'), value: dateOnly(props.comp.removed_date) })
   } else if (props.comp?.days_on_market) {
     rows.push({ label: __('Time on market'), value: __('{0} days', [props.comp.days_on_market]) })
   }

@@ -1981,7 +1981,8 @@ def _batchdata_row(lead, comp):
 #: Provider-minted pins. None of these are CRM Comp docnames. Looking one up
 #: there throws "Comparable property realtor::… does not exist" and the gallery
 #: never reaches the photo ladder — Dennis, 2026-09-22, every Realtor pin.
-DETAIL_PIN_PREFIXES = ("zillow::", "zillow-rent::", "redfin::", "realtor::")
+# `ai::` = an Ask AI comp the rep's board does not show (comps page, AI section).
+DETAIL_PIN_PREFIXES = ("zillow::", "zillow-rent::", "redfin::", "realtor::", "ai::")
 
 def _caller_pin_row(comp, address=None, lat=None, lng=None, city=None, state=None, zip_code=None):
 	"""The board already rendered this pin. Its address is the lookup, not a doc."""
