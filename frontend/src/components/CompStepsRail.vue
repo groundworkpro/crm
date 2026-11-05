@@ -342,14 +342,6 @@ async function runSteps(opts) {
   }
 }
 
-async function logChange(d, reason, reason_type, scope) {
-  const r = await call('crm.api.ai_pricer.log_change', {
-    lead: props.lead, reason, reason_type, scope, chat: chatId,
-    step: d.step, changed: d.changed, old_value: d.old_value, new_value: d.new_value,
-  })
-  messages.value.push({ role: 'user', kind: 'change', text: r.text })
-}
-
 // What the rep sees, sent with each chat message so the agent can point at it and change it.
 function pageText() {
   const v = snapshot()
@@ -365,9 +357,9 @@ function pageText() {
   ].join('\n')
 }
 
-// Apply what the agent said to change. Step changes and comp picks the rep asked for are
-// applied and logged with the rep's message as the reason. A value or repairs figure is
-// only said in the chat: the calculator is the rep's (Exe, 2026-11-05).
+// Apply what the agent said to change. Step changes the rep asked for are applied (they
+// are logged as suggestions by save_step). A value, repairs figure or comp is only said in
+// the chat: the calculator and picks are the rep's (Exe, 2026-11-05).
 async function applyActions(actions, question) {
   let rerun = false
   for (const a of (actions || []).filter((x) => x.do === 'step')) {
@@ -378,21 +370,19 @@ async function applyActions(actions, question) {
     })) || rerun
   }
   const v = snapshot()
+  const said = (text) => messages.value.push({ role: 'ai', kind: 'calc', text: text + ' ' + __('Not applied; change it yourself if you agree.') })
   for (const a of (actions || []).filter((x) => x.do !== 'step')) {
-    let d = null
     if (a.do === 'repairs_psf' && Number(a.value)) {
-      messages.value.push({ role: 'ai', kind: 'calc', text: __('Ask AI would use repairs of ${0}/sf (your calculator: ${1}/sf). Not applied; change it yourself if you agree.', [Number(a.value), v.rehabPsf || 0]) })
+      said(__('Ask AI would use repairs of ${0}/sf (your calculator: ${1}/sf).', [Number(a.value), v.rehabPsf || 0]))
     } else if (a.do === 'arv' && Number(a.value)) {
-      messages.value.push({ role: 'ai', kind: 'calc', text: __('Ask AI would use an Exit Price of {0} (your calculator: {1}). Not applied; change it yourself if you agree.', [money(a.value), money(v.arv)]) })
+      said(__('Ask AI would use an Exit Price of {0} (your calculator: {1}).', [money(a.value), money(v.arv)]))
     } else if (a.do === 'remove' || a.do === 'use') {
       const c = byAddress(a.address || '')
       if (!c) continue
-      await props.view.setCompState(c.name, a.do === 'use' ? 'selected' : 'none')
-      d = a.do === 'use'
-        ? { step: 9, changed: __('Used comp'), old_value: '', new_value: street(c) }
-        : { step: 9, changed: __('Removed comp'), old_value: street(c), new_value: '' }
+      const picked = v.comps.includes(c.name)
+      if (a.do === 'use' && !picked) said(__('Ask AI would add {0} to your comps.', [street(c)]))
+      else if (a.do === 'remove' && picked) said(__('Ask AI would take {0} out of your comps.', [street(c)]))
     }
-    if (d) await logChange(d, question, __('Chat'), 'Teach the agent').catch(() => {})
   }
   if (rerun) runSteps({ stay: true })
 }
