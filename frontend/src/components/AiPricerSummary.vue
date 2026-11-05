@@ -6,7 +6,7 @@
       <span class="ml-auto text-sm font-semibold text-ink-gray-9">{{ money(run.arv) }}</span>
     </div>
     <div class="mt-0.5 text-ink-gray-5">
-      {{ __('ARV {0}–{1} · {2} comps picked · repairs {3}', [money(run.arv_low), money(run.arv_high), usedCount, money(run.offers?.repairs)]) }}
+      {{ __('ARV {0}–{1} · {2} of its comps on this board · repairs {3}', [money(run.arv_low), money(run.arv_high), usedCount, money(run.offers?.repairs)]) }}
     </div>
     <div v-if="missing.length" class="mt-1 text-ink-gray-5">
       {{ __('Not on this map:') }}

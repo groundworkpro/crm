@@ -1,7 +1,7 @@
 <template>
   <!-- Exe's 13 comping steps beside the comps page (mockup 4A). Steps shows what each
-       step decided and why; Chat talks to the same agent, and what it changes lands on
-       the page; Changes is the team's log of every override with its reason.
+       step decided and why; Chat talks to the same agent and shows its numbers with the
+       math (it never writes the rep's calculator or picks, Exe 2026-11-05); Changes is the team's log of every override with its reason.
        Rule steps run in code on agentbox; steps 6, 9 and 12 use the tool the team picked
        (Jev, a rule, or any model), and anyone can change a step with a reason. -->
   <aside class="flex min-h-0 w-[380px] shrink-0 flex-col overflow-hidden rounded-lg border border-outline-gray-2 bg-surface-white">
@@ -22,47 +22,10 @@
       </Button>
     </div>
 
-    <!-- Any override of what the steps filled waits here until the rep says why. -->
-    <div v-if="diffs.length" class="space-y-2 border-b border-outline-gray-2 bg-surface-amber-1 px-3 py-2.5 text-sm">
-      <div v-for="d in diffs" :key="d.key" class="text-ink-gray-9">
-        <span class="font-medium">{{ d.changed }}</span>:
-        <s class="text-ink-gray-5">{{ d.old_value }}</s> {{ __('to') }} <b>{{ d.new_value }}</b>
-        <span class="text-xs text-ink-gray-5">({{ __('step {0}', [d.step]) }})</span>
-      </div>
-      <div class="text-xs text-ink-gray-7">{{ __('Why the change? It is saved as a suggestion for review; the agent does not change until it is accepted.') }}</div>
-      <div class="flex flex-wrap gap-1">
-        <button
-          v-for="c in chips"
-          :key="c"
-          type="button"
-          class="rounded-full border px-2 py-0.5 text-xs"
-          :class="reasonType === c ? 'border-outline-gray-5 bg-surface-white font-medium text-ink-gray-9' : 'border-outline-gray-2 text-ink-gray-7'"
-          @click="reasonType = reasonType === c ? '' : c"
-        >
-          {{ c }}
-        </button>
-      </div>
-      <textarea
-        v-model="why"
-        rows="2"
-        class="form-textarea w-full resize-none text-sm"
-        :placeholder="__('Say what you saw, so the next person understands')"
-      />
-      <div class="flex items-center gap-2">
-        <Button size="sm" variant="solid" :disabled="!why.trim()" :loading="saving" @click="saveChange('Teach the agent')">
-          {{ __('Suggest for all houses') }}
-        </Button>
-        <Button size="sm" :disabled="!why.trim()" :loading="saving" @click="saveChange('This house only')">
-          {{ __('This house only') }}
-        </Button>
-        <Button size="sm" variant="ghost" class="ml-auto" @click="undo">{{ __('Undo') }}</Button>
-      </div>
-    </div>
-
     <div ref="scroller" class="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3 text-sm">
       <template v-if="tab === 'steps'">
         <p v-if="!steps.length" class="pt-1 text-ink-gray-5">
-          {{ running ? __('Running the steps…') : __('Run the 13 steps to fill the comps, the value and the repairs. Change any step first if you like.') }}
+          {{ running ? __('Running the steps…') : __('Run the 13 steps to see the comps, value, repairs and offers Ask AI would use. Your calculator and picks stay yours. Change any step first if you like.') }}
         </p>
         <!-- A team member's step changes are suggestions: they run on this house for them only (Exe, 2026-11-04). -->
         <div v-if="mine.length" class="rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-2 text-xs text-ink-gray-8">
@@ -141,7 +104,7 @@
 
       <template v-else-if="tab === 'chat'">
         <p v-if="!messages.length" class="pt-4 text-center text-ink-gray-5">
-          {{ __('Ask about a step, correct it, or try an idea. When the agent changes the page, it shows here too.') }}
+          {{ __('Ask about a step, correct it, or try an idea. Ask AI\'s numbers and the math behind them show here; your calculator stays yours.') }}
         </p>
         <template v-for="(m, i) in messages" :key="i">
           <div v-if="m.kind === 'change'" class="rounded-md border border-outline-amber-2 bg-surface-amber-1 px-3 py-1.5 text-xs text-ink-gray-8">
@@ -149,6 +112,7 @@
           </div>
           <div v-else-if="m.role === 'user'" class="ml-8 rounded-lg bg-surface-gray-2 px-3 py-2 text-ink-gray-9">{{ m.text }}</div>
           <div v-else-if="m.pending" class="flex items-center gap-2 text-ink-gray-5"><LoadingIndicator class="h-4 w-4" />{{ m.text }}</div>
+          <div v-else-if="m.kind === 'calc'" class="whitespace-pre-wrap rounded-lg border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-ink-gray-8 tabular-nums">{{ m.text }}</div>
           <div v-else-if="m.error" class="rounded-lg bg-surface-red-1 px-3 py-2 text-ink-red-4">{{ m.text }}</div>
           <div v-else class="whitespace-pre-line rounded-lg border border-outline-gray-2 px-3 py-2 text-ink-gray-8">{{ m.text }}</div>
         </template>
@@ -193,6 +157,7 @@ import { useRoute } from 'vue-router'
 import { Button, LoadingIndicator, call, toast } from 'frappe-ui'
 import { addressMatchKey } from '@/utils/comps'
 import LowConfidenceWhy from '@/components/LowConfidenceWhy.vue'
+import { aiCalcText } from '@/utils/aiCalc'
 import { JEV_STEPS, MODELS, STEP_CALLS, STEP_TITLES, toolLabel } from '@/utils/compSteps'
 
 const props = defineProps({
@@ -206,12 +171,6 @@ const tabs = [
   { key: 'chat', label: __('Chat'), hint: __('Talk to the agent') + ' (/)' },
   { key: 'changes', label: __('Changes'), hint: __("The team's changes and why") },
 ]
-const CHIPS = {
-  arv: [__('Model read it wrong'), __('Bad sale data'), __('Company rule'), __('Other')],
-  rehabPsf: [__('I saw it in person'), __('Seller told me'), __('Photos show it'), __('Model read it wrong'), __('Company rule')],
-  comps: [__('I know the street'), __('Not really updated'), __('Different buyer pool'), __('Bad sale data'), __('Other')],
-}
-
 const tab = ref('steps')
 const steps = ref([])
 const run = ref(null)
@@ -220,8 +179,6 @@ const messages = ref([])
 const draft = ref('')
 const busy = ref(false)
 const changes = ref([])
-const why = ref('')
-const reasonType = ref('')
 const saving = ref(false)
 const setup = ref({})
 const mine = ref([]) // steps this user changed for this house only
@@ -316,28 +273,11 @@ async function saveStep(n) {
   }
 }
 
-// What the page shows now, and what the agent last put there. Diffs need a reason.
+// What the page shows now (the rep's calculator and picks), for the chat's context.
 function snapshot() {
   const v = props.view?.calc?.()?.current?.() || { arv: 0, rehabPsf: 0 }
   return { ...v, comps: rows().filter((c) => c.selected).map((c) => c.name).sort() }
 }
-const baseline = ref(null)
-const diffs = computed(() => {
-  const b = baseline.value
-  if (!b) return []
-  const now = snapshot()
-  const out = []
-  if (now.arv !== b.arv) out.push({ key: 'arv', step: 11, changed: __('Exit Price'), old_value: money(b.arv), new_value: money(now.arv) })
-  if (now.rehabPsf !== b.rehabPsf)
-    out.push({ key: 'rehabPsf', step: 12, changed: __('Repairs'), old_value: `$${b.rehabPsf}/sf`, new_value: `$${now.rehabPsf}/sf` })
-  const name = (n) => street(rows().find((c) => c.name === n)) || n
-  for (const n of b.comps.filter((x) => !now.comps.includes(x)))
-    out.push({ key: 'out' + n, step: 9, changed: __('Removed comp'), old_value: name(n), new_value: '' })
-  for (const n of now.comps.filter((x) => !b.comps.includes(x)))
-    out.push({ key: 'in' + n, step: 9, changed: __('Used comp'), old_value: '', new_value: name(n) })
-  return out
-})
-const chips = computed(() => CHIPS[diffs.value[0]?.key in CHIPS ? diffs.value[0].key : 'comps'])
 
 function show(t) {
   tab.value = t
@@ -363,26 +303,24 @@ async function poll(job, onRunning) {
   throw new Error(__('The agent took too long. Try again.'))
 }
 
-async function settle() {
-  await nextTick()
-  baseline.value = snapshot()
-}
-
-// Fill the page from a 13-step run: comps (steps 9 and 10), value (11), repairs (12).
-async function applyRun(d) {
+// Show a 13-step run: its steps, and "AI comp" marks on the board's cards. It does not
+// touch the calculator or the rep's picks; its comps list apart in the tray, and its
+// numbers go in the chat with the math (Exe, 2026-11-05).
+function applyRun(d) {
   run.value = d
   steps.value = d.steps || []
-  await props.view?.openCalc?.()
-  props.view?.calc?.()?.prefill?.({ arv: Number(d.arv) || 0, rehabPsf: Number(d.repairs?.per_sf) || 30, mult: 2 })
   const marks = {}
   for (const u of d.comps_used || []) {
     const c = byAddress(u.address)
-    if (!c) continue
-    marks[c.name] = { why: `Step ${u.role === 'anchor' ? 9 : 10}: ${u.role}. ${u.why || ''}`.trim() }
-    if (!c.selected) await props.view.setCompState(c.name, 'selected')
+    if (c) marks[c.name] = { why: `Step ${u.role === 'anchor' ? 9 : 10}: ${u.role}. ${u.why || ''}`.trim() }
   }
   props.view?.markSteps?.(marks)
-  await settle()
+}
+
+/** Ask AI's numbers and the math, as an AI chat message. */
+function calcMessage(d) {
+  const text = aiCalcText(d, d?.subject?.sqft || props.view?.subject?.()?.sqft)
+  return text ? { role: 'ai', kind: 'calc', text } : null
 }
 
 async function runSteps(opts) {
@@ -394,8 +332,9 @@ async function runSteps(opts) {
       lead: props.lead, kind: 'decide', chat: chatId, ...(opts?.facts ? { facts: JSON.stringify(opts.facts) } : {}),
     })
     const r = await poll(job)
-    await applyRun(r.decide)
-    messages.value.push({ role: 'ai', text: __('Ran the 13 steps: ARV {0}, repairs ${1}/sf.', [money(r.decide.arv), r.decide.repairs?.per_sf]) })
+    applyRun(r.decide)
+    const m = calcMessage(r.decide)
+    if (m) messages.value.push(m)
   } catch (e) {
     toast.error(e?.messages?.[0] || e?.message || __('Could not run the steps.'))
   } finally {
@@ -409,32 +348,6 @@ async function logChange(d, reason, reason_type, scope) {
     step: d.step, changed: d.changed, old_value: d.old_value, new_value: d.new_value,
   })
   messages.value.push({ role: 'user', kind: 'change', text: r.text })
-}
-
-async function saveChange(scope) {
-  if (!why.value.trim() || saving.value) return
-  saving.value = true
-  try {
-    for (const d of diffs.value) await logChange(d, why.value.trim(), reasonType.value, scope)
-    why.value = ''
-    reasonType.value = ''
-    await settle()
-    if (tab.value === 'changes') loadChanges()
-    toast.success(__('Saved as a suggestion'))
-  } catch (e) {
-    toast.error(e?.messages?.[0] || e?.message || __('Could not save the change.'))
-  } finally {
-    saving.value = false
-  }
-}
-
-async function undo() {
-  const b = baseline.value
-  props.view?.calc?.()?.prefill?.({ arv: b.arv, rehabPsf: b.rehabPsf })
-  const now = snapshot().comps
-  for (const n of b.comps.filter((x) => !now.includes(x))) await props.view.setCompState(n, 'selected')
-  for (const n of now.filter((x) => !b.comps.includes(x))) await props.view.setCompState(n, 'none')
-  why.value = ''
 }
 
 // What the rep sees, sent with each chat message so the agent can point at it and change it.
@@ -452,7 +365,9 @@ function pageText() {
   ].join('\n')
 }
 
-// Apply what the agent said to change, and log each one with the rep's message as the reason.
+// Apply what the agent said to change. Step changes and comp picks the rep asked for are
+// applied and logged with the rep's message as the reason. A value or repairs figure is
+// only said in the chat: the calculator is the rep's (Exe, 2026-11-05).
 async function applyActions(actions, question) {
   let rerun = false
   for (const a of (actions || []).filter((x) => x.do === 'step')) {
@@ -462,18 +377,13 @@ async function applyActions(actions, question) {
       return 0
     })) || rerun
   }
-  actions = (actions || []).filter((x) => x.do !== 'step')
-  if (actions.length) await props.view?.openCalc?.()
-  const calc = props.view?.calc?.()
-  for (const a of actions) {
-    const before = snapshot()
+  const v = snapshot()
+  for (const a of (actions || []).filter((x) => x.do !== 'step')) {
     let d = null
     if (a.do === 'repairs_psf' && Number(a.value)) {
-      calc?.prefill?.({ rehabPsf: Number(a.value) })
-      d = { step: 12, changed: __('Repairs'), old_value: `$${before.rehabPsf}/sf`, new_value: `$${Number(a.value)}/sf` }
+      messages.value.push({ role: 'ai', kind: 'calc', text: __('Ask AI would use repairs of ${0}/sf (your calculator: ${1}/sf). Not applied; change it yourself if you agree.', [Number(a.value), v.rehabPsf || 0]) })
     } else if (a.do === 'arv' && Number(a.value)) {
-      calc?.prefill?.({ arv: Number(a.value) })
-      d = { step: 11, changed: __('Exit Price'), old_value: money(before.arv), new_value: money(a.value) }
+      messages.value.push({ role: 'ai', kind: 'calc', text: __('Ask AI would use an Exit Price of {0} (your calculator: {1}). Not applied; change it yourself if you agree.', [money(a.value), money(v.arv)]) })
     } else if (a.do === 'remove' || a.do === 'use') {
       const c = byAddress(a.address || '')
       if (!c) continue
@@ -484,7 +394,6 @@ async function applyActions(actions, question) {
     }
     if (d) await logChange(d, question, __('Chat'), 'Teach the agent').catch(() => {})
   }
-  if (baseline.value) await settle()
   if (rerun) runSteps({ stay: true })
 }
 
@@ -532,26 +441,41 @@ async function jobSteps(job) {
   }
 }
 
-// Pick the last chat back up, with its last 13-step run shown (not re-applied: the page
-// keeps what was saved; Run again refills it).
+// Pick the last chat back up, with its last 13-step run shown (never applied to the page).
+// Each Ask AI run in the chat (13 steps here, or a price card) shows as its numbers and math.
 watch(
   () => props.lead,
   async (lead) => {
     try {
       const h = await call('crm.api.ai_pricer.chat_history', { lead })
       let d = null
+      const jobs = new Set()
       if (h?.chat) {
         chatId = h.chat
-        messages.value = h.messages
-          .filter((m) => !m.decide)
-          .map((m) => ({ role: m.role, kind: m.kind, text: m.text, error: m.error }))
+        messages.value = h.messages.flatMap((m) => {
+          const r = m.decide || m.steps_run || m.result
+          if (m.role === 'ai' && !m.error && r?.arv) {
+            if (m.job) jobs.add(m.job)
+            const c = calcMessage(r)
+            return c ? [c] : []
+          }
+          return m.decide ? [] : [{ role: m.role, kind: m.kind, text: m.text, error: m.error }]
+        })
         // The last 13-step run: a "Run the 13 steps" here, or an Ask AI price card (also the 13 steps).
         const last = [...h.messages].reverse().find((m) => m.decide || m.steps_run || (m.kind === 'price' && m.result))
         d = last?.decide || last?.steps_run || (await jobSteps(last?.job))
       }
-      // Opened from an Ask AI card ("Finish on comps page", ?ai=<job>): show that run's steps.
+      // Opened from an Ask AI card ("Finish on comps page", ?ai=<job>): show that run's steps,
+      // and its numbers in the chat when the run was not this rep's chat.
       const ai = route.query.ai
-      if (ai && typeof ai === 'string') d = (await jobSteps(ai)) || d
+      if (ai && typeof ai === 'string') {
+        const j = await jobSteps(ai)
+        if (j) {
+          d = j
+          const c = !jobs.has(ai) && calcMessage(j)
+          if (c) messages.value.push(c)
+        }
+      }
       if (d?.steps) {
         run.value = d
         steps.value = d.steps

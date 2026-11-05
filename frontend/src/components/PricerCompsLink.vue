@@ -24,7 +24,7 @@ import { compsPagePath } from '@/utils/comps'
 const props = defineProps({
   // CRM Lead name (or a scratch CRM Property name -- compsPagePath handles both).
   lead: { type: String, default: '' },
-  // Ask AI job id: the comps page shows the AI's comps beside the rep's and fills its numbers.
+  // Ask AI job id: the comps page lists the AI's comps beside the rep's and shows its numbers in the chat.
   job: { type: String, default: '' },
 })
 

@@ -3315,12 +3315,11 @@ const creatingSheet = ref(false)
 const selectedNames = computed(() => comps.value.filter((c) => c.selected).map((c) => c.name))
 const selectedComps = computed(() => comps.value.filter((c) => c.selected))
 
-// Opened from an Ask AI result: fill its numbers (its comps show in their own section, below).
+// Opened from an Ask AI result: its summary in the tray. Nothing on the page changes:
+// the calculator and picks are the rep's; the AI's numbers and math are in the rail's chat.
 const ai = useAiPricerRun({
   job: () => (props.pageMode && !isPractice.value && typeof route.query.ai === 'string' ? route.query.ai : ''),
   rows: () => [...comps.value, ...discarded.value],
-  ready: computed(() => Boolean(data.value?.comps)),
-  prefill: (v) => calcRef.value?.prefill?.(v),
 })
 
 // Ask AI's comps as their own tray section and pins, never mixed into the rep's picks.
