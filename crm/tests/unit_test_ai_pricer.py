@@ -400,5 +400,49 @@ class CompsPageChangeTest(AiCorrectionTest):
 			shim.db.get_default.side_effect = None
 
 
+class AiCompsListTest(_LogBase):
+	"""The comps page's "Ask AI's comps" list: from ?ai=<job>, else the latest run on the lead."""
+
+	CARD = {"arv": 210000, "arv_low": 200000, "arv_high": 230000, "confidence": "med",
+	        "comps_used": [{"address": "2503 E 24th St", "price": 205000, "why": "anchor, 0.20 mi"}]}
+	STEPS = {"arv": 210000, "confidence": "med", "comps_used": [
+		{"address": "2503 E 24th St", "price": 205000, "adjusted": 211395, "role": "anchor",
+		 "sqft": 1200, "dist_mi": 0.2, "adjustments": ["+$6k size"], "cond_p": {"a": 1}},
+		{"address": "", "price": 1}],
+		"rows": [{"address": "2503 E 24th St", "lat": 35.1, "lng": -97.5, "step": "used"}]}
+
+	def test_job_from_redis_merges_the_steps_comps(self):
+		jid = "a" * 32
+		self.r.kv[ai_pricer.JOB + jid] = json.dumps({"status": "done", "answer": self.CARD, "decide": self.STEPS})
+		out = ai_pricer.ai_comps("CRM-LEAD-1", jid)
+		self.assertEqual((out["job"], out["kind"], out["arv"]), (jid, "price", 210000))
+		self.assertEqual(len(out["comps"]), 1)
+		c = out["comps"][0]
+		self.assertEqual((c["role"], c["adjusted"], c["lat"], c["lng"], c["why"]), ("anchor", 211395, 35.1, -97.5, "anchor, 0.20 mi"))
+		self.assertNotIn("cond_p", c)
+
+	def test_latest_logged_run_by_anyone_when_no_job(self):
+		R = shim._dict
+		rows = [R(job="j2", kind="decide", user="dennis@groundworkpro.com", answer="not json", creation="2026-11-05 10:00"),
+		        R(job="j1", kind="price", user="dennis@groundworkpro.com", answer=json.dumps(self.CARD), creation="2026-11-04 09:00")]
+		shim.get_all.side_effect = [rows]
+		shim.db.get_value.return_value = "Dennis"
+		try:
+			out = ai_pricer.ai_comps("CRM-LEAD-1")
+		finally:
+			shim.get_all.side_effect = None
+			shim.db.get_value.return_value = None
+		self.assertEqual((out["job"], out["user"], out["kind"]), ("j1", "Dennis", "price"))
+		self.assertEqual(out["comps"], [{"address": "2503 E 24th St", "price": 205000, "why": "anchor, 0.20 mi"}])
+
+	def test_expired_job_falls_back_and_nothing_is_none(self):
+		shim.get_all.return_value = []
+		self.assertIsNone(ai_pricer.ai_comps("CRM-LEAD-1", "b" * 32))
+		shim.db.doctypes.discard(ai_pricer.CHAT_DOCTYPE)
+		self.assertIsNone(ai_pricer.ai_comps("CRM-LEAD-1"))
+		with self.assertRaises(shim.ValidationError):
+			ai_pricer.ai_comps("CRM-LEAD-1", "../x")
+
+
 if __name__ == "__main__":
 	unittest.main()

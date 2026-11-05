@@ -365,6 +365,80 @@ def chat_history(lead: str):
 	return {"chat": chat, "messages": [_history_row(r) for r in rows], "pending": pending}
 
 
+AI_COMP_KEYS = ("address", "price", "adjusted", "role", "why", "lat", "lng", "sqft", "date", "dist_mi", "condition")
+
+
+def _run_comps(answer: dict) -> dict:
+	"""An Ask AI run (price card or 13-step run) as the comps page's "Ask AI's comps" list.
+
+	A price card from the 13 steps carries the steps' own comps under `decide` (role, adjusted
+	price, lat/lng, so the page can pin comps that are not on its board); an older one-shot card
+	has only address, price and why."""
+	d = answer.get("decide") if isinstance(answer.get("decide"), dict) else answer
+	comps = d.get("comps_used") or answer.get("comps_used") or []
+	why = {c.get("address"): c.get("why") for c in answer.get("comps_used") or [] if isinstance(c, dict)}
+	# The steps' comps carry no lat/lng; their trace rows do (used comps sort first).
+	point = {r.get("address"): r for r in d.get("rows") or [] if isinstance(r, dict) and r.get("lat") is not None}
+	out = []
+	for c in comps:
+		if not isinstance(c, dict) or not c.get("address"):
+			continue
+		row = {k: c.get(k) for k in AI_COMP_KEYS if c.get(k) not in (None, "")}
+		if not row.get("why") and why.get(c["address"]):
+			row["why"] = why[c["address"]]
+		if row.get("lat") is None and c["address"] in point:
+			row["lat"], row["lng"] = point[c["address"]]["lat"], point[c["address"]]["lng"]
+		out.append(row)
+	return {
+		"arv": d.get("arv") or answer.get("arv"),
+		"arv_low": d.get("arv_low") or answer.get("arv_low"),
+		"arv_high": d.get("arv_high") or answer.get("arv_high"),
+		"confidence": d.get("confidence") or answer.get("confidence"),
+		"comps": out,
+	}
+
+
+@frappe.whitelist()
+def ai_comps(lead: str, job: str | None = None):
+	"""Ask AI's comps for this lead, shown on the comps page apart from the rep's own picks.
+
+	Exe, 2026-11-05: "I want Ask AI's comps to show up on the comp list where the reps comps are
+	but have them separate ... so they can compare whether they have the same ones or different
+	ones and they can actually find them on the map." `job` (the page opened from an Ask AI card,
+	`?ai=<job>`) is read from Redis; otherwise the latest finished run on the lead by anyone
+	(price card or "Run the 13 steps"; AVM training runs excluded). None when there is no run."""
+	_guard()
+	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	if job:
+		_check_job_id(job)
+		r = _read(job) or {}
+		answer = r.get("answer") or r.get("decide")
+		if r.get("status") == "done" and isinstance(answer, dict):
+			if r.get("answer") and isinstance(r.get("decide"), dict):
+				answer = {**r["answer"], "decide": r["decide"]}
+			if answer.get("arv"):
+				return {**_run_comps(answer), "job": job, "user": None, "when": None, "kind": "price" if r.get("answer") else "decide"}
+	if not _log_supported():
+		return None
+	rows = frappe.get_all(
+		CHAT_DOCTYPE,
+		filters={"lead": lead, "role": "ai", "error": 0, "kind": ["in", ["price", "decide"]],
+		         "answer": ["is", "set"], "chat": ["not like", "avmtrain%"]},
+		fields=["job", "kind", "user", "answer", "creation"],
+		order_by="creation desc",
+		limit=5,
+	)
+	for row in rows:
+		try:
+			answer = json.loads(row.answer)
+		except (TypeError, ValueError):
+			continue
+		if isinstance(answer, dict) and answer.get("arv"):
+			name = frappe.db.get_value("User", row.user, "full_name") if row.user else None
+			return {**_run_comps(answer), "job": row.job, "user": name or row.user, "when": str(row.creation), "kind": row.kind}
+	return None
+
+
 def _check_job_id(job):
 	if not job or len(job) != 32 or not job.isalnum():
 		frappe.throw(_("Bad job id."))

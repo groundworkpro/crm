@@ -554,7 +554,7 @@
                 v-if="ai.run.value"
                 :run="ai.run.value"
                 :used-count="Object.keys(ai.used.value).length"
-                :missing="ai.missing.value"
+                :missing="aiComps.list.value.length ? [] : ai.missing.value"
               />
               <CompSubjectCard
                 v-if="data?.subject"
@@ -567,6 +567,25 @@
                 @save-sqft="saveSubjectSqft"
               />
 
+              <!-- Ask AI's comps, separate from the rep's board so the two can be
+                   compared and the AI's found on the map (Exe, 2026-11-05). -->
+              <AiCompsSection
+                v-if="aiComps.list.value.length"
+                :run="aiComps.run.value"
+                :list="aiComps.list.value"
+                :rep-only="aiComps.repOnly.value"
+                :active="hoveredComp"
+                :pick="(name) => setCompState(name, 'selected')"
+                @hover="hoverFromCard"
+                @focus="focusAiComp"
+              />
+              <div
+                v-if="aiComps.list.value.length"
+                class="border-b border-outline-gray-2 bg-surface-gray-1 px-3 py-1.5 text-xs font-medium text-ink-gray-7"
+              >
+                {{ __('Board · {0} picked', [selectedNames.length]) }}
+              </div>
+
               <CompTrayCard
                 v-for="c in comps"
                 :key="c.name"
@@ -575,7 +594,7 @@
                 :subject="data?.subject || null"
                 :active="hoveredComp === c.name"
                 :can-tag="canTagTypes"
-                :ai="ai.used.value[c.name] || stepsUsed[c.name] || null"
+                :ai="aiComps.byName.value[c.name] || ai.used.value[c.name] || stepsUsed[c.name] || null"
                 :ref="(el) => setCardRef(c.name, el)"
                 @hover="hoverFromCard"
                 @open="openCompDetail"
@@ -801,6 +820,8 @@ import TaxInfoCard from '@/components/TaxInfoCard.vue'
 import CompTrayCard from '@/components/CompTrayCard.vue'
 import AiPricerSummary from '@/components/AiPricerSummary.vue'
 import { useAiPricerRun } from '@/composables/useAiPricerRun'
+import { useAiComps } from '@/composables/useAiComps'
+import AiCompsSection from '@/components/AiCompsSection.vue'
 import CompSubjectCard from '@/components/CompSubjectCard.vue'
 import CompHelpKey from '@/components/CompHelpKey.vue'
 import CompOfferCalc from '@/components/CompOfferCalc.vue'
@@ -1347,6 +1368,8 @@ const markersByName = new Map()
 // the subject; hover clears it.
 const HOVER_Z = 12000
 const SUBJECT_Z = 10000
+// Ask AI's own pins (comps not on the board): above unpicked comps, under picked ones.
+const AI_PIN_Z = 500
 // One band below the subject. A pill you have looked at STAYS on top of the
 // comps it overlaps after the pointer leaves, because the reason you hovered it
 // was to bring it out from under them -- dropping it straight back under is the
@@ -1385,7 +1408,7 @@ function restZ(name) {
   const rank = raisedComps.get(name)
   if (rank !== undefined) return RAISED_Z + rank
   const c = comps.value.find((x) => x.name === name)
-  return c ? pinZ(c) : 0
+  return c ? pinZ(c) : String(name).startsWith('ai:') ? AI_PIN_Z : 0
 }
 
 watch(hoveredComp, (name, prev) => {
@@ -2203,7 +2226,7 @@ function pillIcon(c) {
           --pill-bg-solid:${pal.bg};--pill-border-solid:${borderSolid};
           font:700 11px/1 ui-sans-serif,system-ui,sans-serif;border-radius:999px;
           border:${border};${ring}white-space:nowrap;overflow:visible;
-          opacity:${op}">${glyph}${price}${hideBadge(c)}</div>`,
+          opacity:${op}">${glyph}${price}${hideBadge(c)}${aiComps.byName.value[c.name] ? aiChip() : ''}</div>`,
       iconSize: [w, 24],
       iconAnchor: [w / 2, 12],
       popupAnchor: [0, -14],
@@ -2268,7 +2291,7 @@ function pillIcon(c) {
           ${glyph}<span style="font:700 11.5px/1 ui-sans-serif,system-ui,sans-serif">${price}</span>${yearHtml}${ageHtml}
         </div>
         ${line2Html}
-        ${hideBadge(c)}
+        ${hideBadge(c)}${aiComps.byName.value[c.name] ? aiChip() : ''}
       </div>`,
     iconSize: [w, 34],
     iconAnchor: [w / 2, 17],
@@ -2561,6 +2584,7 @@ function render() {
     placePin(c)
     bounds.push([c.lat, c.lng])
   }
+  placeAiPins()
 
   // The subject goes on LAST so it is never buried under a comp pill.
   const subjectMarker = L.marker([s.lat, s.lng], {
@@ -3291,14 +3315,100 @@ const creatingSheet = ref(false)
 const selectedNames = computed(() => comps.value.filter((c) => c.selected).map((c) => c.name))
 const selectedComps = computed(() => comps.value.filter((c) => c.selected))
 
-// Opened from an Ask AI result: highlight and pick the AI's comps, fill its numbers.
+// Opened from an Ask AI result: fill its numbers (its comps show in their own section, below).
 const ai = useAiPricerRun({
   job: () => (props.pageMode && !isPractice.value && typeof route.query.ai === 'string' ? route.query.ai : ''),
   rows: () => [...comps.value, ...discarded.value],
   ready: computed(() => Boolean(data.value?.comps)),
-  pick: (name) => setCompState(name, 'selected'),
   prefill: (v) => calcRef.value?.prefill?.(v),
 })
+
+// Ask AI's comps as their own tray section and pins, never mixed into the rep's picks.
+const aiComps = useAiComps({
+  lead: () => props.lead,
+  job: () => (typeof route.query.ai === 'string' ? route.query.ai : ''),
+  rows: () => [...comps.value, ...discarded.value],
+  enabled: () => Boolean(props.pageMode && !isPractice.value),
+})
+
+// The AI mark on board pins, and pins for AI comps the board does not show.
+watch(
+  () => aiComps.list.value,
+  () => {
+    if (!map) return
+    for (const c of comps.value) placePin(c)
+    placeAiPins()
+  },
+)
+
+/** Pins for AI comps that are not on the board (or the rep discarded), from the run's lat/lng. */
+function placeAiPins() {
+  if (!map) return
+  for (const [k, m] of markersByName) {
+    if (k.startsWith('ai:')) {
+      map.removeLayer(m)
+      markersByName.delete(k)
+    }
+  }
+  for (const a of aiComps.list.value) {
+    if (a.state !== 'off_board' && a.state !== 'discarded') continue
+    const lat = a.lat ?? a.comp?.lat
+    const lng = a.lng ?? a.comp?.lng
+    if (lat == null || lng == null) continue
+    const key = a.key
+    const price = priceShort(a.adjusted || a.price)
+    const w = Math.max(48, Math.ceil(30 + price.length * 7.4))
+    const marker = L.marker([lat, lng], {
+      zIndexOffset: AI_PIN_Z,
+      icon: L.divIcon({
+        className: 'comps-price-pill',
+        html: `<div class="comps-pill-body" title="${escapeHtml(`Ask AI: ${a.address}`)}"
+            style="position:relative;display:flex;align-items:center;justify-content:center;gap:3px;
+            box-sizing:border-box;width:${w}px;height:24px;background:#fff;color:#161614;
+            --pill-bg-solid:#fff;--pill-border-solid:#161614;
+            font:700 11px/1 ui-sans-serif,system-ui,sans-serif;border-radius:999px;
+            border:2px dashed #161614;box-shadow:0 1px 3px rgba(0,0,0,.35);white-space:nowrap">${aiChip(true)}${price}</div>`,
+        iconSize: [w, 24],
+        iconAnchor: [w / 2, 12],
+        popupAnchor: [0, -14],
+      }),
+    }).addTo(map)
+    const why = a.why ? `<div style="margin-top:4px;color:#555">${escapeHtml(a.why)}</div>` : ''
+    const note = a.state === 'discarded' ? __('You discarded this one.') : __('Not on your board (outside the filters or not found).')
+    marker.bindPopup(
+      `<div style="font:12px/1.35 ui-sans-serif,system-ui;max-width:240px">
+        <div style="font-weight:600">${escapeHtml(a.address)}</div>
+        <div>${escapeHtml(__('Ask AI'))}${a.role ? ' · ' + escapeHtml(a.role) : ''} · ${escapeHtml(fmtMoney(a.adjusted || a.price) || '')}</div>
+        ${why}<div style="margin-top:4px;color:#888">${escapeHtml(note)}</div></div>`,
+    )
+    marker.on('mouseover', () => hoverFromMap(key))
+    marker.on('mouseout', () => {
+      if (hoveredComp.value === key) hoveredComp.value = null
+    })
+    markersByName.set(key, marker)
+  }
+}
+
+/** "AI" chip: top-left corner of a board pin, inline on an AI-only pin. */
+function aiChip(inline = false) {
+  const pos = inline ? '' : 'position:absolute;top:-7px;left:-7px;'
+  return `<span style="${pos}display:inline-block;padding:0 3px;border-radius:4px;background:#161614;
+      color:#fff;font:800 8px/12px ui-sans-serif,system-ui;letter-spacing:.02em">AI</span>`
+}
+
+/** A row of the AI section was clicked: show that comp on the map. */
+function focusAiComp(a) {
+  const key = a.key
+  const marker = markersByName.get(key)
+  if (!marker || !map) {
+    toast.info(__('Ask AI gave no map point for {0}', [a.address]))
+    return
+  }
+  map.panTo(marker.getLatLng())
+  hoverFromCard(key)
+  if (key.startsWith('ai:')) marker.openPopup()
+  else scrollCardIntoView(key)
+}
 
 const zillowLine = computed(() => {
   const z = data.value?.zillow
@@ -3582,12 +3692,14 @@ defineExpose({
   calc: () => calcRef.value,
   // The steps fill the calculator, so it has to be on screen (not folded, not full map).
   openCalc: async () => {
-    if (compsFocusMap.value) toggleCompsFocusMap()
     calcOpen.value = true
     await nextTick()
   },
   setCompState,
-  markSteps: (m) => (stepsUsed.value = m || {}),
+  markSteps: (m) => {
+    stepsUsed.value = m || {}
+    aiComps.reload() // the rail just ran the steps: show that run in the AI section
+  },
 })
 
 function observeMapSize() {

@@ -1,6 +1,8 @@
 // The comps page opened from an Ask AI result ("Finish on comps page" links with
-// ?ai=<job id>): load that run, match the AI's comps to the board's rows, pick
-// them once, and hand the AI's ARV + repair tier to the calculator once.
+// ?ai=<job id>): load that run, match the AI's comps to the board's rows, and hand
+// the AI's ARV + repair tier to the calculator once. The AI's comps are NOT picked
+// for the rep any more: they show apart, in the tray's "Ask AI's comps" section
+// (useAiComps), so the rep's picks stay theirs to compare (Exe, 2026-11-05).
 import { computed, ref, watch } from 'vue'
 import { call } from 'frappe-ui'
 import { addressMatchKey } from '@/utils/comps'
@@ -8,7 +10,7 @@ import { addressMatchKey } from '@/utils/comps'
 // comping/oneshot.py's TIERS, $/sqft.
 const TIER_PSF = { clean: 5, paint_carpet: 10, kitchen_baths: 30, full_rehab: 50, studs: 75 }
 
-export function useAiPricerRun({ job, rows, ready, pick, prefill }) {
+export function useAiPricerRun({ job, rows, ready, prefill }) {
   const run = ref(null)
 
   watch(
@@ -43,9 +45,9 @@ export function useAiPricerRun({ job, rows, ready, pick, prefill }) {
     return { used, missing }
   })
 
-  // Once per job per browser tab: a reload must not re-pick a comp the rep has
-  // since dropped, or overwrite numbers they have since changed.
-  watch([run, ready], async ([r, ok]) => {
+  // Once per job per browser tab: a reload must not overwrite numbers the rep has
+  // since changed.
+  watch([run, ready], ([r, ok]) => {
     const key = `aiPricerApplied:${job()}`
     if (!r || !ok || sessionStorage.getItem(key)) return
     sessionStorage.setItem(key, '1')
@@ -54,9 +56,6 @@ export function useAiPricerRun({ job, rows, ready, pick, prefill }) {
       rehabPsf: TIER_PSF[r.repair_tier] || TIER_PSF.kitchen_baths,
       mult: r.offers?.recommend === 'classic' ? 1 : 2,
     })
-    const want = rows().filter((c) => matched.value.used[c.name] && !c.selected)
-    // One at a time: set_comp_state is read-modify-write on the lead's list.
-    for (const c of want) await pick(c.name)
   })
 
   return { run, used: computed(() => matched.value.used), missing: computed(() => matched.value.missing) }
