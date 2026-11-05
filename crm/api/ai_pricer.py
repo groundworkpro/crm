@@ -415,6 +415,12 @@ def ai_comps(lead: str, job: str | None = None):
 	(price card or "Run the 13 steps"; AVM training runs excluded). None when there is no run."""
 	_guard()
 	frappe.has_permission("CRM Lead", "read", lead, throw=True)
+	return latest_run(lead, job)
+
+
+def latest_run(lead: str, job: str | None = None):
+	"""`ai_comps` without the permission checks, for callers that already made them
+	(the comps board pins these comps onto itself)."""
 	if job:
 		_check_job_id(job)
 		r = _read(job) or {}

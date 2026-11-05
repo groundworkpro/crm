@@ -90,6 +90,9 @@
         <template v-else-if="comps.length">
           {{ __('{0} comps', [data?.total_matched ?? comps.length]) }}
           <template v-if="presetLabel"> · {{ presetLabel }}</template>
+          <template v-if="data?.ai_pinned">
+            · {{ __('+{0} from Ask AI', [data.ai_pinned]) }}
+          </template>
           <span class="text-ink-gray-4">
             ·
             {{
@@ -99,7 +102,7 @@
               ])
             }}
           </span>
-          <template v-if="(data?.total_matched ?? 0) > comps.length">
+          <template v-if="(data?.total_matched ?? 0) + (data?.ai_pinned ?? 0) > comps.length">
             · {{ __('showing the {0} nearest', [comps.length]) }}
           </template>
           <template v-if="zillowLine"> · {{ zillowLine }}</template>
@@ -3265,6 +3268,8 @@ async function load({ explicit = userTouched.value, quiet = false, settle = fals
         : await call('crm.api.comps.get_lead_comps', {
             ...payload,
             lead: props.lead,
+            // Ask AI's comps board past the filters (the run this page came from).
+            ai_job: typeof route.query.ai === 'string' ? route.query.ai : undefined,
           })
       if (gen !== loadGen) return
       data.value = nextData

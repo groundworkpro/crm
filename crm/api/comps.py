@@ -2378,9 +2378,129 @@ def _picked_outside_radius(selected, have, lat, lng, self_key, hidden, today):
 
 
 @frappe.whitelist()
+def _ai_run_comps(doc, ai_job=None):
+	"""Ask AI's comps on this lead's latest run (or `ai_job`), for the board to carry.
+
+	Empty for practice and scratch subjects, for users without Ask AI, and when the
+	lead has no run. Best-effort: a missing or bad run never costs the board."""
+	if doc.doctype != "CRM Lead":
+		return []
+	try:
+		from crm.api import ai_pricer
+
+		if not ai_pricer._allowed():
+			return []
+		run = ai_pricer.latest_run(doc.name, ai_job or None)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Comps: Ask AI comps read failed")
+		return []
+	return [
+		c for c in (run or {}).get("comps") or []
+		if isinstance(c, dict) and c.get("address") and c.get("lat") is not None and c.get("lng") is not None
+	]
+
+
+def _ai_locality(doc):
+	"""(city, state) of the subject, which an Ask AI comp's street-only address lacks."""
+	city = (doc.get("property_city") or "").strip()
+	state = (doc.get("property_state") or "").strip().upper()[:2]
+	if not (city and state):
+		m = re.search(r",\s*([^,]+?),\s*([A-Za-z]{2})\b", doc.get("property_address") or "")
+		if m:
+			city, state = city or m.group(1).strip(), state or m.group(2).upper()
+	return city, state
+
+
+def _ai_pool_row(ai, doc, lat, lng, selected, hidden, today):
+	"""The CRM Comp row for one Ask AI comp, created from the run's facts if the pool lacks it.
+
+	Exe, 2026-11-05: AI comps should "get through the filter and be treated as a normal comp
+	so the crm can update the information and reps can add it as a comp". A pool row is what
+	the Zillow/Redfin refreshes correct and what a pick can name. Looked up near the comp's own
+	point (not by the subject's radius) and matched on the street key, so a pool row named in
+	another format still wins over a new one. A new row records the AI's sale: price, sale date,
+	beds/baths/sqft/year -- the Redfin sold record the run read, nothing invented."""
+	from crm.api.zillow_comps import merge_key
+
+	key = merge_key(ai["address"])
+	alat, alng = float(ai["lat"]), float(ai["lng"])
+	d = 0.002
+	near = frappe.get_all(
+		DOCTYPE,
+		filters=[
+			[DOCTYPE, "lat", ">=", alat - d], [DOCTYPE, "lat", "<=", alat + d],
+			[DOCTYPE, "lng", ">=", alng - d], [DOCTYPE, "lng", "<=", alng + d],
+		],
+		fields=POOL_FIELDS,
+		limit_page_length=200,
+	)
+	row = next((r for r in near if merge_key(r.get("address") or "") == key), None)
+	created = False
+	if row is None:
+		city, state = _ai_locality(doc)
+		line = ", ".join(p for p in (ai["address"], city, state) if p)
+		name = address_key(line)
+		if not frappe.db.exists(DOCTYPE, name):
+			fields = {
+				"doctype": DOCTYPE, "address_key": name, "address": line, "city": city,
+				"state": state, "lat": alat, "lng": alng, "status": "Inactive",
+				"source_lead": f"ai:{doc.name}",
+			}
+			for src, dst in (("price", "price"), ("beds", "bedrooms"), ("baths", "bathrooms"),
+			                 ("sqft", "square_footage"), ("year_built", "year_built")):
+				if ai.get(src):
+					fields[dst] = ai[src]
+			if ai.get("date"):
+				fields["removed_date"] = str(ai["date"])[:10]
+			frappe.get_doc(fields).insert(ignore_permissions=True)
+			created = True
+		row = frappe.db.get_value(DOCTYPE, name, POOL_FIELDS, as_dict=True)
+		if not row:
+			return None
+	shaped = _board_pool_row(row, _haversine_mi(lat, lng, row["lat"], row["lng"]), selected, hidden, today)
+	if created:
+		# The run read this close from Redfin's sold records; say so the way a
+		# provider-stamped sale does, so the board and BatchData gate count it.
+		shaped["listing_state"] = "sold"
+		shaped["sale_source"] = "ask_ai"
+	shaped["ai_comp"] = True
+	return shaped
+
+
+def _ai_missing(ai_list, rows, far_only=None, radius=None, lat=None, lng=None):
+	"""Ask AI comps with no board row yet (by street key)."""
+	from crm.api.zillow_comps import merge_key
+
+	have = {merge_key(r.get("address") or "") for r in rows}
+	out = []
+	for ai in ai_list:
+		if merge_key(ai["address"]) in have:
+			continue
+		if far_only is not None:
+			far = _haversine_mi(lat, lng, float(ai["lat"]), float(ai["lng"])) > radius
+			if far != far_only:
+				continue
+		out.append(ai)
+	return out
+
+
+def _ai_board_rows(ai_list, doc, rows, lat, lng, selected, hidden, today, **which):
+	"""Board rows for the Ask AI comps `rows` lacks. Soft: a failure adds nothing."""
+	added = []
+	for ai in _ai_missing(ai_list, rows, lat=lat, lng=lng, **which):
+		try:
+			row = _ai_pool_row(ai, doc, lat, lng, selected, hidden, today)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Comps: Ask AI comp row failed")
+			continue
+		if row and row["name"] not in {r["name"] for r in rows + added}:
+			added.append(row)
+	return added
+
+
 def get_lead_comps(
 	lead, radius_mi=None, limit=None, filters=None, auto=0, include_hidden=0, state=None,
-	inventory=None, settle=0,
+	inventory=None, settle=0, ai_job=None,
 ):
 	"""Comps near a lead, nearest first, with the subject's real position.
 
@@ -2590,6 +2710,17 @@ def get_lead_comps(
 	# at the radius), so they would board on the pool's last ASK -- 95 Arcadia
 	# showed a 2025 $167.5k list instead of its $375k sale. Same `/property`
 	# refresh the nearest pins get, 30-day cached, a handful of rows at most.
+	# Ask AI's comps board like picks do: the ones outside the circle join here, so
+	# the same refresh below corrects their pool facts (7041 S Throop's pool row
+	# was a June $190k delisting; the house sold for $205k on 7/2).
+	ai_list = [] if rental or override is not None else _ai_run_comps(doc, ai_job)
+	if ai_list:
+		for row in _ai_board_rows(
+			ai_list, doc, out, lat, lng, selected, hidden, today, far_only=True, radius=radius
+		):
+			row["outside_radius"] = True
+			out.append(row)
+
 	far_picks = [r for r in out if r.get("outside_radius") and r.get("source") != "zillow"]
 	if far_picks:
 		try:
@@ -2707,6 +2838,17 @@ def get_lead_comps(
 	# afterwards and anything an old cached circle carried forward. A picked
 	# comp that goes unpriced leaves the board but keeps its name in
 	# comps_selected — the calc only reads board rows.
+	# Ask AI comps inside the circle that no source returned: the pool row (made
+	# from the run's sale if need be). Then flag every board row the run used.
+	if ai_list:
+		out.extend(_ai_board_rows(ai_list, doc, out, lat, lng, selected, hidden, today, far_only=False, radius=radius))
+		from crm.api.zillow_comps import merge_key
+
+		ai_keys = {merge_key(a["address"]) for a in ai_list}
+		for row in out:
+			if merge_key(row.get("address") or "") in ai_keys:
+				row["ai_comp"] = True
+
 	out[:] = [r for r in out if r.get("price") or r.get("listing_state") == "auction"]
 
 	for row in out:
@@ -2852,6 +2994,14 @@ def get_lead_comps(
 	base["selected_count"] = sum(1 for r in matched if r["selected"])
 
 	base["total_matched"] = len(matched)
+	# Ask AI's comps ride past the filters too, so a rep can compare, refresh and
+	# pick them like any comp. Counted apart: they are not what the filters found,
+	# and the auto-widen reads `total_matched`.
+	seen = {r["name"] for r in matched}
+	ai_pinned = [r for r in out if r.get("ai_comp") and r["name"] not in seen]
+	if ai_pinned:
+		matched = sorted(matched + ai_pinned, key=lambda r: r["distance_mi"])
+	base["ai_pinned"] = len(ai_pinned)
 	base["comps"] = matched[:cap] if cap else matched
 
 	# LAST, on the final board: the first point at which we know which comps a
