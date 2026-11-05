@@ -1652,8 +1652,13 @@ def _detail_address(row, details=None):
 	return " ".join(str(p).strip() for p in parts if p and str(p).strip())
 
 
-def _shape_detail(row, zpid=None):
+def _shape_detail(row, zpid=None, zillow=True, fallback_details=None):
 	"""Fetch and normalize one property only after a person explicitly opens it.
+
+	`zillow=False` skips the Zillow facts/photos call and uses `fallback_details`
+	instead: the subject whose Zillow answer was a miss or a different house
+	(re-asking by address returns that same wrong house's price, beds and
+	description — 112 Highland Ave, 2026-11-05).
 
 	`zpid` short-circuits address resolution when the caller already holds one (the
 	subject does, from its cached facts). A zpid is an exact identifier where an
@@ -1687,7 +1692,10 @@ def _shape_detail(row, zpid=None):
 	# price history, and `CompDetailModal.vue` reads all of those. Photos and
 	# facts therefore cascade INDEPENDENTLY — this call is the facts half, and
 	# its photos are merely the last rung of the ladder below.
-	details, zillow_photos = _zillow_detail(row, zpid)
+	if zillow:
+		details, zillow_photos = _zillow_detail(row, zpid)
+	else:
+		details, zillow_photos = (fallback_details or None), []
 	after_zillow = time.monotonic()
 	# Dedupe BEFORE the thin-gallery check: a photo-less home whose "gallery" is
 	# two sizes of the same synthesized Street View frame is really ONE photo, and
@@ -2163,7 +2171,10 @@ def get_subject_details(lead):
 		redfin_rec = None
 	# Free past the first open: cached on the lead for 30 days. A wrong-house
 	# hit reads as a miss here too, or the gallery would show that house.
-	facts, _rejected = subject_zillow(doc, redfin_rec)
+	facts, rejected = subject_zillow(doc, redfin_rec)
+	# Zillow has already answered "no house" (or a different house): asking it
+	# again by address in the gallery returns that same wrong house.
+	zillow_missed = bool(rejected) or (isinstance(facts, dict) and not facts.get("zpid"))
 	facts = facts or {}
 	zpid = str(facts.get("zpid") or "")
 	# Zillow has no house: Redfin's record fills the numbers the panel shows.
@@ -2184,8 +2195,11 @@ def get_subject_details(lead):
 	# Keyed on the zpid where we have one so two leads on the same house share the
 	# lookup, and on the lead otherwise — never on the raw address, which changes
 	# whenever somebody tidies up the punctuation on a lead.
-	key = _detail_cache_key(f"subject::{zpid or lead}")
-	cached = _detail_cached(f"subject::{zpid or lead}")
+	# No zpid: a separate key, so a gallery cached before Zillow's answer was
+	# rejected (holding that house's details) is not served again.
+	ckey = f"subject::{zpid}" if zpid else f"subject::nz::{lead}"
+	key = _detail_cache_key(ckey)
+	cached = _detail_cached(ckey)
 	if isinstance(cached, dict):
 		# Same read-side dedupe as get_comp_details — pre-fix cached subjects hold
 		# the same Street View shot twice.
@@ -2216,7 +2230,17 @@ def get_subject_details(lead):
 			"is_subject": True,
 		}
 	)
-	result = _shape_detail(row, zpid=zpid or None)
+	fallback = None
+	if zillow_missed:
+		fallback = {k: facts.get(k) for k in ("beds", "baths", "sqft", "year_built", "property_type")
+		            if facts.get(k)}
+		if rf.get("listing_remarks"):
+			fallback["description"] = rf["listing_remarks"]
+		fallback = fallback or None
+	result = _shape_detail(row, zpid=zpid or None, zillow=not zillow_missed,
+	                       fallback_details=fallback)
+	if zillow_missed and not fallback:
+		result["message"] = _("Not on Zillow, and Redfin has no details for this house.")
 	cover = facts.get("cover_photo") or ""
 	photos = list(result.get("photos") or [])
 	if cover and cover not in photos:

@@ -217,5 +217,44 @@ class CompleteAddress(unittest.TestCase):
 		self.assertEqual(out["address"], "12 Washington")
 
 
+class SubjectGallery(unittest.TestCase):
+	"""Exe, 2026-11-05: after the fix the comps card was right but the subject
+	popup still showed the North Syracuse house — it re-asked Zillow by address."""
+
+	def open(self, zillow, rec=REDFIN):
+		import crm.api.zillow as zillow_api
+		from crm.api import redfin
+		seen = {}
+
+		def shape(row, zpid=None, zillow=True, fallback_details=None):
+			seen.update(zpid=zpid, zillow=zillow, details=fallback_details)
+			return {"available": bool(fallback_details), "photos": [], "details": fallback_details,
+			        "redfin_url_pending": False}
+
+		with patch.object(comps, "_guard"), \
+			 patch.object(comps, "_load_subject", return_value=doc()), \
+			 patch.object(redfin, "cached_subject_record", return_value=rec), \
+			 patch.object(zillow_api, "facts_for_lead", return_value=zillow), \
+			 patch.object(comps, "_detail_cached", return_value=None), \
+			 patch.object(comps, "_shape_detail", side_effect=shape), \
+			 patch.object(comps, "_enqueue_redfin_url_fill"):
+			comps.get_subject_details("PROP-00023")
+		return seen
+
+	def test_rejected_house_is_not_looked_up_again(self):
+		seen = self.open(NORTH_SYRACUSE_OLD)
+		self.assertFalse(seen["zillow"])
+		self.assertEqual(seen["details"], {"sqft": 4116})
+
+	def test_a_zillow_miss_is_not_looked_up_again(self):
+		self.assertFalse(self.open({"_queried_address": "x"})["zillow"])
+
+	def test_a_good_hit_still_uses_zillow(self):
+		z = dict(NORTH_SYRACUSE, lat=43.0590, lng=-76.1394, zip="13203", city="Syracuse")
+		seen = self.open(z)
+		self.assertTrue(seen["zillow"])
+		self.assertEqual(seen["zpid"], "31694805")
+
+
 if __name__ == "__main__":
 	unittest.main()
