@@ -3405,7 +3405,7 @@ function aiNoteFor(c) {
     : c.hidden
       ? __('You discarded this one.')
       : ''
-  return [bits.join(' · '), where].filter(Boolean).join(' ')
+  return [bits.join(' · '), where].filter(Boolean).join('. ')
 }
 
 /** Pins for AI comps that are not on the board (or the rep discarded), from the run's lat/lng. */

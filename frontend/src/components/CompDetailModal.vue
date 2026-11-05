@@ -70,7 +70,7 @@
               {{ compLocation }}
             </div>
             <div v-if="aiNote" class="mt-1 max-w-2xl text-xs text-ink-gray-7">
-              <span class="mr-1 rounded bg-ink-gray-9 px-1 py-px text-[10px] font-extrabold text-ink-white">AI</span>{{ aiNote }}
+              <span class="mr-1 rounded px-1 py-px text-[10px] font-extrabold" style="background:#161614;color:#fff">AI</span>{{ aiNote }}
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
@@ -826,8 +826,10 @@ const timeline = computed(() => {
   if (props.comp?.listed_date) {
     rows.push({ label: __('Listed'), value: dateOnly(props.comp.listed_date) })
   }
-  if (props.comp?.removed_date) {
-    const sold = props.comp?.price_basis === 'ai_sale'
+  // An Ask AI sale Zillow already lists as "Last sold" is not said twice.
+  const aiSale = props.comp?.price_basis === 'ai_sale'
+  if (props.comp?.removed_date && !(aiSale && details.value?.last_sale?.price)) {
+    const sold = aiSale
     rows.push({ label: sold ? __('Sold') : __('Went off market'), value: dateOnly(props.comp.removed_date) })
   } else if (props.comp?.days_on_market) {
     rows.push({ label: __('Time on market'), value: __('{0} days', [props.comp.days_on_market]) })
