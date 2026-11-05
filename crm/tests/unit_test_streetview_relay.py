@@ -160,7 +160,7 @@ class FrontendContract(unittest.TestCase):
 			self.source,
 		)
 		self.assertIn(
-			"if (props.subjectMode || !response.value || loading.value || realPhotos.value.length) return ''",
+			"if (!response.value || loading.value || realPhotos.value.length) return ''",
 			self.source,
 		)
 

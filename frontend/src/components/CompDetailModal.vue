@@ -602,9 +602,11 @@ const realPhotos = computed(() => {
   return cover ? [cover] : []
 })
 const streetViewPhotoUrl = computed(() => {
-  // COMP gallery only. The lead desk's interactive Maps Embed iframe is a
-  // different product/key and stays in utils/streetView.js.
-  if (props.subjectMode || !response.value || loading.value || realPhotos.value.length) return ''
+  // Comp AND subject gallery (the subject too since 2026-11-05: a house Zillow
+  // does not know got Zillow's synthesized Street View frame before, and a blank
+  // panel once that wrong-house lookup was dropped). The lead desk's interactive
+  // Maps Embed iframe is a different product/key and stays in utils/streetView.js.
+  if (!response.value || loading.value || realPhotos.value.length) return ''
   if (streetViewUnavailable.value) return ''
   const lat = props.comp?.lat ?? details.value?.lat
   const lng = props.comp?.lng ?? details.value?.lng
