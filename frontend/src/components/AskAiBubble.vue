@@ -542,7 +542,7 @@ async function run(kind, question = '', facts = null) {
       chat: chatId,
       ...(facts ? { facts: JSON.stringify(facts) } : {}),
     })
-    await poll(job, forLead, kind, idx)
+    await poll(job, forLead, kind, idx, question)
   } catch (e) {
     settleAt(forLead, idx, { role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not reach the pricer.') })
   }
@@ -555,14 +555,18 @@ function settleAt(forLead, idx, m) {
 }
 
 // Wait for a job's reply and put it in place of the "thinking" row at idx.
-async function poll(job, forLead, kind, idx) {
+async function poll(job, forLead, kind, idx, question = '') {
   try {
     const started = Date.now()
     while (Date.now() - started < 5 * 60 * 1000) {
       await new Promise((r) => setTimeout(r, 2500))
       if (lead.value?.name !== forLead) return (busy.value = false)
       const r = await call('crm.api.ai_pricer.get_job', { job })
-      if (r.status === 'done') return settleAt(forLead, idx, r.answer ? { role: 'ai', result: { subject: r.subject, ...r.answer }, job } : { role: 'ai', text: r.text, job })
+      if (r.status === 'done') {
+        settleAt(forLead, idx, r.answer ? { role: 'ai', result: { subject: r.subject, ...r.answer }, job } : { role: 'ai', text: r.text, job })
+        if (kind === 'ask' && (r.actions || []).length) await applyActions(r.actions, forLead, question)
+        return
+      }
       if (r.status === 'error') return settleAt(forLead, idx, { role: 'ai', error: true, text: r.error })
       if (r.status === 'running' && kind === 'price' && messages.value[idx]) messages.value[idx].text = __('Pulling comps and pricing… {0}s', [Math.round((Date.now() - started) / 1000)])
     }
@@ -573,6 +577,34 @@ async function poll(job, forLead, kind, idx) {
 }
 
 const price = () => run('price')
+
+// The chat can take comps out of this lead's 13 steps (or put them back) and change a step for this house;
+// those are saved like on the comps page's rail, then the house is re-priced so the card has the new numbers
+// (CRM-LEAD-2026-01948: asked to drop two comps across Brookline Blvd, the chat had no tool and made up an ARV).
+// A value, repairs figure or comp pick is still only said: the calculator and picks are the rep's.
+async function applyActions(actions, forLead, question) {
+  let rerun = false
+  const say = (text, error) => lead.value?.name === forLead && messages.value.push(error ? { role: 'ai', error, text } : { role: 'user', kind: 'change', text })
+  for (const a of actions) {
+    try {
+      if ((a.do === 'exclude' || a.do === 'include') && a.address) {
+        const r = await call('crm.api.ai_pricer.exclude_comp', {
+          lead: forLead, address: a.address, why: a.why || question, include: a.do === 'include' ? 1 : 0, chat: chatId,
+        })
+        for (const t of r.lines || []) say(t)
+        rerun = (r.lines || []).length > 0 || rerun
+      } else if (a.do === 'step' && Number(a.n)) {
+        const f = Object.fromEntries(['tool', 'note', 'size_band', 'max_mi'].filter((k) => k in a).map((k) => [k, a[k]]))
+        const r = await call('crm.api.ai_pricer.save_step', { n: Number(a.n), reason: question, reason_type: __('Chat'), lead: forLead, chat: chatId, ...f })
+        for (const t of r.lines || []) say(t)
+        rerun = (r.lines || []).length > 0 || rerun
+      }
+    } catch (e) {
+      say(e?.messages?.[0] || e?.message || __('Could not apply that change.'), true)
+    }
+  }
+  if (rerun && lead.value?.name === forLead) await run('price')
+}
 const FACT_WORDS = { type: 'home type', sqft: 'sqft', beds: 'beds', baths: 'baths', year_built: 'built', lot_sqft: 'lot sqft' }
 const factsText = (f) => Object.entries(f).map(([k, v]) => `${FACT_WORDS[k] || k} ${String(v).replace('_', ' ')}`).join(', ')
 

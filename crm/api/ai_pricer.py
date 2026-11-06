@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import uuid
 
 import frappe
@@ -52,6 +53,8 @@ JEV_STEPS = (6, 9, 12)
 COMMENT_TITLE = "AI comping tool analysis"
 RUN_SETUP_KEY = "ai_step_override:"  # + lead + ":" + user: a team member's step changes, used only on their runs of that lead
 FACTS_KEY = "ai_subject_facts:"    # + lead: house facts a rep typed in when the steps flagged them (low confidence)
+EXCLUDE_KEY = "ai_comp_exclude:"  # + lead: comps the team took out of this lead's 13-step runs [{address, why, by}]
+MAX_EXCLUDE = 30
 FACT_FIELDS = ("type", "sqft", "beds", "baths", "year_built", "lot_sqft")
 HOME_TYPES = ("single_family", "townhouse", "condo", "multi_family", "manufactured", "land")
 
@@ -329,8 +332,53 @@ def build_job(kind: str, lead: str, address: str, question: str = "", history=No
 		# the team setup for their runs only (Exe, 2026-11-04: suggestions never change the model in general).
 		"setup": effective_setup(lead),
 		"subject_facts": clean_facts(facts),
+		"exclude": excluded_comps(lead),
 		"user": frappe.session.user,
 	}
+
+
+def excluded_comps(lead: str) -> list:
+	"""Comps the team took out of this lead's 13-step runs (a rep: "across Brookline Blvd")."""
+	try:
+		rows = json.loads(frappe.db.get_default(EXCLUDE_KEY + lead) or "[]")
+	except Exception:
+		return []
+	return [r for r in rows if isinstance(r, dict) and str(r.get("address") or "").strip()][:MAX_EXCLUDE]
+
+
+def _street_key(address) -> tuple:
+	"""Same match as the worker's street_key: house number + street name word."""
+	w = re.sub(r"[^a-z0-9 ]", " ", str(address or "").split(",")[0].lower()).split()
+	name = [x for x in w[1:] if x not in ("n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east", "west")] or w[1:]
+	return (w[0], name[0]) if w and name else tuple(w[:1])
+
+
+@frappe.whitelist(methods=["POST"])
+def exclude_comp(lead: str, address: str, why: str = "", include=0, chat=None):
+	"""Take a comp out of this lead's 13-step runs (include=1 puts it back). For everyone on the lead: whether a
+	comp is across a road that matters is a fact about the house, not a rep's taste. Logged like a step change
+	(chat line + CRM AI Suggestion on step 4), so the barrier can be taught to the steps."""
+	_guard()
+	_check(lead, "write")
+	address = str(address or "").strip()[:200]
+	why = str(why or "").strip()[:300]
+	key = _street_key(address)
+	if not key:
+		frappe.throw(_("Which comp?"))
+	include = str(include).lower() in ("1", "true")
+	rows = excluded_comps(lead)
+	had = [r for r in rows if _street_key(r["address"]) == key]
+	rows = [r for r in rows if _street_key(r["address"]) != key]
+	if not include:
+		rows.append({"address": address, "why": why, "by": frappe.session.user})
+	if include and not had:
+		return {"exclude": rows, "lines": []}
+	frappe.db.set_default(EXCLUDE_KEY + lead, json.dumps(rows[-MAX_EXCLUDE:]))
+	line = log_change(lead, why or (_("put back") if include else _("taken out")), f"Step 4 comp {address}",
+	                  "taken out" if include else "in the steps", "in the steps" if include else "taken out",
+	                  step=4, reason_type="Chat", chat=chat, scope="This house only")["text"]
+	frappe.db.commit()
+	return {"exclude": rows, "lines": [line]}
 
 
 @frappe.whitelist()
