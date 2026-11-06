@@ -333,6 +333,29 @@ class CompsPageChangeTest(AiCorrectionTest):
 		                 ("Comps page", 12, "$30/sf", "$45/sf", "Teach the agent", "Roof is shot"))
 		self.assertTrue(s["lesson"].startswith("Step 12: Changed Repairs"))
 
+	def test_exclude_comp_saves_logs_and_rides_on_jobs(self):
+		"""CRM-LEAD-2026-01948: the rep wanted Glenarm and Milan (across Brookline Blvd) out of the 13 steps."""
+		store = {}
+		shim.db.get_default.side_effect = lambda k, *a: store.get(k)
+		shim.db.set_default = mock.MagicMock(side_effect=lambda k, v, *a: store.__setitem__(k, v))
+		try:
+			with self.assertRaises(Exception):
+				ai_pricer.exclude_comp("CRM-LEAD-1", "  ")
+			r = ai_pricer.exclude_comp("CRM-LEAD-1", "2517 Glenarm Ave", "across Brookline Blvd", chat="e" * 32)
+			self.assertEqual(r["lines"], ["Changed Step 4 comp 2517 Glenarm Ave: in the steps -> taken out. Why: Chat: across Brookline Blvd"])
+			ai_pricer.exclude_comp("CRM-LEAD-1", "1440 Milan Ave", "across Brookline Blvd")
+			again = ai_pricer.exclude_comp("CRM-LEAD-1", "2517 Glenarm, Pittsburgh, PA", "across Brookline")
+			self.assertEqual([x["address"] for x in again["exclude"]], ["1440 Milan Ave", "2517 Glenarm, Pittsburgh, PA"])
+			self.assertEqual(ai_pricer.exclude_comp("CRM-LEAD-1", "9 Nowhere St", include=1)["lines"], [])
+			back = ai_pricer.exclude_comp("CRM-LEAD-1", "1440 milan", include="1")
+			self.assertEqual([x["address"] for x in back["exclude"]], ["2517 Glenarm, Pittsburgh, PA"])
+			ai_pricer.ask("CRM-LEAD-1", "decide")
+		finally:
+			shim.db.get_default.side_effect = None
+		job = json.loads(self.r.lists[ai_pricer.QUEUE][-1])
+		self.assertEqual(job["exclude"], [{"address": "2517 Glenarm, Pittsburgh, PA", "why": "across Brookline", "by": shim.session.user}])
+		self.assertEqual({x["step"] for x in self._suggestions()}, {4})
+
 	def test_step_change_saves_setup_logs_and_rides_on_jobs(self):
 		store = {}
 		shim.db.get_default.side_effect = lambda k, *a: store.get(k)

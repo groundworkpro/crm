@@ -359,7 +359,8 @@ function pageText() {
 
 // Apply what the agent said to change. Step changes the rep asked for are applied (they
 // are logged as suggestions by save_step). A value, repairs figure or comp is only said in
-// the chat: the calculator and picks are the rep's (Exe, 2026-11-05).
+// the chat: the calculator and picks are the rep's (Exe, 2026-11-05). Taking a comp out of
+// (or back into) the 13 steps is applied: it is saved on the lead and the steps rerun (exclude_comp).
 async function applyActions(actions, question) {
   let rerun = false
   for (const a of (actions || []).filter((x) => x.do === 'step')) {
@@ -369,9 +370,21 @@ async function applyActions(actions, question) {
       return 0
     })) || rerun
   }
+  // Comps the rep wants out of (or back in) this lead's 13 steps: saved on the lead, then the steps rerun.
+  for (const a of (actions || []).filter((x) => (x.do === 'exclude' || x.do === 'include') && x.address)) {
+    try {
+      const r = await call('crm.api.ai_pricer.exclude_comp', {
+        lead: props.lead, address: a.address, why: a.why || question, include: a.do === 'include' ? 1 : 0, chat: chatId,
+      })
+      for (const t of r.lines || []) messages.value.push({ role: 'user', kind: 'change', text: t })
+      rerun = (r.lines || []).length > 0 || rerun
+    } catch (e) {
+      messages.value.push({ role: 'ai', error: true, text: e?.messages?.[0] || e?.message || __('Could not take out {0}.', [a.address]) })
+    }
+  }
   const v = snapshot()
   const said = (text) => messages.value.push({ role: 'ai', kind: 'calc', text: text + ' ' + __('Not applied; change it yourself if you agree.') })
-  for (const a of (actions || []).filter((x) => x.do !== 'step')) {
+  for (const a of (actions || []).filter((x) => !['step', 'exclude', 'include'].includes(x.do))) {
     if (a.do === 'repairs_psf' && Number(a.value)) {
       said(__('Ask AI would use repairs of ${0}/sf (your calculator: ${1}/sf).', [Number(a.value), v.rehabPsf || 0]))
     } else if (a.do === 'arv' && Number(a.value)) {
