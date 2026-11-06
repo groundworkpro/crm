@@ -595,7 +595,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { call, toast } from 'frappe-ui'
-import { compState, isRentalComp, streetAddress } from '@/utils/comps'
+import { compState, daysListed, isRentalComp, streetAddress } from '@/utils/comps'
 
 function isRentalRow(c) {
   return isRentalComp(c)
@@ -1419,6 +1419,10 @@ const rows = computed(() =>
     const sf = Number(c.square_footage) || 0
     const psf = price && sf ? Math.round(price / sf) : 0
     const active = String(c.status || '').toLowerCase().startsWith('activ')
+    // A picked live listing says how long it has sat: a house listed 9 days
+    // and one listed 200 days are very different evidence for the same ask.
+    const dom = kind.value === 'rental' || isRentalRow(c) ? null : daysListed(c)
+    const domText = dom == null ? '' : ` · ${dom === 1 ? __('1 day') : __('{0} days', [dom])}`
     return {
       name: c.name,
       live: isLiveRow(c),
@@ -1445,7 +1449,9 @@ const rows = computed(() =>
               ? __('Pending')
               : active
                 ? __('Listed')
-                : __('Sold')) + (c.comp_type ? ` · ${c.comp_type}` : ''),
+                : __('Sold')) +
+        domText +
+        (c.comp_type ? ` · ${c.comp_type}` : ''),
     }
   }),
 )

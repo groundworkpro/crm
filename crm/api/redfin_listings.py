@@ -153,6 +153,15 @@ def _mls_status(home):
 	return "Sold" if home.get("_block") == "sold" else "Active"
 
 
+def _days(v):
+	"""A non-negative whole day count, or None (Redfin sends -1 for unknown)."""
+	try:
+		n = int(float(v))
+	except (TypeError, ValueError):
+		return None
+	return n if n >= 0 else None
+
+
 def _iso_date(v):
 	"""Redfin search rows carry `soldDate` as epoch MILLISECONDS; the store
 	features and every consumer here read an ISO date."""
@@ -199,9 +208,17 @@ def features(homes):
 	"""
 	ordered = [h for h in homes if h.get("_block") == "on_market"]
 	ordered += [h for h in homes if h.get("_block") != "on_market"]
+	import datetime as dt
+
+	today = dt.date.today()
 	out = []
 	for h in ordered:
 		sold = h.get("_block") == "sold"
+		# Redfin's search row carries the live listing's clock as `dom` but no
+		# list date, and the store's copy of the same house can lag (3626
+		# Meadowlark: store row still priced at its 2023 sale). Without these the
+		# for-sale pin said neither when it came on market nor for how long.
+		dom = None if sold else _days(h.get("dom"))
 		out.append({
 			"properties": {
 				"property_id": h.get("property_id"),
@@ -219,6 +236,8 @@ def features(homes):
 				"property_type": _property_type(h),
 				"mls_status": _mls_status(h),
 				"sold_date": _iso_date(h.get("sold_date")) if sold else None,
+				"listing_date": (today - dt.timedelta(days=dom)).isoformat() if dom is not None else None,
+				"days_on_market": dom,
 				"url": h.get("url"),
 				"photos": h.get("photos") or [],
 			}

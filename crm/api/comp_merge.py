@@ -154,7 +154,7 @@ def redfin_row(props, distance_mi):
 		"listing_state": state or "off_market",
 		"listed_date": str(props.get("listing_date") or "").strip() or None if active else None,
 		"removed_date": None if active else sold_date,
-		"days_on_market": None,
+		"days_on_market": _whole_days(props.get("days_on_market")) if active else None,
 		"days_old": None,
 		"bedrooms": comps._num(props.get("beds")),
 		"bathrooms": comps._num(props.get("baths")),
@@ -178,6 +178,32 @@ def redfin_row(props, distance_mi):
 		# gate tell it apart from an ISTL last-ask. See `has_recorded_sale`.
 		"sale_source": "redfin" if state == "sold" else None,
 	}
+
+
+def _whole_days(v):
+	try:
+		n = int(float(v))
+	except (TypeError, ValueError):
+		return None
+	return n if n >= 0 else None
+
+
+def _listing_clock(row, today):
+	"""On a live listing, days on market = today - list date, so the number
+	keeps ticking off a cached board instead of freezing at fetch time."""
+	if row.get("listing_state") not in ("for_sale", "pending", "auction"):
+		return
+	listed = str(row.get("listed_date") or "")[:10]
+	if not listed:
+		return
+	import datetime as dt
+
+	try:
+		days = (dt.date.fromisoformat(str(today)[:10]) - dt.date.fromisoformat(listed)).days
+	except ValueError:
+		return
+	if days >= 0:
+		row["days_on_market"] = days
 
 
 def _redfin_url(url):
@@ -304,6 +330,13 @@ def apply_redfin(rows, features, lat, lng, radius_mi, today, self_keys=None):
 	self_keys = self_keys or set()
 	by_key = _index(rows)
 	seen_incoming = set()
+	# The listings feed and the store can spell one house two ways ("3626
+	# Meadowlark Dr" / "3626 N Meadowlark Dr"), so the address key alone let the
+	# same Redfin home board twice -- once at its $139,900 ask, once at the store's
+	# stale $120,000 2023 sale under a For-sale pill. The property id is Redfin's
+	# own identity for the house; the first copy (listings come first) wins, and a
+	# later copy may only fill the list date it lacked.
+	seen_pids = {}
 
 	for feature in features or []:
 		props = (feature or {}).get("properties") or {}
@@ -323,19 +356,30 @@ def apply_redfin(rows, features, lat, lng, radius_mi, today, self_keys=None):
 		key = _merge_key(props.get("address"))
 		if not key or key in self_keys or key in seen_incoming:
 			continue
-		seen_incoming.add(key)
 		incoming = redfin_row(props, dist)
 		if incoming is None:
 			continue
+		first = seen_pids.get(incoming["name"])
+		if first is not None:
+			if incoming.get("listed_date") and not first.get("listed_date") and (
+				first.get("listing_state") == incoming.get("listing_state")
+			):
+				first["listed_date"] = incoming["listed_date"]
+				_listing_clock(first, today)
+			continue
+		seen_incoming.add(key)
+		_listing_clock(incoming, today)
 
 		existing = by_key.get(key)
 		if existing is None:
 			incoming["recency_days"] = comps._recency_days(incoming, today)
 			rows.append(incoming)
 			by_key[key] = incoming
+			seen_pids[incoming["name"]] = incoming
 			info["added"] += 1
 			continue
 
+		seen_pids[incoming["name"]] = existing
 		if is_adc(existing):
 			info["skipped_adc"] += 1
 			continue
@@ -373,6 +417,13 @@ def _take_authority(existing, incoming, today, info):
 			existing["sale_source"] = "redfin"
 			if incoming.get("removed_date"):
 				existing["removed_date"] = incoming["removed_date"]
+		elif incoming.get("listed_date"):
+			# A live listing's clock is Redfin's too: when it came on market and
+			# how long it has sat are what a rep reads a for-sale comp by.
+			existing["listed_date"] = incoming["listed_date"]
+			existing["removed_date"] = None
+			if incoming.get("days_on_market") is not None:
+				existing["days_on_market"] = incoming["days_on_market"]
 		changed = True
 	if incoming.get("redfin_url") and not existing.get("redfin_url"):
 		existing["redfin_url"] = incoming["redfin_url"]

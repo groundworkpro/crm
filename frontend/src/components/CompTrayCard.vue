@@ -272,6 +272,7 @@ import {
   compColor,
   compState,
   compStateLabel,
+  daysListed,
   daysToSell,
   finiteDays,
   formatLotSize,
@@ -517,8 +518,9 @@ const flipBadge = computed(() => {
  * "listed -1 days" is the kind of thing a rep screenshots.
  */
 function daysOnMarket(c) {
-  const n =
-    finiteDays(c?.days_on_market) ?? finiteDays(c?.sale_history?.days_on_market)
+  // Counted from the list date when there is one, so it keeps ticking on a
+  // cached board (see `daysListed`).
+  const n = daysListed(c) ?? finiteDays(c?.days_on_market) ?? finiteDays(c?.sale_history?.days_on_market)
   return n && n > 0 ? Math.round(n) : null
 }
 

@@ -223,6 +223,9 @@
                 <div class="text-xs text-ink-gray-5">
                   {{ displayPriceLabel }}
                 </div>
+                <div v-if="onMarketText" class="mt-0.5 text-xs font-medium text-ink-gray-7">
+                  {{ onMarketText }}
+                </div>
               </div>
               <div class="flex flex-wrap gap-x-3 gap-y-2">
                 <a
@@ -389,7 +392,7 @@
 </template>
 
 <script setup>
-import { COMP_CONDITION_TYPES, compsDetailUrl, compColor, compFit, compState, compStateLabel, daysToSell, formatCompMoney } from '@/utils/comps'
+import { COMP_CONDITION_TYPES, compsDetailUrl, compColor, compFit, compState, compStateLabel, daysToSell, finiteDays, formatCompMoney, ymdDate } from '@/utils/comps'
 import { copyToClipboard } from '@/utils'
 import { propertySearchAddress, providerLink, zillowUrl } from '@/utils/propertyLinks'
 import { Badge, Button, Dialog, FeatherIcon, call } from 'frappe-ui'
@@ -772,6 +775,40 @@ const displayPriceLabel = computed(() => {
   if (props.comp?.price) return __('Last known list price')
   return details.value?.zestimate ? __('Zestimate — no listing price on record') : ''
 })
+// A live listing is read by its clock: when it came on market and how long it
+// has sat (Lance, 2026-11-06, 3626 Meadowlark). The board's list date first,
+// then the listing chain's, then Zillow's newest "Listed for sale" event; the
+// day count runs off that date so a cached board does not freeze it.
+const onMarket = computed(() => {
+  if (state.value !== 'for_sale' && state.value !== 'pending') return null
+  const c = props.comp || {}
+  let date = ymdDate(c.listed_date) || ymdDate(c.sale_history?.first_listed)
+  if (!date && latestListing.value && !latestListing.value.rental) {
+    const d = new Date(latestListing.value.t)
+    date = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+  }
+  let days = null
+  if (date) {
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const diff = Math.round((today - date) / 86400000)
+    if (diff >= 0) days = diff
+  }
+  if (days == null) days = finiteDays(c.days_on_market) ?? finiteDays(c.sale_history?.days_on_market)
+  if (!date && days == null) return null
+  return { date, days }
+})
+const onMarketDays = computed(() => {
+  const d = onMarket.value?.days
+  if (d == null) return ''
+  return d === 1 ? __('1 day on market') : __('{0} days on market', [d])
+})
+const onMarketText = computed(() => {
+  const m = onMarket.value
+  if (!m) return ''
+  const since = m.date ? __('Listed {0}', [m.date.toLocaleDateString()]) : ''
+  return [since, onMarketDays.value].filter(Boolean).join(' · ')
+})
 const propertyLinks = computed(() => {
   const address = propertySearchAddress(props.comp)
   const subject = props.subjectMode ? props.subject : null
@@ -823,7 +860,15 @@ const timeline = computed(() => {
       value: `${formatCompMoney(details.value.last_sale.price)} · ${dateOnly(details.value.last_sale.date)}`,
     })
   }
-  if (props.comp?.listed_date) {
+  if (onMarket.value) {
+    // Live listing first: "on market since" is today's fact, the sale above is history.
+    rows.unshift({
+      label: __('On market'),
+      value: [onMarket.value.date ? onMarket.value.date.toLocaleDateString() : '', onMarketDays.value]
+        .filter(Boolean)
+        .join(' · '),
+    })
+  } else if (props.comp?.listed_date) {
     rows.push({ label: __('Listed'), value: dateOnly(props.comp.listed_date) })
   }
   // An Ask AI sale Zillow already lists as "Last sold" is not said twice.
@@ -831,7 +876,7 @@ const timeline = computed(() => {
   if (props.comp?.removed_date && !(aiSale && details.value?.last_sale?.price)) {
     const sold = aiSale
     rows.push({ label: sold ? __('Sold') : __('Went off market'), value: dateOnly(props.comp.removed_date) })
-  } else if (props.comp?.days_on_market) {
+  } else if (props.comp?.days_on_market && !onMarket.value) {
     rows.push({ label: __('Time on market'), value: __('{0} days', [props.comp.days_on_market]) })
   }
   // Time to sell is a FINISHED measurement off the listing chain, so it is named

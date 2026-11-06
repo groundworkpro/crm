@@ -258,6 +258,28 @@ export function ymdDate(value) {
 }
 
 /**
+ * How many days a live listing (for sale, pending, auction) has been on the
+ * market, or null when nobody knows / the comp is not live.
+ *
+ * Counted from the list date to today, so a board cached days ago still
+ * reads right; falls back to the source's own count (`days_on_market`, which
+ * on a live row is Redfin's `dom` or Zillow's `daysOnZillow`). A sold row's
+ * `days_on_market` can mean days SINCE the sale, so it is never read here.
+ */
+export function daysListed(comp, today = new Date()) {
+  const state = compState(comp)
+  if (state !== 'for_sale' && state !== 'pending' && state !== 'auction') return null
+  const listed = ymdDate(comp?.listed_date) || ymdDate(comp?.sale_history?.first_listed)
+  if (listed) {
+    const t = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const diff = Math.round((t - listed) / 86400000)
+    if (diff >= 0) return diff
+  }
+  const n = finiteDays(comp?.days_on_market) ?? finiteDays(comp?.sale_history?.days_on_market)
+  return n == null ? null : Math.round(n)
+}
+
+/**
  * How long a sold comp sat on the market.
  *
  * Prefer the listing-chain number (price cuts included). When Zillow's

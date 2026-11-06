@@ -201,6 +201,60 @@ class UnionArithmetic(unittest.TestCase):
 		self.assertEqual(rows, [])
 
 
+class OneRedfinHomeOnePin(unittest.TestCase):
+	"""3626 Meadowlark (Lance, 2026-11-06): the listings feed said "3626
+	Meadowlark Dr" at the $139,900 ask, the store said "3626 N Meadowlark Dr" at
+	its stale $120,000 2023 sale, and both boarded under a For-sale pill."""
+
+	def _features(self):
+		live = redfin_feature(
+			"97037220", "3626 Meadowlark Dr", price=139900, mls_status="Active",
+			sold_date=None, listing_date="2026-11-03", days_on_market=3)
+		stale = redfin_feature(
+			"97037220", "3626 N Meadowlark Dr", price=120000, mls_status="Active",
+			sold_date="2023-04-26", listing_date="2026-11-03T08:00:00Z")
+		return live, stale
+
+	def test_same_property_id_boards_once_at_the_live_ask(self):
+		live, stale = self._features()
+		rows = []
+		comp_merge.apply_redfin(rows, [live, stale], 43.0, -87.9, 1.0, "2026-11-06")
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["price"], 139900)
+		self.assertEqual(rows[0]["listing_state"], "for_sale")
+
+	def test_a_live_listing_carries_its_clock(self):
+		live, _ = self._features()
+		rows = []
+		comp_merge.apply_redfin(rows, [live], 43.0, -87.9, 1.0, "2026-11-06")
+		self.assertEqual(rows[0]["listed_date"], "2026-11-03")
+		self.assertEqual(rows[0]["days_on_market"], 3)
+
+	def test_a_later_copy_only_fills_a_missing_list_date(self):
+		live, stale = self._features()
+		live["properties"]["listing_date"] = None
+		live["properties"]["days_on_market"] = None
+		rows = []
+		comp_merge.apply_redfin(rows, [live, stale], 43.0, -87.9, 1.0, "2026-11-06")
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["price"], 139900)
+		self.assertEqual(rows[0]["days_on_market"], 3)
+
+	def test_listings_feed_dom_becomes_a_list_date(self):
+		from crm.api import redfin_listings
+
+		feats = redfin_listings.features([{
+			"_block": "on_market", "property_id": 1, "address": "1 A St",
+			"lat": 43.0, "lng": -87.9, "price": 100, "dom": 3, "status": "Active",
+		}, {
+			"_block": "on_market", "property_id": 2, "address": "2 A St",
+			"lat": 43.0, "lng": -87.9, "price": 100, "dom": -1, "status": "Active",
+		}])
+		self.assertEqual(feats[0]["properties"]["days_on_market"], 3)
+		self.assertTrue(feats[0]["properties"]["listing_date"])
+		self.assertIsNone(feats[1]["properties"]["listing_date"])
+
+
 class RedfinIsFieldAuthority(unittest.TestCase):
 	"""Redfin's values win on a shared row. Vendors ADD houses, never overwrite."""
 
