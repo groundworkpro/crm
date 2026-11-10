@@ -21,6 +21,7 @@ import requests
 from frappe import _
 
 from crm.api.do_not_contact import is_blocked, is_blocked_number
+from crm.api.text_delivery import text_block_reason
 from crm.api.investorlift_ingest import BUYER_DOCTYPE
 
 OPENPHONE_MESSAGES_API = "https://api.openphone.com/v1/messages"
@@ -101,6 +102,9 @@ def send_buyer_text(buyer, content, from_number=None):
 			_("{0} is on the do-not-contact list under another record. Clear it first.")
 			.format(e164)
 		)
+	reason = text_block_reason(e164)
+	if reason:
+		frappe.throw(reason)
 
 	from_num = _resolve_from_number(from_number)
 

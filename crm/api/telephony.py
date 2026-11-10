@@ -954,6 +954,11 @@ def send_text(to: str, text: str, line: str = None):
 
 	if is_blocked_number(number):
 		frappe.throw(_("{0} has asked not to be contacted.").format(to))
+	from crm.api.text_delivery import text_block_reason
+
+	reason = text_block_reason(number)
+	if reason:
+		frappe.throw(reason)
 	doctype, name = None, None
 	try:
 		from crm.integrations.telnyx.webhook import _link

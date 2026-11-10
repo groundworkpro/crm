@@ -28,6 +28,7 @@ from frappe.utils import get_datetime, now_datetime
 
 from crm.api.bulk_text import OPENPHONE_MESSAGES_API, _e164, _guard, _resolve_from_number
 from crm.api.sms import validate_access
+from crm.api.text_delivery import text_block_reason
 
 STATUS_SCHEDULED = "scheduled"
 STATUS_CANCELED = "canceled"
@@ -64,6 +65,9 @@ def schedule_text(reference_doctype, reference_name, content, send_at, to=None, 
 	e164 = _e164(to or _lead_primary_number(reference_name))
 	if not e164:
 		frappe.throw(_("The lead has no valid mobile number."))
+	reason = text_block_reason(e164)
+	if reason:
+		frappe.throw(reason)
 	from_num = _resolve_from_number(from_number)
 
 	doc = frappe.get_doc(
@@ -154,6 +158,9 @@ def _dispatch(name):
 	if (row.status or "").lower() != STATUS_SCHEDULED:
 		return
 	if row.reference_doctype == "CRM Lead" and _lead_is_terminal(row.reference_docname):
+		_mark(name, STATUS_CANCELED)
+		return
+	if text_block_reason(row.to):
 		_mark(name, STATUS_CANCELED)
 		return
 	token = (frappe.conf.get("quo_api_key") or "").strip()
