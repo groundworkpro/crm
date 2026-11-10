@@ -112,13 +112,14 @@ def refresh_statuses(days=3, limit=300):
 			["direction", "=", "Outgoing"],
 			["status", "in", PENDING],
 			["id", "not like", "sched-%"],
-			["provider", "in", ("", "quo", "Quo")],
 			["message_date", "between", [add_to_date(now, days=-int(days)), add_to_date(now, minutes=-5)]],
 		],
-		fields=["name", "id", "status", "reference_doctype", "reference_docname"],
+		fields=["name", "id", "status", "provider", "reference_doctype", "reference_docname"],
 		limit_page_length=int(limit),
 	)
 	for r in rows:
+		if (r.provider or "").lower() == "telnyx":
+			continue
 		try:
 			resp = requests.get(
 				QUO_MESSAGE_API + r.id,
