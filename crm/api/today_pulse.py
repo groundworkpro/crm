@@ -526,6 +526,11 @@ def send_to_channel(text):
 	return post["id"]
 
 
+def pulse_enabled():
+	"""The half-hourly post is opt-in (site config `today_pulse_enabled`)."""
+	return bool(frappe.conf.get("today_pulse_enabled"))
+
+
 def send_today_pulse():
 	"""Scheduler entry — every 30 minutes, 9:30am–5:00pm CT on business days.
 
@@ -551,6 +556,12 @@ def send_today_pulse():
 			frappe.log_error(
 				title="today pulse: wallet check failed", message=frappe.get_traceback()
 			)
+
+		# The Acq channel is being archived (Lance, 2026-11-10: "get rid of the acq
+		# updates"). The post is off unless a site sets today_pulse_enabled; the
+		# wallet check above keeps running on this slot either way.
+		if not pulse_enabled():
+			return
 
 		start, end = _window_bounds(now)
 		# Cron fires on every half hour of 9–17; these bounds are the real window.

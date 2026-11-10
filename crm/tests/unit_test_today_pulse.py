@@ -23,6 +23,16 @@ class PulseRosterTests(unittest.TestCase):
 		self.exe = "exe@example.test"
 		self.dennis = "dennis@example.test"
 
+	def test_pulse_post_is_off_unless_enabled(self):
+		self.assertFalse(pulse.pulse_enabled())
+		with patch.object(pulse, "send_to_channel") as send, patch.object(
+			pulse, "is_business_day", return_value=True
+		), patch.object(pulse, "now_datetime", return_value=self.now):
+			self.assertIsNone(pulse.send_today_pulse())
+			send.assert_not_called()
+		shim.conf["today_pulse_enabled"] = 1
+		self.assertTrue(pulse.pulse_enabled())
+
 	def delta(self, rows, stamp="resolved_at"):
 		with patch.object(shim, "get_all", return_value=rows):
 			return pulse._delta_cards("2026-09-08", self.since, self.now, stamp, pulse._pulse_users())
