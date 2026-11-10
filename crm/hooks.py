@@ -455,6 +455,9 @@ scheduler_events = {
 			# push unlinked buyers, import 'buyer'-tagged Quo contacts.
 			# (Needs `sync_jobs` on prod after deploy — see gw127/128.)
 			"crm.api.quo_contacts.sync_all",
+			# Quo sends no webhook for an undelivered text: re-read recent "sent"
+			# ones so dead numbers get flagged (crm/api/text_delivery.py). Needs `sync_jobs`.
+			"crm.api.text_delivery.refresh_statuses",
 		],
 		"*/15 * * * *": ["crm.lead_syncing.background_sync.sync_leads_from_sources_15_minutes"],
 		# Daily standup list, 5:00am CENTRAL on business days. Frappe reads these
