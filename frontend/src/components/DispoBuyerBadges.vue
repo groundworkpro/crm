@@ -124,11 +124,13 @@ const badges = computed(() => {
 // ezREIdispo is the exception to the second half of that rule: it has no weak
 // tier at all, because nothing about their coverage is our inference. They sent
 // a ranked list of counties, so the badge is either there or it isn't.
+//
+// Colors live in the <style> block: the light tints were near-white, which in
+// dark mode left two bright pills glaring off an otherwise dark card. This app
+// switches themes with [data-theme='dark'], which Tailwind's `dark:` ignores.
 function chipClass(b) {
   if (!b.strong) return 'border border-outline-gray-2 text-ink-gray-5'
-  if (b.buyer === 'nw') return 'bg-[#fbf6ec] text-[#8a6a33]'
-  if (b.buyer === 'ez') return 'bg-[#fdf1f0] text-[#8f1817]'
-  return 'bg-[#ecf7fa] text-[#0f6f87]'
+  return `dispo-${b.buyer === 'nw' || b.buyer === 'ez' ? b.buyer : 'kg'}`
 }
 
 function label(b) {
@@ -178,3 +180,15 @@ function tooltip(b) {
   )
 }
 </script>
+
+<style scoped>
+.dispo-nw { background: #fbf6ec; color: #8a6a33; }
+.dispo-ez { background: #fdf1f0; color: #8f1817; }
+.dispo-kg { background: #ecf7fa; color: #0f6f87; }
+
+/* Dark: a faint wash of each brand color, with the brand color lifted so the
+   mark still reads. Translucent so it sits on the amber/red card tints too. */
+[data-theme='dark'] .dispo-nw { background: rgb(201 160 90 / 0.16); color: #e2c48c; }
+[data-theme='dark'] .dispo-ez { background: rgb(229 83 75 / 0.16); color: #f4a29c; }
+[data-theme='dark'] .dispo-kg { background: rgb(56 176 206 / 0.16); color: #8ed4e6; }
+</style>
