@@ -41,13 +41,13 @@ def block_reason_from(history, line_type, shown):
 				f"Not sent: your last text to {shown} ({when:%b %-d}) was not delivered, "
 				"so the number can't receive texts. Call it or add another number."
 			)
-	if line_type == "fixed":
+	if line_type in ("fixed line", "fixed"):  # Telnyx says "fixed line"
 		return f"Not sent: {shown} is a landline and can't receive texts. Call it instead."
 	return ""
 
 
 def _line_type(key):
-	"""Telnyx carrier type ('mobile', 'fixed', 'voip', ...) or '' if unknown."""
+	"""Telnyx carrier type ('mobile', 'fixed line', 'voip', ...) or '' if unknown."""
 	cache_key = "text_delivery:line_type:" + key
 	cached = frappe.cache().get_value(cache_key)
 	if cached is not None:

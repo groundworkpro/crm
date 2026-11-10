@@ -33,7 +33,7 @@ class BlockReasonTests(unittest.TestCase):
 		self.assertEqual(self.r([("Outgoing", "delivered", D3), ("Outgoing", "undelivered", D2)]), "")
 
 	def test_landline_blocks_voip_does_not(self):
-		self.assertIn("landline", self.r([], "fixed"))
+		self.assertIn("landline", self.r([], "fixed line"))
 		self.assertEqual(self.r([], "voip"), "")
 		self.assertEqual(self.r([], ""), "")
 
