@@ -359,6 +359,20 @@ class Handoff(unittest.TestCase):
 		finally:
 			shim.db.columns = {}
 
+	def test_a_closed_lead_is_reopened_so_the_call_shows_on_today(self):
+		lead = self.crm.lead("CRM-LEAD-2026-00458")
+		lead.status = "Dead Lead"
+		types = {"Dead Lead": "Lost", "New": "Open"}
+		users = shim.db.get_value.side_effect
+		shim.db.get_value.side_effect = lambda doctype, name, field: types.get(name) if doctype == "CRM Lead Status" else users(doctype, name, field)
+		self.sync(1)
+		self.assertEqual(lead.status, "Dead Lead")  # no handoff, no change
+		self.assertTrue(self.sync(2, handoff={"at": 1790000000})["booked"])
+		self.assertEqual(lead.status, "Follow Up")
+		lead.status = "New"
+		self.sync(3, handoff={"at": 1790100000})
+		self.assertEqual(lead.status, "New")  # open leads keep their status
+
 	def test_no_time_means_call_now(self):
 		self.crm.lead("CRM-LEAD-2026-00458")
 		before = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None, microsecond=0)

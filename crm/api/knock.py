@@ -16,6 +16,8 @@ apart by `knock_url` (the link back to the Knock conversation) and `id`
   owner's Today board: a parked import lead is unhidden and one CRM Task
   "Call <first>" is booked for the owner, due when the seller asked to be
   called (else now). `handoff_at` on the anchor keeps it to one per handoff.
+  A lead closed out as Lost/Won (e.g. "Dead Lead") goes back to Follow Up:
+  the board never shows closed leads, so the call would be invisible.
 * A CRM lead is created only when Knock says `create` (an explicit "Send to
   CRM"). Otherwise the thread must already be a CRM lead, or it's refused.
 * Serialized per Knock thread; Knock's global revision rejects older snapshots.
@@ -173,13 +175,22 @@ def handoff_task(thread, lead, owner, tz, now):
 	}
 
 
+REOPEN_STATUS = "Follow Up"
+
+
 def _take_handoff(thread, doc, meta, tz):
-	"""Unhide a parked lead and book the owner's call, once per handoff."""
+	"""Unhide a parked lead, reopen a closed one and book the owner's call,
+	once per handoff. A seller who texted back is live again whatever the
+	lead said before (Exe, 2026-11-10: Laura was Dead Lead, so her handoff
+	call never reached the Today board)."""
 	h = thread.handoff
 	if not h or not doc.lead_owner or int(meta.get("handoff_at", 0)) >= h.at:
 		return False
 	if frappe.db.has_column("CRM Lead", "import_hidden") and doc.get("import_hidden"):
 		frappe.db.set_value("CRM Lead", doc.name, "import_hidden", 0, update_modified=False)
+	if doc.get("status") and frappe.db.get_value("CRM Lead Status", doc.status, "type") in ("Lost", "Won"):
+		doc.status = REOPEN_STATUS
+		doc.save()
 	now = datetime.now(tz).replace(tzinfo=None, microsecond=0)
 	frappe.get_doc(handoff_task(thread, doc.name, doc.lead_owner, tz, now)).insert(ignore_permissions=True)
 	return True
