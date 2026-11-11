@@ -351,6 +351,10 @@ doc_events = {
 		# creation only, so later manual edits are respected. Runs before the
 		# controller rebuilds lead_name/title from the name parts in validate().
 		"before_validate": ["crm.api.name_format.normalize_lead_names"],
+		# An edited address drops the old house's cached point, parcel, Zillow and
+		# BatchData answers in the same save; on_update then relocates the comp
+		# circle in the background. See crm/api/address_change.py.
+		"before_save": ["crm.api.address_change.before_save"],
 		"after_insert": [
 			# If before_insert took the owner from a LeadMarket reservation, record
 			# which lead it produced so the desk can confirm the purchase landed
@@ -402,6 +406,7 @@ doc_events = {
 			# Side-panel / import edits of mobile_no/phone/extra_phones — the
 			# dedicated add-phone API uses set_value (no hook) and backfills itself.
 			"crm.api.lead_phones.on_lead_phones_changed",
+			"crm.api.address_change.on_update",
 		],
 	},
 }

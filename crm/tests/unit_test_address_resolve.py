@@ -10,6 +10,7 @@ did to the other 13, which must stay silent.
 import inspect
 import json
 import os
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -593,6 +594,7 @@ class AcceptRecentresAndWarms(unittest.TestCase):
 				"address_suggestion_state": "pending",
 			}
 			self.saved = 0
+			self.flags = types.SimpleNamespace()
 
 		def get(self, key, default=None):
 			return self.values.get(key, getattr(self, key, default))
@@ -632,6 +634,8 @@ class AcceptRecentresAndWarms(unittest.TestCase):
 		self.assertEqual(kwargs["lead"], doc.name)
 		self.assertTrue(kwargs["enqueue_after_commit"])
 		self.assertEqual(doc.saved, 1)
+		# address_change.on_update must not enqueue a second relocate for it.
+		self.assertTrue(doc.flags.address_change_handled)
 		self.assertTrue(out["ok"])
 		self.assertTrue(out["circle_recentred"])
 		self.assertTrue(out["warm_enqueued"])

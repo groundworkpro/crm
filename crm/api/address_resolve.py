@@ -652,6 +652,9 @@ def accept_address_suggestion(subject: str) -> dict:
 		return {"ok": False, "reason": stale}
 
 	doc.property_address = suggested
+	# This path relocates inline below; address_change.on_update must not
+	# enqueue a second relocate (it still drops the old house's caches).
+	doc.flags.address_change_handled = True
 	stale = _save_human_decision(doc)
 	if stale:
 		return {"ok": False, "reason": stale}
