@@ -449,62 +449,99 @@
     />
   </div>
 
-    <table v-if="!compact && (subjectRow || rows.length)" class="tbl">
-      <thead>
-        <tr>
-          <th>{{ __('Address') }}</th>
-          <th>{{ __('Sale / list') }}</th>
-          <th class="n">{{ __('Dist') }}</th>
-          <th class="n">{{ __('Sq ft') }}</th>
-          <th class="n">{{ __('Price') }}</th>
-          <th class="n">{{ __('$/sf') }}</th>
-          <th class="n">{{ __('On this') }}</th>
-          <th>{{ __('Status') }}</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-if="subjectRow" class="subj">
-          <td class="street" :title="subjectRow.address">{{ subjectRow.street }}</td>
-          <td>{{ subjectRow.date }}</td>
-          <td class="n">—</td>
-          <td class="n">{{ subjectRow.sqft }}</td>
-          <td class="n">{{ subjectRow.price }}</td>
-          <td class="n">{{ subjectRow.psf }}</td>
-          <td class="n">—</td>
-          <td>{{ __('Subject') }}</td>
-          <td />
-        </tr>
-        <tr v-for="r in rows" :key="r.name">
-          <td class="street" :title="r.address">
-            <button type="button" @click="$emit('open', r.name)">{{ r.street }}</button>
-          </td>
-          <td>{{ r.date }}</td>
-          <td class="n">{{ r.mi }}</td>
-          <td class="n">{{ r.sqft }}</td>
-          <td class="n">{{ r.price }}</td>
-          <td class="n">{{ r.psf }}</td>
-          <td class="n">{{ r.onThis }}</td>
-          <td>{{ r.status }}</td>
-          <td class="rm">
-            <button
-              type="button"
-              :title="__('Remove from table — stays on the map')"
-              @click="removeComp(r.name)"
-            >
-              ×
-            </button>
-          </td>
-        </tr>
-        <tr class="avg">
-          <td colspan="5">{{ __('Average $/sf') }}</td>
-          <td class="n">{{ avgPsf ? money(avgPsf) : '—' }}</td>
-          <td class="n">{{ suggestedArv ? money(suggestedArv) : '—' }}</td>
-          <td />
-          <td />
-        </tr>
-      </tbody>
-    </table>
+    <!-- Sold and Listed & pending are separate tables, each with its own
+         average (Dennis, 2026-11-11: compare the numbers side by side). Which
+         average fills the Exit Price is the rep's pick ("Use for value"),
+         default All, the one-table behaviour from before the split. -->
+    <div v-if="!compact && (subjectRow || rows.length)" class="tbls">
+      <div v-if="splitTables && (groups.sold.n || groups.live.n)" class="arvfrom">
+        <span class="arvfrom-lab">{{ __('{0} from', [valueLabel]) }}</span>
+        <div class="seg" role="group" :aria-label="__('Which comps set the value')">
+          <button
+            v-for="g in ARV_SOURCES"
+            :key="g.key"
+            type="button"
+            :class="{ on: arvSource === g.key }"
+            :disabled="!groups[g.key].arv"
+            :title="groups[g.key].arv ? __('{0} comps · {1}/sf', [groups[g.key].n, money(groups[g.key].psf)]) : __('No usable comps')"
+            @click="useArvFrom(g.key)"
+          >
+            {{ g.label }}
+          </button>
+        </div>
+        <span v-if="groups[arvSource].arv" class="arvfrom-val">
+          {{ money(groups[arvSource].psf) }}/sf → {{ money(groups[arvSource].arv) }}
+        </span>
+        <span v-if="askGap" class="askgap">· {{ askGap }}</span>
+      </div>
+      <!-- One table, a tbody per group, so the columns line up between Sold
+           and Listed & pending without fixing any widths. -->
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>{{ __('Address') }}</th>
+            <th>{{ __('Sale / list') }}</th>
+            <th class="n">{{ __('Dist') }}</th>
+            <th class="n">{{ __('Sq ft') }}</th>
+            <th class="n">{{ __('Price') }}</th>
+            <th class="n">{{ __('$/sf') }}</th>
+            <th class="n">{{ __('On this') }}</th>
+            <th>{{ __('Status') }}</th>
+            <th />
+          </tr>
+          <tr v-if="subjectRow" class="subj">
+            <td class="street" :title="subjectRow.address">{{ subjectRow.street }}</td>
+            <td>{{ subjectRow.date }}</td>
+            <td class="n">—</td>
+            <td class="n">{{ subjectRow.sqft }}</td>
+            <td class="n">{{ subjectRow.price }}</td>
+            <td class="n">{{ subjectRow.psf }}</td>
+            <td class="n">—</td>
+            <td>{{ __('Subject') }}</td>
+            <td />
+          </tr>
+        </thead>
+        <tbody v-for="t in tables" :key="t.key">
+          <tr v-if="t.title" class="ttl">
+            <th colspan="9">{{ t.title }} <span class="cnt">· {{ t.rows.length }}</span></th>
+          </tr>
+          <tr v-for="r in t.rows" :key="r.name">
+            <td class="street" :title="r.address">
+              <button type="button" @click="$emit('open', r.name)">{{ r.street }}</button>
+            </td>
+            <td>{{ r.date }}</td>
+            <td class="n">{{ r.mi }}</td>
+            <td class="n">{{ r.sqft }}</td>
+            <td class="n">{{ r.price }}</td>
+            <td class="n">{{ r.psf }}</td>
+            <td class="n">{{ r.onThis }}</td>
+            <td>{{ r.status }}</td>
+            <td class="rm">
+              <button
+                type="button"
+                :title="__('Remove from table — stays on the map')"
+                @click="removeComp(r.name)"
+              >
+                ×
+              </button>
+            </td>
+          </tr>
+          <tr class="avg" :class="{ chosen: splitTables && arvSource === t.key }">
+            <td colspan="5">{{ __('Average $/sf') }}</td>
+            <td class="n">{{ groups[t.key].psf ? money(groups[t.key].psf) : '—' }}</td>
+            <td class="n">{{ groups[t.key].arv ? money(groups[t.key].arv) : '—' }}</td>
+            <td colspan="2">
+              <template v-if="splitTables && groups[t.key].arv">
+                <span v-if="arvSource === t.key" class="used">{{ __('Used') }}</span>
+                <button v-else type="button" class="use" @click="useArvFrom(t.key)">
+                  {{ __('Use') }}
+                </button>
+              </template>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
@@ -558,7 +595,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { call, toast } from 'frappe-ui'
-import { isRentalComp, streetAddress } from '@/utils/comps'
+import { compState, isRentalComp, streetAddress } from '@/utils/comps'
 
 function isRentalRow(c) {
   return isRentalComp(c)
@@ -753,6 +790,12 @@ function fresh(k, f) {
   }
 }
 
+const ARV_SOURCES = [
+  { key: 'sold', label: __('Sold') },
+  { key: 'live', label: __('Listed & pending') },
+  { key: 'all', label: __('All') },
+]
+
 function emptyBook(k) {
   return {
     s: [fresh(k), fresh(k)],
@@ -761,6 +804,8 @@ function emptyBook(k) {
     // Cash follows the sale map until the rep edits the table. The other
     // kinds start empty — switching must not copy the other notebook's comps.
     comps: k === 'cash' || k === 'auction' ? null : [],
+    // Which comps table's average fills the value: 'all', 'sold' or 'live'.
+    arvFrom: 'all',
   }
 }
 
@@ -925,6 +970,7 @@ function loadBook(k, raw) {
   if (raw.cols === 2) books[k].cols = 2
   if (typeof raw.notes === 'string') books[k].notes = raw.notes
   if (Array.isArray(raw.comps)) books[k].comps = cloneComps(raw.comps)
+  if (ARV_SOURCES.some((g) => g.key === raw.arvFrom)) books[k].arvFrom = raw.arvFrom
 }
 
 function resetBooks() {
@@ -1016,36 +1062,42 @@ function persist() {
           cols: books.cash.cols,
           notes: books.cash.notes,
           comps: books.cash.comps,
+          arvFrom: books.cash.arvFrom,
         },
         novation: {
           s: books.novation.s,
           cols: books.novation.cols,
           notes: books.novation.notes,
           comps: books.novation.comps,
+          arvFrom: books.novation.arvFrom,
         },
         wholetail: {
           s: books.wholetail.s,
           cols: books.wholetail.cols,
           notes: books.wholetail.notes,
           comps: books.wholetail.comps,
+          arvFrom: books.wholetail.arvFrom,
         },
         list: {
           s: books.list.s,
           cols: books.list.cols,
           notes: books.list.notes,
           comps: books.list.comps,
+          arvFrom: books.list.arvFrom,
         },
         rental: {
           s: books.rental.s,
           cols: books.rental.cols,
           notes: books.rental.notes,
           comps: books.rental.comps,
+          arvFrom: books.rental.arvFrom,
         },
         auction: {
           s: books.auction.s,
           cols: books.auction.cols,
           notes: books.auction.notes,
           comps: books.auction.comps,
+          arvFrom: books.auction.arvFrom,
         },
       }),
     )
@@ -1245,15 +1297,56 @@ const altOffer = computed(() => {
   return run(0, altFormula.value).offer
 })
 
-const usable = computed(() =>
-  tableComps.value.filter((c) => Number(c.price) > 0 && Number(c.square_footage) > 0),
-)
-const avgPsf = computed(() => {
-  if (!usable.value.length) return 0
-  const sum = usable.value.reduce((a, c) => a + Number(c.price) / Number(c.square_footage), 0)
-  const avg = sum / usable.value.length
-  return Math.round(avg)
+// Still on the market (an ask or an agreed price) vs closed. Off-market and
+// unknown-status rows have always been read as sales in this table.
+const LIVE_STATES = new Set(['for_sale', 'pending', 'auction'])
+function isLiveRow(c) {
+  return LIVE_STATES.has(compState(c))
+}
+// Rentals keep one table: every row is a rent.
+const splitTables = computed(() => kind.value !== 'rental')
+function psfStats(list) {
+  const ok = list.filter((c) => Number(c.price) > 0 && Number(c.square_footage) > 0)
+  if (!ok.length) return { n: 0, psf: 0, arv: 0 }
+  const psf = Math.round(
+    ok.reduce((a, c) => a + Number(c.price) / Number(c.square_footage), 0) / ok.length,
+  )
+  const arv = sqft.value ? Math.round((psf * sqft.value) / 1000) * 1000 : 0
+  return { n: ok.length, psf, arv }
+}
+const groups = computed(() => {
+  const all = tableComps.value
+  return {
+    all: psfStats(all),
+    sold: psfStats(all.filter((c) => !isLiveRow(c))),
+    live: psfStats(all.filter(isLiveRow)),
+  }
 })
+// The rep's pick, falling back to All when that table has nothing usable.
+const arvSource = computed(() => {
+  if (!splitTables.value) return 'all'
+  const want = books[kind.value].arvFrom || 'all'
+  return groups.value[want]?.n ? want : 'all'
+})
+function useArvFrom(key) {
+  books[kind.value].arvFrom = key
+  // An explicit pick writes the value, even over a typed one.
+  const v = groups.value[key]?.arv
+  if (!v) return
+  for (const i of [0, 1]) books[kind.value].s[i].arv = v
+  lastSoft[kind.value] = v
+}
+const askGap = computed(() => {
+  const a = groups.value.live.psf
+  const b = groups.value.sold.psf
+  if (!a || !b) return ''
+  const pct = Math.round(((a - b) / b) * 100)
+  if (!pct) return __('Listed and sold $/sf are the same')
+  return pct > 0
+    ? __('Listed & pending run {0}% above sold', [pct])
+    : __('Listed & pending run {0}% below sold', [-pct])
+})
+const avgPsf = computed(() => groups.value[arvSource.value].psf)
 const suggestedArv = computed(() => {
   // Rental pins are monthly rent — never a MIR. Borrow cash ARV if they already
   // priced it; otherwise leave MIR blank.
@@ -1328,6 +1421,7 @@ const rows = computed(() =>
     const active = String(c.status || '').toLowerCase().startsWith('activ')
     return {
       name: c.name,
+      live: isLiveRow(c),
       address: c.address || '',
       street: streetAddress(c.address) || c.address || '—',
       date: fmtDate(c.removed_date || c.listed_date),
@@ -1355,6 +1449,16 @@ const rows = computed(() =>
     }
   }),
 )
+
+const tables = computed(() => {
+  if (!splitTables.value) return [{ key: 'all', title: '', rows: rows.value }]
+  const sold = rows.value.filter((r) => !r.live)
+  const live = rows.value.filter((r) => r.live)
+  const out = []
+  if (sold.length || !live.length) out.push({ key: 'sold', title: __('Sold'), rows: sold })
+  if (live.length) out.push({ key: 'live', title: __('Listed & pending'), rows: live })
+  return out
+})
 
 function parseMoney(v) {
   const n = Number(String(v).replace(/[^0-9.]/g, ''))
@@ -2194,12 +2298,70 @@ input.offer.bad {
   margin: 3px 0;
 }
 
-.tbl {
+.tbls {
   flex: 1;
   min-width: 22rem;
-  width: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tbl {
+  width: 100%;
   border-collapse: collapse;
   margin-top: 0;
+}
+.tbl .ttl th {
+  color: var(--ink-gray-9);
+  font-weight: 600;
+  padding-top: 14px;
+  padding-bottom: 2px;
+}
+.tbl .ttl .cnt {
+  color: var(--ink-gray-5);
+  font-weight: 400;
+}
+.tbl .avg.chosen td {
+  color: var(--ink-gray-9);
+  font-weight: 600;
+}
+.tbl .avg .used {
+  font-size: 11px;
+  color: var(--ink-green-3);
+}
+.tbl .avg .use {
+  border: 1px solid var(--outline-gray-2);
+  border-radius: 4px;
+  background: none;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-gray-7);
+  cursor: pointer;
+}
+.tbl .avg .use:hover {
+  background: var(--surface-gray-2);
+}
+.arvfrom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.arvfrom .seg button {
+  flex: none;
+  padding: 0 8px;
+}
+.arvfrom-lab {
+  color: var(--ink-gray-5);
+}
+.arvfrom-val {
+  color: var(--ink-gray-9);
+  font-variant-numeric: tabular-nums;
+}
+.arvfrom .askgap {
+  color: var(--ink-gray-6);
+  font-size: 12px;
 }
 .tbl th,
 .tbl td {
