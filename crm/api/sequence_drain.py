@@ -80,6 +80,11 @@ QUIET_END_HOUR = 20
 QUIET_MIN_WAIT_SECONDS = 3600
 QUIET_STEP_TYPES = ("Text", "Call", "Task")
 
+# Task/Call steps only create a CRM Task for the rep — they do not text the
+# seller — so it is safe (and necessary) to pull them forward onto the morning
+# board. SMS Text steps stay on their own clock / quiet hours.
+BOARD_STEP_TYPES = ("Task", "Call")
+
 # Business days. The engine's waits are CALENDAR days, so a lead enrolled on a
 # Wednesday had "day 4 of 10" land on Saturday and "day 5" on Sunday — two days
 # nobody works — and the rep opened Monday to three overdue to-dos on one lead
@@ -121,6 +126,15 @@ def quiet_hold_until(now, step):
 	if _step_wait_seconds(step) < QUIET_MIN_WAIT_SECONDS:
 		return None
 	if QUIET_START_HOUR <= now.hour < QUIET_END_HOUR:
+		return None
+	# Before the morning window a Call/Task step is today's rep to-do, not a
+	# message to the seller. Holding it to 8am meant the board passes at
+	# midnight and 5am (`materialize_board_steps`) pulled it forward and then
+	# had it pushed straight back, so every Long-Term Follow-Up / 10-Day call
+	# card for Called No Answer leads landed at 8:00 instead of being on the
+	# board from the start of the day (German, 2026-11-11). The evening hold
+	# stays: a rep task made at 11pm still waits for the next day.
+	if now.hour < QUIET_START_HOUR and step.get("step_type") in BOARD_STEP_TYPES:
 		return None
 	open_today = now.replace(hour=QUIET_START_HOUR, minute=0, second=0, microsecond=0)
 	if now.hour < QUIET_START_HOUR:
@@ -358,12 +372,6 @@ def _notify_pause(enr, fails):
 		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "sequence fail-safe: pause email failed")
-
-
-# Task/Call steps only create a CRM Task for the rep — they do not text the
-# seller — so it is safe (and necessary) to pull them forward onto the morning
-# board. SMS Text steps stay on their own clock / quiet hours.
-BOARD_STEP_TYPES = ("Task", "Call")
 
 
 def _align_next_run(enr):

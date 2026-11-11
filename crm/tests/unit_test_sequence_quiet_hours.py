@@ -37,6 +37,20 @@ class QuietHoursTests(unittest.TestCase):
 			datetime(2026, 9, 9, 8, 0),
 		)
 
+	def test_early_morning_rep_tasks_run_now(self):
+		# Call/Task steps only make a rep task; the midnight/5am board pass must
+		# be able to fire them so the cards are there before 8am.
+		early = datetime(2026, 9, 9, 5, 0)
+		self.assertIsNone(sd.quiet_hold_until(early, step("Call", 1, "Weeks")))
+		self.assertIsNone(sd.quiet_hold_until(early, step("Task")))
+		self.assertIsNone(sd.quiet_hold_until(datetime(2026, 9, 9, 0, 5), step("Call")))
+		# but a text to the seller still waits, and an evening rep task too
+		self.assertEqual(sd.quiet_hold_until(early, step("Text")), datetime(2026, 9, 9, 8, 0))
+		self.assertEqual(
+			sd.quiet_hold_until(datetime(2026, 9, 9, 22, 0), step("Task")),
+			datetime(2026, 9, 10, 8, 0),
+		)
+
 	def test_instant_burst_is_never_held(self):
 		night = datetime(2026, 9, 9, 23, 5)
 		self.assertIsNone(sd.quiet_hold_until(night, step(wait_value=0)))
