@@ -253,12 +253,17 @@ def _extra_holidays() -> set:
 def is_holiday(d) -> bool:
 	"""Groundwork days off, not the full federal calendar.
 
-	The team works Columbus Day. Explicit company days in crm_holidays
-	still take precedence, including on an otherwise working day.
+	The team works Columbus Day and Veterans Day (Exe, 2026-11-11: German was
+	working and the board had held back his 30 follow-ups for "the holiday").
+	Explicit company days in crm_holidays still take precedence, including on
+	an otherwise working day.
 	"""
 	d = getdate(d)
-	columbus_day = _nth_weekday(d.year, 10, 0, 2)
-	return (d in us_federal_holidays(d.year) and d != columbus_day) or d in _extra_holidays()
+	worked = {
+		_nth_weekday(d.year, 10, 0, 2),  # Columbus Day
+		_observed(datetime(d.year, 11, 11).date()),  # Veterans Day (observed)
+	}
+	return (d in us_federal_holidays(d.year) and d not in worked) or d in _extra_holidays()
 
 
 def is_business_day(d) -> bool:

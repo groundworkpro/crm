@@ -41,6 +41,15 @@ class HolidayTests(unittest.TestCase):
 				self.assertFalse(ds.is_holiday(d))
 				self.assertTrue(ds.is_business_day(d))
 
+	def test_veterans_day_is_a_working_day(self):
+		# 2026 falls on a Wednesday; 2028 is a Saturday, observed Friday 11-10.
+		for d in [date(2026, 11, 11), date(2028, 11, 10)]:
+			with self.subTest(d=d):
+				self.assertIn(d, ds.us_federal_holidays(d.year))
+				self.assertTrue(ds.is_business_day(d))
+		shim.conf["crm_holidays"] = ["2026-11-11"]
+		self.assertFalse(ds.is_business_day(date(2026, 11, 11)))
+
 	def test_columbus_day_counts_in_cadence_and_recap(self):
 		self.assertEqual(ds.business_days_between(date(2026, 10, 9), date(2026, 10, 12)), 1)
 		self.assertEqual(ds.previous_business_day(date(2026, 10, 13)), date(2026, 10, 12))
