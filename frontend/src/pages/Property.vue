@@ -55,6 +55,15 @@
             :title="__('Open lead')"
             @click="router.push({ name: 'Lead', params: { leadId: prop.data.lead } })"
           />
+          <!-- This house's own Drive photo folder, separate from the lead's
+               (Dennis, 2026-11-12: a seller's second house). -->
+          <Button
+            :label="__('Photos')"
+            variant="subtle"
+            iconLeft="camera"
+            :title="__('Photos of this house, in its own Google Drive folder')"
+            @click="showPhotos = true"
+          />
           <Button
             :label="offerCount ? __('Saved calcs ({0})', [offerCount]) : __('Saved calcs')"
             variant="subtle"
@@ -129,6 +138,13 @@
       </div>
     </template>
   </Dialog>
+
+  <PhotoGalleryModal
+    v-if="showPhotos"
+    v-model="showPhotos"
+    :lead="propertyId"
+    :address="address"
+  />
 
   <Dialog v-model="editOpen" :options="{ title: __('Edit property') }">
     <template #body-content>
@@ -209,6 +225,7 @@ import CompsView from '@/components/CompsView.vue'
 import CompStepsRail from '@/components/CompStepsRail.vue'
 import CashOfferComment from '@/components/Activities/CashOfferComment.vue'
 import LeadPicker from '@/components/LeadPicker.vue'
+import PhotoGalleryModal from '@/components/Modals/PhotoGalleryModal.vue'
 import { sidebarCollapsedOverride } from '@/composables/settings'
 import { formatDate } from '@/utils'
 import { stageDot } from '@/utils/propertyStages'
@@ -255,6 +272,7 @@ const prop = createResource({
 
 const address = computed(() => prop.data?.property_address || '')
 const offers = computed(() => prop.data?.offers || [])
+const showPhotos = ref(false)
 const offerCount = computed(() => offers.value.length)
 // Bumped on an address change so CompsView (which loads onMounted and has no
 // watcher on its `lead` prop) re-mounts against the new house.
@@ -275,6 +293,11 @@ const moreOptions = computed(() => {
       onClick: openListing,
     })
   }
+  items.push({
+    label: __('Photos'),
+    icon: 'camera',
+    onClick: () => (showPhotos.value = true),
+  })
   items.push({
     label: offerCount.value
       ? __('Saved calcs ({0})', [offerCount.value])

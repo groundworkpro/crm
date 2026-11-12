@@ -23,6 +23,15 @@ Design notes worth knowing before you change anything here:
     listing agent can open the link without a Google login. The Wholesaling shared
     drive has `domainUsersOnly: false`, so this is permitted.
 
+**A property gets its own folder too** (2026-11-12, Dennis: a seller's second
+house, 446 Remington St on Carlos Ortiz's lead, had nowhere to keep its photos).
+Every endpoint takes a lead OR a `CRM Property` name (`PROP-…`) in its `lead`
+argument and dispatches on the prefix, as `crm.api.comps` does: the property's
+folder is named after the property's own address, in the same parent, so the
+lead's folder is untouched and an existing address folder is adopted. Texted /
+emailed pictures (`save_media_to_photos`) stay lead-only: they belong to the
+lead's thread.
+
 The folder id is cached on the lead (`photo_folder_id` / `photo_folder_url`) when
 those custom fields exist, so a later address edit doesn't orphan the folder. Both
 are `has_field`-guarded: without the ops script we simply re-resolve by name each
@@ -81,11 +90,32 @@ def _parent_folder_id() -> str:
 	return frappe.conf.get("lead_photos_folder_id") or INFO_PHOTOS_FOLDER_ID
 
 
-def _lead_has(field: str) -> bool:
-	return frappe.get_meta("CRM Lead").has_field(field)
+def _doctype(name: str) -> str:
+	"""`CRM Property` for a `PROP-` name, else `CRM Lead`."""
+	from crm.api.comps import subject_doctype
+
+	return subject_doctype(name)
+
+
+def _is_property(name: str) -> bool:
+	return _doctype(name) != "CRM Lead"
+
+
+def _lead_has(field: str, name: str = "") -> bool:
+	"""Whether the cache field exists on `name`'s doctype (a lead by default)."""
+	dt = _doctype(name) if name else "CRM Lead"
+	return frappe.get_meta(dt).has_field(field)
 
 
 def _check(lead: str, ptype: str = "read"):
+	"""Lead: the lead's own permission. Property: the properties pages' sales-role check."""
+	if _is_property(lead):
+		from crm.api.comps import _guard
+
+		_guard()
+		if not frappe.db.exists(_doctype(lead), lead):
+			frappe.throw(_("Property not found"), frappe.DoesNotExistError)
+		return
 	if not frappe.db.exists("CRM Lead", lead):
 		frappe.throw(_("Lead not found"), frappe.DoesNotExistError)
 	if not frappe.has_permission("CRM Lead", ptype, lead):
@@ -96,7 +126,7 @@ def _address(lead: str) -> str:
 	"""The folder name: the full property address, composed the same way
 	agreements compose it (street + city + state + zip) so a manually-entered
 	street-only lead still gets a fully-qualified folder name."""
-	doc = frappe.get_doc("CRM Lead", lead)
+	doc = frappe.get_doc(_doctype(lead), lead)
 	try:
 		from crm.api.agreement import _full_property_address
 
@@ -191,12 +221,12 @@ def _create_folder(token: str, address: str) -> dict:
 
 def _cache_on_lead(lead: str, folder: dict):
 	values = {}
-	if _lead_has("photo_folder_id"):
+	if _lead_has("photo_folder_id", lead):
 		values["photo_folder_id"] = folder.get("id")
-	if _lead_has("photo_folder_url"):
+	if _lead_has("photo_folder_url", lead):
 		values["photo_folder_url"] = folder.get("webViewLink") or _folder_url(folder.get("id"))
 	if values:
-		frappe.db.set_value("CRM Lead", lead, values, update_modified=False)
+		frappe.db.set_value(_doctype(lead), lead, values, update_modified=False)
 
 
 def _folder_url(folder_id: str) -> str:
@@ -206,8 +236,8 @@ def _folder_url(folder_id: str) -> str:
 def _resolve_folder(token: str, lead: str, create: bool = False):
 	"""The lead's photo folder: cached id → adopt by name → (optionally) create."""
 	cached = (
-		frappe.db.get_value("CRM Lead", lead, "photo_folder_id")
-		if _lead_has("photo_folder_id")
+		frappe.db.get_value(_doctype(lead), lead, "photo_folder_id")
+		if _lead_has("photo_folder_id", lead)
 		else None
 	)
 	if cached:
@@ -238,7 +268,7 @@ def _resolve_folder(token: str, lead: str, create: bool = False):
 def _publish(lead: str):
 	frappe.publish_realtime(
 		"crm_photos",
-		{"reference_doctype": "CRM Lead", "reference_docname": lead},
+		{"reference_doctype": _doctype(lead), "reference_docname": lead},
 		after_commit=True,
 	)
 
@@ -580,6 +610,8 @@ def save_media_to_photos(lead: str, url: str = "", file: str = ""):
 	One picture per request for the same reason as `upload_lead_photo`; the
 	activity feed's "Save all N photos" button just loops over this.
 	"""
+	if _is_property(lead):
+		frappe.throw(_("Texted and emailed pictures are saved from the seller's lead."))
 	_check(lead, "write")
 	if not (url or file):
 		frappe.throw(_("Nothing to save."))

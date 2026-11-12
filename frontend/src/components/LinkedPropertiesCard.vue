@@ -24,7 +24,17 @@
         class="flex items-center justify-between gap-2 rounded px-1 py-1 text-sm hover:bg-surface-gray-1"
       >
         <span class="min-w-0 truncate text-ink-gray-8">{{ p.property_address }}</span>
-        <span class="shrink-0 text-xs text-ink-gray-5">{{ __(p.status) }}</span>
+        <span class="flex shrink-0 items-center gap-1.5">
+          <span class="text-xs text-ink-gray-5">{{ __(p.status) }}</span>
+          <!-- This house's own photo folder, without leaving the lead. -->
+          <button
+            class="rounded p-0.5 text-ink-gray-5 hover:bg-surface-gray-3 hover:text-ink-gray-8"
+            :title="__('Photos of this house')"
+            @click.prevent.stop="photosFor = p"
+          >
+            <FeatherIcon name="camera" class="size-3.5" />
+          </button>
+        </span>
       </router-link>
     </div>
     <div v-else class="mt-2 text-sm text-ink-gray-5">
@@ -41,6 +51,14 @@
       />
     </div>
   </div>
+
+  <PhotoGalleryModal
+    v-if="photosFor"
+    :model-value="true"
+    :lead="photosFor.name"
+    :address="photosFor.property_address"
+    @update:model-value="(v) => !v && (photosFor = null)"
+  />
 
   <Dialog v-model="addOpen" :options="{ title: __('Add property for this lead') }">
     <template #body-content>
@@ -71,6 +89,7 @@
  * have to be linked, and linking one does not make it a lead.
  */
 import Autocomplete from '@/components/frappe-ui/Autocomplete.vue'
+import PhotoGalleryModal from '@/components/Modals/PhotoGalleryModal.vue'
 import {
   Button,
   Dialog,
@@ -96,6 +115,7 @@ const supported = computed(() => !!list.data?.lead_supported)
 const rows = computed(() => list.data?.properties || [])
 
 const addOpen = ref(false)
+const photosFor = ref(null)
 const adding = ref(false)
 const draftAddress = ref('')
 async function add() {

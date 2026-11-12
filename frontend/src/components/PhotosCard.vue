@@ -92,10 +92,8 @@ function openFolder() {
 }
 
 function onPhotos(data) {
-  if (
-    data.reference_doctype === 'CRM Lead' &&
-    data.reference_docname === props.lead
-  ) {
+  // A lead or a CRM Property (PROP-…): the name alone is unique across both.
+  if (data.reference_docname === props.lead) {
     photos.reload()
   }
 }
