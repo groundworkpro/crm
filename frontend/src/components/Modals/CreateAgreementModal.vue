@@ -14,6 +14,7 @@
           v-model="template"
           :options="[
             { label: __('Standard (no novation)'), value: 'standard' },
+            { label: __('Standard, no assignment (we resell after closing)'), value: 'resale' },
             { label: __('Novation (+ Attorney-in-Fact page)'), value: 'novation' },
             { label: __('SubTo (buyer takes over the existing mortgage)'), value: 'subto' },
             { label: __('Amendment (price / closing date / other)'), value: 'amendment' },

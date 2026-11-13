@@ -153,6 +153,7 @@ def _resolve_template_ids(
 	want_cancellation: bool = False,
 	want_termination: bool = False,
 	want_subto: bool = False,
+	want_resale: bool = False,
 ):
 	"""Resolve the template id(s) for this deal; newest id wins per match.
 
@@ -163,6 +164,13 @@ def _resolve_template_ids(
 	  Cancellation - One Seller / - Two Sellers         (Buyer + Seller(s))
 	  Unilateral Termination - No EMD                    (Buyer only)
 	  SubTo Purchase Agreement - One Seller / - Two Sellers (Buyer + Seller(s))
+	  Resale Purchase Agreement - One Seller / - Two Sellers (Buyer + Seller(s))
+
+	Resale (2026-11-13, Dennis) is the Standard Purchase Agreement with the
+	assignment language removed: no "and/or assigns", no assignment exit; we
+	may resell the Property after closing. Same fields as Standard. Built by
+	frappe-crm-deploy/agreements/resale/build.py. Like SubTo, its name does not
+	start with "Purchase Agreement", so the Standard match never picks it.
 
 	SubTo (2026-10-27) is the subject-to contract: the buyer takes over the
 	seller's existing mortgage. Built from Dennis's "SubTo Template.docx" by
@@ -217,6 +225,12 @@ def _resolve_template_ids(
 			frappe.throw(_("No matching DocuSeal SubTo Purchase Agreement template was found."))
 		return [subto["id"]], subto["name"]
 
+	if want_resale:
+		resale = _best(lambda n: n.startswith("Resale Purchase Agreement") and (("Two" in n) == want_two))
+		if not resale:
+			frappe.throw(_("No matching DocuSeal Resale Purchase Agreement template was found."))
+		return [resale["id"]], resale["name"]
+
 	if want_amendment:
 		amd = _best(lambda n: n.startswith("Amendment") and (("Two" in n) == want_two))
 		if not amd:
@@ -256,7 +270,9 @@ def _binding_agreement_date(lead: str) -> str:
 	why an amendment cannot be drafted.
 	"""
 	try:
-		filters = {"lead": lead, "template_title": ["like", "Purchase Agreement%"]}
+		# "%Purchase Agreement%" so the Resale (no-assignment) and SubTo
+		# agreements count too; Amendment / Cancellation titles never contain it.
+		filters = {"lead": lead, "template_title": ["like", "%Purchase Agreement%"]}
 		filters.update(_live_filter())
 		rows = frappe.get_all(
 			AGREEMENT_DOCTYPE, filters=filters,
@@ -337,6 +353,7 @@ def create_docuseal_agreement(
 	want_termination = template_key in ("termination", "unilateral_termination", "termination_no_emd")
 	want_aif = template_key in ("novation", "aif")
 	want_subto = template_key in ("subto", "subject_to", "subject-to")
+	want_resale = template_key in ("resale", "no_assignment", "no-assignment")
 	# `two_sellers` arrives as a seller *count* ("1" / "2") from the modal, so
 	# "1" must mean one seller — don't run it through the generic `_truthy`
 	# (which treats "1" as true and wrongly demands a second seller).
@@ -362,7 +379,8 @@ def create_docuseal_agreement(
 		frappe.throw(_("Enter the second seller's name."))
 
 	template_ids, template_title = _resolve_template_ids(
-		want_aif, want_two, want_amendment, want_cancellation, want_termination, want_subto
+		want_aif, want_two, want_amendment, want_cancellation, want_termination, want_subto,
+		want_resale,
 	)
 
 	addr = _full_property_address(leaddoc)
@@ -424,6 +442,7 @@ def create_docuseal_agreement(
 				"Amended Closing Date": frappe.utils.getdate(closing).isoformat() if closing else "",
 			}))
 	else:
+		# Standard and Resale (no assignment) share this prefill: same fields.
 		# The live Purchase Agreement template carries: Agreement Date, Seller
 		# Name(s), Property Address, Sale Price, Access Days, Due Diligence Days,
 		# Closing Days, Earnest Money, Offer Expires Days, Additional Terms,
