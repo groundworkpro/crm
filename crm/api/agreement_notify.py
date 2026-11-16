@@ -86,6 +86,12 @@ def notify_event(agr, event, data):
 	verb = _EVENT_VERB.get(event, category)
 	title = (agr.get("template_title") or "agreement").strip()
 	address = (frappe.db.get_value("CRM Lead", lead, "property_address") or "").strip() if lead else ""
+	# A second-house agreement names that house, not the seller's main one.
+	from crm.api.agreement import PROPERTY_DOCTYPE, agreement_property
+
+	prop = agreement_property(agr)
+	if prop:
+		address = (frappe.db.get_value(PROPERTY_DOCTYPE, prop, "property_address") or "").strip() or address
 
 	if prefs.get("text"):
 		_safe(_send_text, owner, prefs, actor, verb, title, address)

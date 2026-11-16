@@ -112,6 +112,105 @@ def _full_property_address(leaddoc) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# a seller's second house (CRM Property linked to the lead)
+# --------------------------------------------------------------------------- #
+# Dennis (2026-11-16): an agreement for a lead's additional property must fill
+# in THAT house's address, county and parcel ID, not the lead's. The seller
+# (names, email) is still the lead. The agreement row stays on the lead (its
+# card, timeline and notifications) and is marked with the property two ways:
+# a `property` column when the ops schema has it, and always a " — <street>
+# (PROP-…)" tail on the title, so the card says which house and the marker
+# survives on a site without the column.
+PROPERTY_DOCTYPE = "CRM Property"
+TAX_PULL_DOCTYPE = "CRM Property Tax Pull"
+_PROP_TAG = re.compile(r"\((PROP-\d+)\)\s*$")
+
+
+def agreement_property(row) -> str:
+	"""The CRM Property an agreement row is for, "" when it is the lead's own house."""
+	prop = (row.get("property") or "").strip() if hasattr(row, "get") else ""
+	if prop:
+		return prop
+	m = _PROP_TAG.search((row.get("template_title") or "") if hasattr(row, "get") else "")
+	return m.group(1) if m else ""
+
+
+def _linked_property(lead: str, prop: str):
+	"""The CRM Property doc, refused unless it hangs off this lead."""
+	prop = (prop or "").strip()
+	if not prop.startswith("PROP-") or not frappe.db.exists(PROPERTY_DOCTYPE, prop):
+		frappe.throw(_("Property {0} not found").format(prop), frappe.DoesNotExistError)
+	propdoc = frappe.get_doc(PROPERTY_DOCTYPE, prop)
+	if (propdoc.get("lead") or "").strip() != lead:
+		frappe.throw(_("Property {0} is not linked to this lead.").format(prop))
+	return propdoc
+
+
+def _pull_facts(raw) -> dict:
+	"""APN, county and state off a stored tax-pull record (RealEstateAPI or BatchData)."""
+	try:
+		p = json.loads(raw) if isinstance(raw, str) else (raw or {})
+	except (ValueError, TypeError):
+		p = {}
+	if not isinstance(p, dict):
+		return {}
+	addr = (p.get("propertyInfo") or {}).get("address") or p.get("address") or {}
+	if not isinstance(addr, dict):
+		addr = {}
+	return {
+		"apn": ((p.get("lotInfo") or {}).get("apn") or (p.get("ids") or {}).get("apn") or "").strip(),
+		"county": (addr.get("county") or "").strip(),
+		"state": (addr.get("state") or "").strip(),
+	}
+
+
+def _latest_pull_facts(prop: str) -> dict:
+	"""Facts from the property's newest matched tax pull; {} when none (never raises)."""
+	try:
+		rows = frappe.get_all(
+			TAX_PULL_DOCTYPE,
+			filters={"property": prop, "matched": 1},
+			fields=["apn", "raw_response"],
+			order_by="creation desc",
+			limit_page_length=1,
+		)
+	except Exception:
+		return {}
+	if not rows:
+		return {}
+	facts = _pull_facts(rows[0].get("raw_response"))
+	if rows[0].get("apn"):
+		facts["apn"] = rows[0]["apn"].strip()
+	return facts
+
+
+def _state_from_address(addr: str) -> str:
+	""""…, Norfolk, VA 23513" -> "VA" (last 2-letter word before a ZIP or the end)."""
+	m = re.search(r"\b([A-Z]{2})\b\s*(\d{5}(-\d{4})?)?\s*$", (addr or "").strip())
+	return m.group(1) if m else ""
+
+
+def _subject_facts(leaddoc, propdoc=None) -> dict:
+	"""Address / county / parcel / state for the house the agreement is about."""
+	if propdoc is None:
+		return {
+			"address": _full_property_address(leaddoc),
+			"county": (leaddoc.get("property_county") or "").strip(),
+			"apn": (leaddoc.get("apn") or "").strip(),
+			"state": _state_abbr(leaddoc.get("property_state")),
+		}
+	addr = _full_property_address(propdoc)
+	pull = _latest_pull_facts(propdoc.name)
+	return {
+		"address": addr,
+		"county": pull.get("county") or "",
+		"apn": pull.get("apn") or "",
+		"state": _state_abbr(propdoc.get("property_state")) or _state_abbr(pull.get("state"))
+		or _state_from_address(addr),
+	}
+
+
+# --------------------------------------------------------------------------- #
 # realtime + hooks (shared by both providers)
 # --------------------------------------------------------------------------- #
 def _publish(lead):
@@ -257,7 +356,7 @@ def _resolve_template_ids(
 	return template_ids, title
 
 
-def _binding_agreement_date(lead: str) -> str:
+def _binding_agreement_date(lead: str, prop: str = "") -> str:
 	"""The date the lead's Purchase Agreement went fully signed, as YYYY-MM-DD.
 
 	That is the PSA's effective date ("day 0" in the contract parser's terms) and
@@ -267,18 +366,22 @@ def _binding_agreement_date(lead: str) -> str:
 	fallback (that column moves on any later webhook event, e.g. a post-signing
 	view, so it is second choice). Empty string when the lead has no signed PSA —
 	the rep then fills the blank as before. Never raises: a prefill must not be
-	why an amendment cannot be drafted.
+	why an amendment cannot be drafted. `prop` limits it to that second house's
+	PSAs; without it, only the lead's own house counts.
 	"""
 	try:
 		# "%Purchase Agreement%" so the Resale (no-assignment) and SubTo
 		# agreements count too; Amendment / Cancellation titles never contain it.
 		filters = {"lead": lead, "template_title": ["like", "%Purchase Agreement%"]}
 		filters.update(_live_filter())
+		fields = ["document_id", "agreement_status", "signed_count", "total_signers",
+		          "last_event_at", "template_title"]
+		if frappe.db.has_column(AGREEMENT_DOCTYPE, "property"):
+			fields.append("property")
 		rows = frappe.get_all(
-			AGREEMENT_DOCTYPE, filters=filters,
-			fields=["document_id", "agreement_status", "signed_count", "total_signers", "last_event_at"],
-			order_by="creation desc",
+			AGREEMENT_DOCTYPE, filters=filters, fields=fields, order_by="creation desc",
 		)
+		rows = [r for r in rows if agreement_property(r) == (prop or "")]
 		signed = next((r for r in rows if _is_completed(r)), None)
 		if not signed:
 			return ""
@@ -330,8 +433,13 @@ def create_docuseal_agreement(
 	seller2_name: str = None,
 	seller2_email: str = None,
 	buyer: str = None,
+	property: str = None,
 ):
 	"""Create a DocuSeal submission for a lead; return self-serve signing links.
+
+	`property` (optional, a CRM Property linked to this lead) makes the
+	agreement about that second house: its address, county and parcel ID
+	(the last two from its newest tax pull) instead of the lead's.
 
 	The logged-in sales user is the Buyer/company representative (signs first,
 	fields stay editable). Seller 1 is the lead and Seller 2 is collected for
@@ -347,6 +455,7 @@ def create_docuseal_agreement(
 		frappe.throw(_("Buyer not found"), frappe.DoesNotExistError)
 
 	leaddoc = frappe.get_doc("CRM Lead", lead)
+	propdoc = _linked_property(lead, property) if (property or "").strip() else None
 	template_key = str(template).strip().lower()
 	want_amendment = template_key == "amendment"
 	want_cancellation = template_key in ("cancellation", "cancel")
@@ -383,7 +492,11 @@ def create_docuseal_agreement(
 		want_resale,
 	)
 
-	addr = _full_property_address(leaddoc)
+	subject = _subject_facts(leaddoc, propdoc)
+	addr = subject["address"]
+	if propdoc is not None:
+		street = (addr.split(",")[0] or "").strip() or propdoc.name
+		template_title = f"{template_title} — {street} ({propdoc.name})"
 	sellers_joined = seller1_name + ((" and " + seller2_name) if (want_two and seller2_name) else "")
 
 	def _clean(d):
@@ -421,8 +534,8 @@ def create_docuseal_agreement(
 		buyer_values = _clean({
 			"Seller Name(s)": sellers_joined,
 			"Property Address": addr,
-			"County": (leaddoc.get("property_county") or "").strip(),
-			"Parcel ID": (leaddoc.get("apn") or "").strip(),
+			"County": subject["county"],
+			"Parcel ID": subject["apn"],
 			"Signer Name": buyer_name,
 			# Paragraph 22.B (2026-10-30, Dennis): optional free-text box for extra
 			# provisions; "None." unless the rep replaces it on the signing page.
@@ -434,7 +547,13 @@ def create_docuseal_agreement(
 			"Property Address": addr,
 			"Signer Name": buyer_name,
 		})
-		if want_amendment:
+		if want_amendment and propdoc is not None:
+			# The lead's price / closing date are the seller's main house's
+			# terms, not this one's; only the binding date is per house.
+			buyer_values.update(_clean({
+				"Binding Agreement Date": _binding_agreement_date(lead, propdoc.name),
+			}))
+		elif want_amendment:
 			closing = leaddoc.get("closing_date")
 			buyer_values.update(_clean({
 				"Binding Agreement Date": _binding_agreement_date(lead),
@@ -466,9 +585,9 @@ def create_docuseal_agreement(
 			# from the lead
 			"Seller Name(s)": sellers_joined,
 			"Property Address": addr,
-			"County": (leaddoc.get("property_county") or "").strip(),
-			"APN": (leaddoc.get("apn") or "").strip(),
-			"Governing State": _state_abbr(leaddoc.get("property_state")),
+			"County": subject["county"],
+			"APN": subject["apn"],
+			"Governing State": subject["state"],
 			"Signer Name": buyer_name,
 			# standard defaults
 			"Agreement Date": frappe.utils.nowdate(),
@@ -580,6 +699,8 @@ def create_docuseal_agreement(
 	}
 	if buyer and frappe.db.has_column(AGREEMENT_DOCTYPE, "buyer"):
 		row["buyer"] = buyer
+	if propdoc is not None and frappe.db.has_column(AGREEMENT_DOCTYPE, "property"):
+		row["property"] = propdoc.name
 	agr = frappe.get_doc(row)
 	agr.insert(ignore_permissions=True)
 	frappe.db.commit()
@@ -593,6 +714,7 @@ def create_docuseal_agreement(
 		"document_id": submission_id,
 		"agreement": agr.name,
 		"template": template_title,
+		"property": propdoc.name if propdoc is not None else "",
 		"buyer_link": buyer_link,
 		"seller_links": seller_links,
 	}

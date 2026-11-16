@@ -3,9 +3,25 @@
     <template #body-content>
       <!-- Form -->
       <div v-if="!result" class="flex flex-col gap-4 text-base">
-        <div v-if="propertyAddress" class="flex flex-col gap-0.5">
+        <!-- A seller with more than one house (CRM Properties linked to the
+             lead) picks which one the agreement is for. -->
+        <FormControl
+          v-if="houses.length > 1"
+          type="select"
+          :label="__('Which property?')"
+          v-model="property"
+          :options="houses"
+        />
+        <div v-else-if="propertyAddress" class="flex flex-col gap-0.5">
           <div class="text-xs text-ink-gray-5">{{ __('Property') }}</div>
           <div class="text-ink-gray-8">{{ propertyAddress }}</div>
+        </div>
+        <div v-if="property" class="-mt-2 text-sm text-ink-gray-5">
+          {{
+            __(
+              'Address, county and parcel ID come from this property (county and parcel ID from its latest tax pull). Seller names come from the lead.',
+            )
+          }}
         </div>
 
         <FormControl
@@ -190,10 +206,46 @@ const seller2Email = ref('')
 const loading = ref(false)
 const error = ref(null)
 const result = ref(null)
+const property = ref('')
+const linkedProperties = ref([])
 const copied = ref(false)
 const allCopied = ref(false)
 
 const propertyAddress = computed(() => props.referenceDoc?.property_address || '')
+
+function fullAddress(p) {
+  const street = (p.property_address || '').trim()
+  const low = street.toLowerCase()
+  const rest = [p.property_city, p.property_state, p.property_zip]
+    .map((x) => (x || '').trim())
+    .filter((x) => x && !low.includes(x.toLowerCase()))
+  return [street, ...rest].filter(Boolean).join(', ')
+}
+
+// The lead's own house first (value ''), then each linked CRM Property.
+const houses = computed(() => {
+  if (!linkedProperties.value.length) return []
+  return [
+    { label: propertyAddress.value || __('This lead’s property'), value: '' },
+    ...linkedProperties.value.map((p) => ({
+      label: fullAddress(p) || p.name,
+      value: p.name,
+    })),
+  ]
+})
+
+async function loadLinkedProperties() {
+  linkedProperties.value = []
+  const lead = props.referenceDoc?.name
+  if (!lead) return
+  try {
+    const res = await call('crm.api.properties.list_properties', { lead })
+    if (props.referenceDoc?.name !== lead) return
+    linkedProperties.value = res?.properties || []
+  } catch (e) {
+    linkedProperties.value = []
+  }
+}
 const leadHasEmail = computed(() => !!props.referenceDoc?.email)
 const isTermination = computed(() => template.value === 'termination')
 
@@ -209,6 +261,8 @@ watch(show, (open) => {
   seller1Email.value = ''
   seller2Name.value = ''
   seller2Email.value = ''
+  property.value = ''
+  loadLinkedProperties()
 })
 
 function copy(text) {
@@ -253,6 +307,7 @@ async function createDraft() {
       seller2_name: seller2Name.value,
       seller2_email: seller2Email.value,
       buyer: props.buyer || undefined,
+      property: property.value || undefined,
     })
     toast.success(__('Agreement draft created'))
     props.options.afterCreate?.()

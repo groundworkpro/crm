@@ -55,7 +55,7 @@ import requests
 from frappe import _
 from frappe.utils import getdate, now_datetime
 
-from crm.api.agreement import AGREEMENT_DOCTYPE, _is_completed
+from crm.api.agreement import AGREEMENT_DOCTYPE, _is_completed, agreement_property
 
 # --------------------------------------------------------------------------- #
 # the field map — single source of truth for what a contract may write
@@ -215,6 +215,12 @@ def parse_agreement(agreement: str, force: bool = False, dry_run: bool = False):
 		return {"skipped": "not fully signed"}
 	if info.get("already_parsed") and not force:
 		return {"skipped": "already parsed"}
+	if info.get("property"):
+		# A seller's second house: the lead's price, dates and address belong to
+		# their main house, so a contract for the other one must not rewrite them.
+		if not dry_run:
+			_stamp(frappe._dict(name=agreement), "skipped", {"note": f"for {info['property']}; lead left alone"})
+		return {"skipped": "second property", "property": info["property"]}
 
 	try:
 		pdf = _signed_pdf(agreement)
@@ -445,7 +451,7 @@ def get_agreement_for_parse(agreement: str):
 		frappe.throw(_("Agreement not found"), frappe.DoesNotExistError)
 
 	wanted = ["name", "lead", "template_title", "agreement_status", "signed_count", "total_signers"]
-	for optional in ("parsed_at", "parse_status", "is_archived"):
+	for optional in ("parsed_at", "parse_status", "is_archived", "property"):
 		if frappe.db.has_column(AGREEMENT_DOCTYPE, optional):
 			wanted.append(optional)
 	agr = frappe.db.get_value(AGREEMENT_DOCTYPE, agreement, wanted, as_dict=True)
@@ -462,6 +468,7 @@ def get_agreement_for_parse(agreement: str):
 		"lead": agr.lead,
 		"lead_name": lead.get("lead_name"),
 		"template_title": agr.get("template_title"),
+		"property": agreement_property(agr),
 		"is_signed": _is_completed(agr),
 		"already_parsed": bool(agr.get("parsed_at")),
 		# The prompt is built from these two, so a field added above ships to the
@@ -599,6 +606,12 @@ def write_agreement_fields(agreement: str, values, note: str = None):
 	agr = frappe.get_doc(AGREEMENT_DOCTYPE, agreement)
 	if not agr.lead or not frappe.has_permission("CRM Lead", "write", agr.lead):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	prop = agreement_property(agr)
+	if prop:
+		# Second-house agreement (see parse_agreement): never write the lead.
+		_stamp(agr, "skipped", {"note": f"for {prop}; lead left alone"})
+		return {"ok": True, "written": {}, "rejected": {}, "skipped": "second property"}
 
 	unknown = [k for k in values if k not in PARSE_FIELDS]
 	if unknown:
