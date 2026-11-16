@@ -16,7 +16,7 @@
           <div class="text-xs text-ink-gray-5">{{ __('Property') }}</div>
           <div class="text-ink-gray-8">{{ propertyAddress }}</div>
         </div>
-        <div v-if="property" class="-mt-2 text-sm text-ink-gray-5">
+        <div v-if="property !== 'lead'" class="-mt-2 text-sm text-ink-gray-5">
           {{
             __(
               'Address, county and parcel ID come from this property (county and parcel ID from its latest tax pull). Seller names come from the lead.',
@@ -206,7 +206,8 @@ const seller2Email = ref('')
 const loading = ref(false)
 const error = ref(null)
 const result = ref(null)
-const property = ref('')
+// 'lead' = the lead's own house; otherwise a linked CRM Property name.
+const property = ref('lead')
 const linkedProperties = ref([])
 const copied = ref(false)
 const allCopied = ref(false)
@@ -222,11 +223,11 @@ function fullAddress(p) {
   return [street, ...rest].filter(Boolean).join(', ')
 }
 
-// The lead's own house first (value ''), then each linked CRM Property.
+// The lead's own house first (value 'lead'), then each linked CRM Property.
 const houses = computed(() => {
   if (!linkedProperties.value.length) return []
   return [
-    { label: propertyAddress.value || __('This lead’s property'), value: '' },
+    { label: propertyAddress.value || __('This lead’s property'), value: 'lead' },
     ...linkedProperties.value.map((p) => ({
       label: fullAddress(p) || p.name,
       value: p.name,
@@ -237,7 +238,8 @@ const houses = computed(() => {
 async function loadLinkedProperties() {
   linkedProperties.value = []
   const lead = props.referenceDoc?.name
-  if (!lead) return
+  // Buyer (dispo) agreements are about the lead's house; no second-house pick.
+  if (!lead || props.buyer) return
   try {
     const res = await call('crm.api.properties.list_properties', { lead })
     if (props.referenceDoc?.name !== lead) return
@@ -261,9 +263,9 @@ watch(show, (open) => {
   seller1Email.value = ''
   seller2Name.value = ''
   seller2Email.value = ''
-  property.value = ''
+  property.value = 'lead'
   loadLinkedProperties()
-})
+}, { immediate: true })
 
 function copy(text) {
   navigator.clipboard?.writeText(text)
@@ -307,7 +309,7 @@ async function createDraft() {
       seller2_name: seller2Name.value,
       seller2_email: seller2Email.value,
       buyer: props.buyer || undefined,
-      property: property.value || undefined,
+      property: property.value !== 'lead' ? property.value : undefined,
     })
     toast.success(__('Agreement draft created'))
     props.options.afterCreate?.()
