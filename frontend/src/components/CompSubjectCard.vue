@@ -119,6 +119,7 @@
         >{{ money(estimate.value) }}</a>
         <b v-else class="text-ink-gray-8">{{ money(estimate.value) }}</b>
       </div>
+      <CompRentEstimate :subject="subject" />
     </div>
   </div>
 </template>
@@ -132,6 +133,7 @@
 import { Button, FeatherIcon } from 'frappe-ui'
 import { computed, nextTick, ref, watch } from 'vue'
 import CompDiscrepancyFlag from '@/components/CompDiscrepancyFlag.vue'
+import CompRentEstimate from '@/components/CompRentEstimate.vue'
 import { COMP_COLORS, formatLotSize } from '@/utils/comps'
 
 const props = defineProps({
