@@ -565,6 +565,46 @@ def subject_estimate(rec):
 	return _num(rec.get("estimate"))
 
 
+def subject_property_id(rec):
+	"""Redfin's propertyId of a MATCHED record (from /facts, or the /home/<id> of
+	its URL), or None. What /rental-estimate needs for this house."""
+	if not rec or not rec.get("matched"):
+		return None
+	try:
+		pid = int(rec.get("property_id") or 0)
+	except (TypeError, ValueError):
+		pid = 0
+	if pid > 0:
+		return pid
+	m = re.search(r"/home/(\d+)", str(rec.get("url") or ""))
+	return int(m.group(1)) if m else None
+
+
+def rental_estimate(property_id):
+	"""Redfin's Rental Estimate through the scraper's GET /rental-estimate.
+
+	{"rent", "rent_low", "rent_high"} (rent None when Redfin has none), or None
+	when the scraper is not configured, not reachable or does not have the
+	endpoint yet. Never raises: the card simply shows no Redfin number.
+	"""
+	base = _base_url()
+	if not base or not property_id:
+		return None
+	try:
+		r = requests.get(
+			f"{base}/rental-estimate", params={"property_id": int(property_id)}, timeout=TIMEOUT
+		)
+		if r.status_code == 404:
+			return None
+		r.raise_for_status()
+		body = r.json() or {}
+	except Exception:
+		return None
+	if not body.get("ok"):
+		return None
+	return {k: _num(body.get(k)) for k in ("rent", "rent_low", "rent_high")}
+
+
 # ---------------------------------------------------------------------------------
 # ISTL pool overlay: pictures + current MLS status from the Redfin ingest store.
 #

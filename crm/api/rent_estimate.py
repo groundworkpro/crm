@@ -18,8 +18,10 @@ filter still finds too few, the beds/sqft filters are dropped and the answer
 says so. Delisted listings count: a house that stopped being listed in the last
 few weeks was still asking that rent, and the store is only weeks old.
 
-Redfin's own Rental Estimate is not here: it needs a new scraper endpoint and
-Lance's OK to deploy it (Exe, 2026-11-17).
+* Redfin's Rental Estimate (Exe, 2026-11-18) — through the Redfin scraper's
+  `GET /rental-estimate?property_id=` (never Redfin directly), for the
+  propertyId of the subject's matched Redfin record. Absent when the house has
+  no Redfin match, Redfin shows none, or the scraper lacks the endpoint.
 """
 
 from __future__ import annotations
@@ -36,6 +38,8 @@ MIN_COMPS = 5
 #: Rows shown in the card's tooltip / list.
 SHOW = 8
 CACHE_TTL = 6 * 3600
+#: Redfin recomputes its Rental Estimate rarely; a miss is not cached.
+REDFIN_TTL = 24 * 3600
 BED_SLACK = 1
 SQFT_SLACK = 0.30
 #: A monthly rent outside this is a typo, a weekly/room price or a sale price.
@@ -210,8 +214,10 @@ def _summary(comps, radius, beds, sqft, filtered, loose=False):
 
 
 @frappe.whitelist()
-def get_rent_estimate(lat, lng, beds=None, sqft=None, property_type=None, rent_zestimate=None):
-	"""Rent estimate for one house: Zillow's, and the median of nearby rentals.
+def get_rent_estimate(
+	lat, lng, beds=None, sqft=None, property_type=None, rent_zestimate=None, redfin_property_id=None
+):
+	"""Rent estimate for one house: Zillow's, Redfin's, and the median of nearby rentals.
 
 	Takes the subject facts the comps page already holds rather than a lead name,
 	so it works the same for a lead, a scratch property and an address search.
@@ -232,5 +238,28 @@ def get_rent_estimate(lat, lng, beds=None, sqft=None, property_type=None, rent_z
 	zillow = _num(rent_zestimate)
 	return {
 		"zillow": round(zillow) if zillow else None,
+		"redfin": _redfin(redfin_property_id),
 		"listings": cached,
 	}
+
+
+def _redfin(property_id, lookup=None):
+	"""{"rent", "low", "high"} from Redfin's Rental Estimate, or None."""
+	try:
+		pid = int(property_id or 0)
+	except (TypeError, ValueError):
+		return None
+	if pid <= 0:
+		return None
+	key = f"crm:rent_estimate:redfin:{pid}"
+	cached = frappe.cache().get_value(key)
+	if cached is None:
+		if lookup is None:
+			from crm.api.redfin import rental_estimate as lookup
+		got = lookup(pid)
+		if got is None:
+			return None
+		cached = {"rent": got.get("rent"), "low": got.get("rent_low"), "high": got.get("rent_high")}
+		cached = {k: round(v) if v else None for k, v in cached.items()}
+		frappe.cache().set_value(key, cached, expires_in_sec=REDFIN_TTL)
+	return cached if cached.get("rent") else None

@@ -2815,6 +2815,8 @@ def get_lead_comps(
 			base["subject"]["redfin_check"] = redfin.compare_subject_facts(base["subject"], rec)
 			base["subject"]["redfin_estimate"] = redfin.subject_estimate(rec)
 			base["subject"]["redfin_url"] = rec.get("url") if rec and rec.get("matched") else None
+			# For the rent line: Redfin's Rental Estimate is per propertyId.
+			base["subject"]["redfin_property_id"] = redfin.subject_property_id(rec)
 			if rec and rec.get("matched") and not base["subject"].get("zpid"):
 				_fill_from_redfin(base["subject"], rec)
 				if base.get("zillow_match"):

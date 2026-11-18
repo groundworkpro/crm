@@ -91,5 +91,49 @@ class RentEstimate(unittest.TestCase):
 		self.assertNotIn("unavailable", out)
 
 
+class RedfinRent(unittest.TestCase):
+	def setUp(self):
+		import frappe
+
+		frappe.cache().store.clear()
+
+	def test_estimate_cached(self):
+		calls = []
+
+		def lookup(pid):
+			calls.append(pid)
+			return {"rent": 2762.0, "rent_low": 2707.0, "rent_high": 2788.0}
+
+		out = re_._redfin("34392284", lookup=lookup)
+		self.assertEqual(out, {"rent": 2762, "low": 2707, "high": 2788})
+		self.assertEqual(re_._redfin(34392284, lookup=lookup), out)
+		self.assertEqual(calls, [34392284])
+
+	def test_no_match_or_scraper_down(self):
+		self.assertIsNone(re_._redfin(None, lookup=lambda p: 1 / 0))
+		self.assertIsNone(re_._redfin("x", lookup=lambda p: 1 / 0))
+		self.assertIsNone(re_._redfin(5, lookup=lambda p: None))
+		# Scraper down is not remembered: the next load asks again.
+		got = re_._redfin(5, lookup=lambda p: {"rent": 1500, "rent_low": None, "rent_high": None})
+		self.assertEqual(got, {"rent": 1500, "low": None, "high": None})
+
+	def test_redfin_has_none(self):
+		none = {"rent": None, "rent_low": None, "rent_high": None}
+		self.assertIsNone(re_._redfin(6, lookup=lambda p: none))
+
+	def test_subject_property_id(self):
+		from crm.api import redfin
+
+		self.assertEqual(redfin.subject_property_id({"matched": True, "property_id": 34392284}), 34392284)
+		self.assertEqual(
+			redfin.subject_property_id(
+				{"matched": True, "url": "/CO/Arvada/5663-Jellison-St-80002/home/34392284"}
+			),
+			34392284,
+		)
+		self.assertIsNone(redfin.subject_property_id({"matched": False, "property_id": 1}))
+		self.assertIsNone(redfin.subject_property_id(None))
+
+
 if __name__ == "__main__":
 	unittest.main()
