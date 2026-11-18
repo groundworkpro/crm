@@ -87,12 +87,18 @@
               @end="updateColumn"
             >
               <template #item="{ element: fields }">
+                <!--
+                  outline-none: the card is a link, so a focused card got
+                  Chrome's default focus ring -- blue with a WHITE halo, which
+                  glares in dark mode and misses the rounded corners. Keyboard
+                  focus still shows, as a plain blue ring.
+                -->
                 <component
                   :is="
                     options.onClick ? 'a' : options.getRoute ? 'router-link' : 'div'
                   "
                   :class="[
-                    'group/card relative pt-3 px-3.5 pb-2.5 rounded-lg border bg-surface-white text-base flex flex-col text-ink-gray-9',
+                    'group/card relative pt-3 px-3.5 pb-2.5 rounded-lg border bg-surface-white text-base flex flex-col text-ink-gray-9 outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
                     options.cardColor ? dueTint(options.cardColor(fields)) : '',
                   ]"
                   :data-name="fields.name"

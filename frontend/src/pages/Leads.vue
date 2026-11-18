@@ -1304,7 +1304,7 @@ function parseRows(rows, columns = []) {
       if (row == 'dd_expiration_date') {
         // "7/16/26 (2 days left)" + due color; overrides the generic Date
         // formatting applied above.
-        _rows[row] = ddExpiration(lead[row])
+        _rows[row] = ddExpiration(lead[row], { short: true })
       } else if (row == 'lead_name') {
         _rows[row] = {
           label: lead.lead_name,

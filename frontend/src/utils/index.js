@@ -119,15 +119,22 @@ export function dueColor(date) {
 // the Lead header row and the Kanban card field so both read identically.
 // Day-granular like dueColor(): red once the date has passed, amber on the
 // day itself.
-export function ddExpiration(date) {
+//
+// { short: true } is the Kanban card's narrower form, "7/16/26 · 2 days", so
+// the countdown fits on a card instead of being cut to "(2 days l…".
+export function ddExpiration(date, { short = false } = {}) {
   if (!date) return { label: '', color: '' }
   const day = dayjs(date).startOf('day')
   const diff = day.diff(dayjs().startOf('day'), 'day')
+  const days = (n) => (n === 1 ? '1 day' : `${n} days`)
   let left
   if (diff === 0) left = 'today'
-  else if (diff > 0) left = diff === 1 ? '1 day left' : `${diff} days left`
-  else left = diff === -1 ? '1 day ago' : `${-diff} days ago`
-  return { label: `${day.format('M/D/YY')} (${left})`, color: dueColor(date) }
+  else if (diff > 0) left = short ? days(diff) : `${days(diff)} left`
+  else left = `${days(-diff)} ago`
+  const label = short
+    ? `${day.format('M/D/YY')} · ${left}`
+    : `${day.format('M/D/YY')} (${left})`
+  return { label, color: dueColor(date) }
 }
 
 // Full-card background + border tint for the Leads kanban, keyed on the next
