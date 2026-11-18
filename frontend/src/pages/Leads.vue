@@ -328,7 +328,7 @@
           class="truncate text-base"
         >
           <Tooltip :text="getRow(itemName, fieldName).label">
-            <div>{{ getRow(itemName, fieldName).timeAgo }}</div>
+            <div class="truncate">{{ getRow(itemName, fieldName).timeAgo }}</div>
           </Tooltip>
         </div>
         <div v-else-if="fieldName === 'sla_status'" class="truncate text-base">
@@ -349,6 +349,7 @@
             :text="getRow(itemName, fieldName).label"
           >
             <div
+              class="truncate"
               :class="
                 getRow(itemName, fieldName).color
                   ? parseColor(getRow(itemName, fieldName).color)
@@ -365,6 +366,7 @@
         >
           <div
             v-if="getRow(itemName, fieldName).label"
+            class="truncate"
             :class="
               getRow(itemName, fieldName).color
                 ? parseColor(getRow(itemName, fieldName).color)

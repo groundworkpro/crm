@@ -11,23 +11,15 @@
     to render affordances that are invisible until you hover.
   -->
   <!--
-    The backdrop is frosted rather than a solid colour. This chip overlays the
-    right end of the field row, so it genuinely needs to mask the text beneath
-    (an address easily runs past it). But a solid `bg-surface-white` only
-    matches a card whose background IS surface-white: on a due/new tinted card
-    (`dueTint` paints red-400/25 over it) the chip rendered as a flat untinted
-    rectangle sitting on a coloured card, which is what "the edit button isn't
-    centered properly when the card is coloured" was describing -- the geometry
-    was always right, the colour was not.
-
-    `backdrop-blur` composites whatever is actually behind the chip, so it
-    matches the card's own colour for free -- tinted or not, light theme or
-    dark -- and keeps masking the text. No prop-threading of the tint class
-    from KanbanView down through the field slots, and nothing to keep in sync
-    the next time a tint colour is added.
+    The chip sits IN the row's flex flow, not on top of the text. It used to be
+    absolutely positioned over the right end of the row with a frosted
+    backdrop-blur to mask what was underneath; in dark mode that drew a grey
+    smudge over the last characters of the address. In flow, the value just
+    truncates with an ellipsis to make room, on any card color, light or dark.
+    -my-1 keeps the 22px button from making the row taller on hover.
   -->
   <div
-    class="absolute right-0 top-1/2 -translate-y-1/2 items-center rounded bg-transparent pl-1 backdrop-blur-sm"
+    class="-my-1 shrink-0 items-center"
     :class="editorOpen ? 'flex' : 'hidden group-hover/kbf:flex'"
   >
     <!-- Copy: phone & address fields -->
