@@ -65,6 +65,8 @@ DEFAULT_SUBJECT = "lance.johnson@groundworkpro.com"
 # creation to resolve the subject's real Zillow *listing* URL from its address —
 # the comp functions only accept a homedetails URL, not a /homes/.._rb/ search.
 RAPIDAPI_HOST = "us-property-market1.p.rapidapi.com"
+# Sent through PropWarehouse so it shares the Zillow rate limiter and quota.
+from crm.api.zillow import BASE as ZILLOW_BASE  # noqa: E402
 
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 SCOPES = (
@@ -177,7 +179,7 @@ def _zillow_detail_url(address: str):
 		return None
 	try:
 		resp = requests.get(
-			f"https://{RAPIDAPI_HOST}/property",
+			f"{ZILLOW_BASE}/property",
 			params={"address": address},
 			headers={"x-rapidapi-key": key, "x-rapidapi-host": RAPIDAPI_HOST},
 			timeout=20,

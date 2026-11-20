@@ -50,13 +50,17 @@ break the comps map.
 """
 
 import json
+import os
 import time
 
 import frappe
 from frappe import _
 
 HOST = "us-property-market1.p.rapidapi.com"
-BASE = f"https://{HOST}"
+#: Through PropWarehouse's raw passthrough (same status and body as RapidAPI), so
+#: the CRM shares one rate limiter and quota reserve with every other Zillow caller
+#: instead of drawing 429s from them. 172.22.0.1 is the frappe-crm_default gateway.
+BASE = os.environ.get("CRM_ZILLOW_BASE", "http://172.22.0.1:8120/zillow/rapidapi")
 
 #: Property facts barely move; a sale a week old is still news next month.
 CACHE_DAYS = 30
