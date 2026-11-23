@@ -184,5 +184,74 @@ class HoldUntilTests(unittest.TestCase):
 		self.assertIsNone(sd.hold_until(datetime(2026, 9, 12, 23, 0), step(wait_value=0)))
 
 
+class SellerLocalTextTests(unittest.TestCase):
+	# Times are site-local (Central). Mon Sep 14 2026 is a business day (CDT).
+	def setUp(self):
+		shim.conf.clear()
+
+	def test_state_lookup(self):
+		self.assertEqual(sd.lead_timezones("FL"), ("America/New_York",))
+		self.assertEqual(sd.lead_timezones(" new york "), ("America/New_York",))
+		self.assertEqual(sd.lead_timezones("ca"), ("America/Los_Angeles",))
+		self.assertEqual(sd.lead_timezones(""), sd.UNKNOWN_STATE_TZS)
+		self.assertEqual(sd.lead_timezones(None), sd.UNKNOWN_STATE_TZS)
+		self.assertEqual(sd.lead_timezones("Ontario"), sd.UNKNOWN_STATE_TZS)
+
+	def test_eastern_seller_at_8_central_is_fine(self):
+		# 8:00 CT = 9:00 ET
+		self.assertIsNone(sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step(), ("America/New_York",)))
+
+	def test_pacific_seller_waits_until_9_their_time(self):
+		# 8:00 CT = 6:00 PT -> 9:00 PT = 11:00 CT
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step(), ("America/Los_Angeles",)),
+			datetime(2026, 9, 14, 11, 0),
+		)
+
+	def test_central_seller_waits_until_9(self):
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step(), ("America/Chicago",)),
+			datetime(2026, 9, 14, 9, 0),
+		)
+
+	def test_eastern_evening_cutoff(self):
+		# 19:30 CT = 20:30 ET -> next morning 9:00 ET = 8:00 CT
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 14, 19, 30), step(), ("America/New_York",)),
+			datetime(2026, 9, 15, 8, 0),
+		)
+
+	def test_unknown_state_needs_both_coasts(self):
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step(), sd.UNKNOWN_STATE_TZS),
+			datetime(2026, 9, 14, 11, 0),
+		)
+		# 18:30 CT = 19:30 ET ok, 16:30 PT ok
+		self.assertIsNone(sd.seller_hold_until(datetime(2026, 9, 14, 18, 30), step(), sd.UNKNOWN_STATE_TZS))
+
+	def test_friday_evening_pacific_goes_to_monday_late_morning(self):
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 11, 21, 0), step(), ("America/Los_Angeles",)),
+			datetime(2026, 9, 14, 11, 0),
+		)
+
+	def test_rep_tasks_and_intro_burst_ignore_seller_zone(self):
+		pt = ("America/Los_Angeles",)
+		self.assertIsNone(sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step("Task"), pt))
+		self.assertIsNone(sd.seller_hold_until(datetime(2026, 9, 14, 5, 0), step("Call"), pt))
+		self.assertIsNone(sd.seller_hold_until(datetime(2026, 9, 14, 23, 0), step(wait_value=0), pt))
+
+	def test_idempotent(self):
+		pt = ("America/Los_Angeles",)
+		held = sd.seller_hold_until(datetime(2026, 9, 14, 8, 0), step(), pt)
+		self.assertIsNone(sd.seller_hold_until(held, step(), pt))
+
+	def test_no_zone_falls_back_to_site_rules(self):
+		self.assertEqual(
+			sd.seller_hold_until(datetime(2026, 9, 14, 23, 0), step(), None),
+			datetime(2026, 9, 15, 8, 0),
+		)
+
+
 if __name__ == "__main__":
 	unittest.main()

@@ -32,6 +32,7 @@ lead volume, scale the drain-worker (replicas) or move to delay-based scheduling
 
 import time
 from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import add_to_date, get_datetime, getdate, now_datetime
@@ -171,6 +172,120 @@ def hold_until(now, step):
 	return business_hold_until(hold or now, step) or hold
 
 
+# Seller-local hours for texts. The quiet hours above are site-local (Central),
+# but sellers are in every US time zone: a "day 3" text aligned to 8:00 Central
+# reaches a California seller at 6am. Text steps therefore ALSO have to land
+# inside [TEXT_LOCAL_START_HOUR, TEXT_LOCAL_END_HOUR) in the seller's own time
+# zone, taken from the lead's property_state. 9am-8pm sits inside both the
+# federal 8am-9pm rule and the stricter state ones (FL/OK: 8am-8pm). A lead with
+# no recognisable state must satisfy Eastern AND Pacific (11am-7pm Central).
+# Rep-facing Call/Task steps are unaffected: they only put a card on the board.
+SITE_TZ = "America/Chicago"
+TEXT_LOCAL_START_HOUR = 9
+TEXT_LOCAL_END_HOUR = 20
+UNKNOWN_STATE_TZS = ("America/New_York", "America/Los_Angeles")
+
+_ET, _CT, _MT, _PT = "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"
+# The zone most of each state lives in (split states take the larger part).
+_STATE_TZ = {
+	"CT": _ET, "DC": _ET, "DE": _ET, "FL": _ET, "GA": _ET, "IN": _ET, "KY": _ET,
+	"MA": _ET, "MD": _ET, "ME": _ET, "MI": _ET, "NC": _ET, "NH": _ET, "NJ": _ET,
+	"NY": _ET, "OH": _ET, "PA": _ET, "RI": _ET, "SC": _ET, "VA": _ET, "VT": _ET,
+	"WV": _ET,
+	"AL": _CT, "AR": _CT, "IA": _CT, "IL": _CT, "KS": _CT, "LA": _CT, "MN": _CT,
+	"MO": _CT, "MS": _CT, "ND": _CT, "NE": _CT, "OK": _CT, "SD": _CT, "TN": _CT,
+	"TX": _CT, "WI": _CT,
+	"CO": _MT, "ID": _MT, "MT": _MT, "NM": _MT, "UT": _MT, "WY": _MT,
+	"AZ": "America/Phoenix",
+	"CA": _PT, "NV": _PT, "OR": _PT, "WA": _PT,
+	"AK": "America/Anchorage", "HI": "Pacific/Honolulu", "PR": "America/Puerto_Rico",
+}
+_STATE_NAMES = {
+	"ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR", "CALIFORNIA": "CA",
+	"COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE", "DISTRICT OF COLUMBIA": "DC",
+	"FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID", "ILLINOIS": "IL",
+	"INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS", "KENTUCKY": "KY", "LOUISIANA": "LA",
+	"MAINE": "ME", "MARYLAND": "MD", "MASSACHUSETTS": "MA", "MICHIGAN": "MI",
+	"MINNESOTA": "MN", "MISSISSIPPI": "MS", "MISSOURI": "MO", "MONTANA": "MT",
+	"NEBRASKA": "NE", "NEVADA": "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ",
+	"NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND",
+	"OHIO": "OH", "OKLAHOMA": "OK", "OREGON": "OR", "PENNSYLVANIA": "PA",
+	"PUERTO RICO": "PR", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD",
+	"TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT", "VERMONT": "VT", "VIRGINIA": "VA",
+	"WASHINGTON": "WA", "WEST VIRGINIA": "WV", "WISCONSIN": "WI", "WYOMING": "WY",
+}
+
+
+def lead_timezones(state):
+	"""Pure: the time zone(s) a seller in `state` ("FL", "Florida", " fl ") may be
+	in. Unknown/blank -> Eastern AND Pacific, so the text is decent in both."""
+	key = (state or "").strip().upper().rstrip(".")
+	key = _STATE_NAMES.get(key, key)
+	tz = _STATE_TZ.get(key)
+	return (tz,) if tz else UNKNOWN_STATE_TZS
+
+
+def _site_aware(t):
+	return t.replace(tzinfo=ZoneInfo(SITE_TZ)) if t.tzinfo is None else t
+
+
+def _local_ok(t, tzs):
+	for tz in tzs:
+		h = _site_aware(t).astimezone(ZoneInfo(tz)).hour
+		if not (TEXT_LOCAL_START_HOUR <= h < TEXT_LOCAL_END_HOUR):
+			return False
+	return True
+
+
+def text_local_hold(now, step, tzs):
+	"""Pure: site-local datetime a Text step must wait for so it reaches the
+	seller between 9am and 8pm THEIR time, or None to send now. Same exemptions
+	as the quiet hours (only Text, only scheduled steps, not the intro burst)."""
+	if not step or step.get("step_type") != "Text" or not tzs:
+		return None
+	if _step_wait_seconds(step) < QUIET_MIN_WAIT_SECONDS:
+		return None
+	if _local_ok(now, tzs):
+		return None
+	site = ZoneInfo(SITE_TZ)
+	best = None
+	for tz in tzs:
+		local_now = _site_aware(now).astimezone(ZoneInfo(tz))
+		for d in range(4):
+			day = local_now.date() + timedelta(days=d)
+			open_local = datetime.combine(day, dt_time(TEXT_LOCAL_START_HOUR, 0), ZoneInfo(tz))
+			cand = open_local.astimezone(site).replace(tzinfo=None)
+			if cand >= now and _local_ok(cand, tzs) and (best is None or cand < best):
+				best = cand
+	return best
+
+
+def seller_hold_until(now, step, tzs=None):
+	"""Pure: `hold_until` plus, for Text steps, the seller's local hours. The two
+	rules can push each other (Monday 8:00 Central is 6:00 in California), so
+	they are applied until neither moves the time."""
+	if not step or step.get("step_type") != "Text" or not tzs:
+		return hold_until(now, step)
+	t = now
+	held = False
+	for _ in range(8):
+		nxt = hold_until(t, step) or text_local_hold(t, step, tzs)
+		if not nxt or nxt == t:
+			break
+		t = nxt
+		held = True
+	return t if held else None
+
+
+def _seller_tzs(enr, step):
+	"""The seller's time zone(s) for a Text step, else None (no lookup)."""
+	if not step or step.get("step_type") != "Text":
+		return None
+	lead = enr.get("lead") or frappe.db.get_value("CRM Sequence Enrollment", enr.name, "lead")
+	state = frappe.db.get_value("CRM Lead", lead, "property_state") if lead else None
+	return lead_timezones(state)
+
+
 def calendar_due(now, step):
 	"""Pure: 8:00 on the calendar day a Days/Weeks wait lands, else None.
 
@@ -280,7 +395,8 @@ def _drain_locked(enrollment):
 		# Quiet hours + business days: a scheduled Text/Call/Task that comes due
 		# at night, on a weekend or on a holiday waits for the next working
 		# morning. Written to next_run so drain_due picks it up then.
-		hold = hold_until(now_datetime(), _next_step(enr))
+		next_step = _next_step(enr)
+		hold = seller_hold_until(now_datetime(), next_step, _seller_tzs(enr, next_step))
 		if hold:
 			frappe.db.set_value(
 				"CRM Sequence Enrollment", enr.name, "next_run", hold, update_modified=False
@@ -392,6 +508,7 @@ def _align_next_run(enr):
 	if morning and morning < target:
 		target = morning
 	target = business_hold_until(target, step) or target
+	target = seller_hold_until(target, step, _seller_tzs(enr, step)) or target
 	if target == current:
 		return
 	frappe.db.set_value(
@@ -460,7 +577,7 @@ def drain_due():
 	for row in frappe.get_all(
 		"CRM Sequence Enrollment",
 		filters={"status": "Active"},
-		fields=["name", "sequence", "current_step", "next_run"],
+		fields=["name", "lead", "sequence", "current_step", "next_run"],
 	):
 		try:
 			_align_next_run(row)
