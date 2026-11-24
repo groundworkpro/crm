@@ -510,11 +510,6 @@ REPLY_WINDOW_DAYS = 30
 OPT_OUT_WORDS = frozenset(
 	{"stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit", "remove", "remove me"}
 )
-#: "Ok" / "Thanks" closes a conversation; it doesn't need a card.
-ACK_WORDS = frozenset(
-	{"ok", "okay", "k", "kk", "ok thanks", "ok thank you", "okay thanks", "thanks", "thank you",
-	 "thank you so much", "thx", "ty", "sounds good", "sounds good thanks", "will do", "got it"}
-)
 #: An iPhone/Android reaction to our text arrives as a text: hair-space +
 #: zero-width space + emoji + " to " + the quoted text, or "Liked <quote>".
 _REACTION = re.compile(
@@ -545,8 +540,9 @@ def unanswered_reply(last_in, content, handled_at, today):
 		return None
 	if handled_at and get_datetime(handled_at) >= last_in:
 		return None
-	word = " ".join((content or "").lower().replace(",", " ").split()).strip(" .!")
-	if word in OPT_OUT_WORDS or word in ACK_WORDS or _REACTION.match(content or ""):
+	# A bare "Ok" / "Thanks" still gets a card: a person decides (Exe, 2026-11-24).
+	word = " ".join((content or "").lower().split()).strip(" .!")
+	if word in OPT_OUT_WORDS or _REACTION.match(content or ""):
 		return None
 	return reply_snippet(content)
 
