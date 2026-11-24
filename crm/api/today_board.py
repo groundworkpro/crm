@@ -572,6 +572,11 @@ def _generate_today(day):
 			created += 1
 			existing.add(r.name)
 
+	try:
+		reopened += _apply_reply_cards(day, due)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "today_board: reply cards failed")
+
 	if created or reopened:
 		frappe.db.commit()
 		_publish(day)
@@ -664,6 +669,34 @@ def _reopen_due_followups(day, now=None):
 		frappe.db.set_value(DOCTYPE, name, updates)
 		reopened += 1
 	return reopened
+
+
+def _apply_reply_cards(day, due):
+	"""A reply that lands after the lead's card for today was made: relabel the
+	open card, or put a resolved one back To Call (see reply_card_updates)."""
+	from crm.api.daily_standup import reply_card_updates
+
+	replies = {r.name: r.reason for r in due if getattr(r, "reply_snippet", None)}
+	if not replies:
+		return 0
+	fields = ["name", "lead", "state", "reason"]
+	if _supports_resolved_stamp():
+		fields.append("resolved_at")
+	cards = frappe.get_all(
+		DOCTYPE, filters={"for_date": day, "lead": ["in", list(replies)]}, fields=fields
+	)
+	changed = 0
+	for name, reopen, reason in reply_card_updates(cards, replies):
+		updates = {"reason": reason, "phase": "task"}
+		if reopen:
+			updates.update(_state_stamps("To Call"))
+			updates["state"] = "To Call"
+			if _supports_outcome():
+				updates["outcome"] = ""
+				updates["outcome_note"] = ""
+		frappe.db.set_value(DOCTYPE, name, updates)
+		changed += 1
+	return changed
 
 
 def enqueue_today_sync(doc=None, method=None):

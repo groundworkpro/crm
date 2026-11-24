@@ -419,6 +419,51 @@ def _fetch_chase_rows(today):
 		):
 			text_map[t.n] = t.last_text
 
+	# The seller's latest text and the last time we answered (any text out,
+	# any call, a resolved Today card) — see `unanswered_reply`.
+	reply_in, sent_out, resolved_map = {}, {}, {}
+	if frappe.db.exists("DocType", "Quo Message"):
+		since = datetime.combine(getdate(today) - timedelta(days=REPLY_WINDOW_DAYS), datetime.min.time())
+		for t in frappe.db.sql(
+			"""
+			select reference_docname n, coalesce(message_date, creation) at, content
+			from `tabQuo Message`
+			where reference_doctype = 'CRM Lead' and reference_docname in %(names)s
+			  and direction = 'Incoming'
+			  and coalesce(message_date, creation) >= %(since)s
+			  and coalesce(owner, '') != %(knock)s and name not like 'knock-%%'
+			order by coalesce(message_date, creation) asc
+			""",
+			{"names": names, "since": since, "knock": KNOCK_SENDER},
+			as_dict=True,
+		):
+			reply_in[t.n] = t
+		if reply_in:
+			for t in frappe.db.sql(
+				"""
+				select reference_docname n, max(coalesce(message_date, creation)) at
+				from `tabQuo Message`
+				where reference_doctype = 'CRM Lead' and reference_docname in %(names)s
+				  and direction = 'Outgoing'
+				  and coalesce(status, '') not in ('scheduled', 'canceled', 'failed', 'undelivered')
+				group by reference_docname
+				""",
+				{"names": list(reply_in)},
+				as_dict=True,
+			):
+				sent_out[t.n] = t.at
+			if frappe.db.has_column("CRM Today Item", "resolved_at"):
+				for t in frappe.db.sql(
+					"""
+					select lead n, max(resolved_at) at from `tabCRM Today Item`
+					where lead in %(names)s and resolved_at is not null
+					group by lead
+					""",
+					{"names": list(reply_in)},
+					as_dict=True,
+				):
+					resolved_map[t.n] = t.at
+
 	# A lead an Active sequence is driving gets its work from the sequence's
 	# tasks; the board must not nag it for a next step on top.
 	in_sequence = set()
@@ -443,9 +488,96 @@ def _fetch_chase_rows(today):
 		last_text = text_map.get(r.name)
 		r.last_contact = max([d for d in (r.last_call, last_text) if d], default=None)
 		r.in_sequence = r.name in in_sequence
+		rin = reply_in.get(r.name)
+		handled = max(
+			[get_datetime(d) for d in (r.last_call, sent_out.get(r.name), resolved_map.get(r.name)) if d],
+			default=None,
+		)
+		r.reply_snippet = unanswered_reply(
+			rin.at if rin else None, rin.content if rin else None, handled, today
+		)
 	# A dispo lead is only on the list when a task on it is due; otherwise it is
 	# not the setters' work and must not inflate the standup's status counts.
 	return [r for r in rows if r.status not in POST_CONTRACT_STATUSES or r.tasks_due_now]
+
+
+#: A seller's text reply nobody has answered yet makes a card on the owner's
+#: board even when a later task is booked (Exe, 2026-11-24: Jeff Bradley
+#: replied Oct 20 and his card was waiting on a Dec 16 task). Older replies are
+#: left alone so the first deploy doesn't dump a backlog on the board.
+REPLY_WINDOW_DAYS = 30
+#: Carrier opt-out words. Quo blocks the number itself; a card would be noise.
+OPT_OUT_WORDS = frozenset(
+	{"stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit", "remove", "remove me"}
+)
+#: "Ok" / "Thanks" closes a conversation; it doesn't need a card.
+ACK_WORDS = frozenset(
+	{"ok", "okay", "k", "kk", "ok thanks", "ok thank you", "okay thanks", "thanks", "thank you",
+	 "thank you so much", "thx", "ty", "sounds good", "sounds good thanks", "will do", "got it"}
+)
+#: An iPhone/Android reaction to our text arrives as a text: hair-space +
+#: zero-width space + emoji + " to " + the quoted text, or "Liked <quote>".
+_REACTION = re.compile(
+	r"^\s*(?:[\u200a\u200b\s]*\S{1,8}[\u200a\u200b]+\s*to\s+\u201c"
+	r"|(?:liked|loved|disliked|emphasized|laughed at|questioned|reacted \S+ to)\s+[\u201c\"])",
+	re.I,
+)
+#: Knock's campaign replies are worked in Knock, not on the Today board.
+KNOCK_SENDER = "knock-api@groundworkpro.com"
+
+
+def reply_snippet(content, limit=60):
+	"""Pure: the reply as one short line for the card."""
+	text = " ".join((content or "").split())
+	if not text:
+		return "(picture)"
+	return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def unanswered_reply(last_in, content, handled_at, today):
+	"""Pure: the card snippet when the seller's latest text still needs a
+	person, else None. Answered = any call, any text we sent, or a Today card
+	someone resolved after it came in."""
+	if not last_in:
+		return None
+	last_in = get_datetime(last_in)
+	if getdate(last_in) < getdate(today) - timedelta(days=REPLY_WINDOW_DAYS):
+		return None
+	if handled_at and get_datetime(handled_at) >= last_in:
+		return None
+	word = " ".join((content or "").lower().replace(",", " ").split()).strip(" .!")
+	if word in OPT_OUT_WORDS or word in ACK_WORDS or _REACTION.match(content or ""):
+		return None
+	return reply_snippet(content)
+
+
+def reply_card_updates(cards, replies):
+	"""Pure: today's existing cards a fresh reply should change.
+
+	The board is add-only and makes one card per lead per day, so a reply that
+	lands after the lead's card for today is made needs this. `cards` are
+	today's cards ({name, lead, state, reason, resolved_at}); `replies` is
+	{lead: reason}. An open card gets the reply as its reason; a resolved card
+	(resolved before the reply, which `unanswered_reply` already ensures) goes
+	back To Call. Returns [(card_name, reopen, reason)]."""
+	out, seen = [], set()
+	by_lead = {}
+	for c in cards:
+		by_lead.setdefault(c["lead"], []).append(c)
+	for lead, reason in replies.items():
+		mine = by_lead.get(lead) or []
+		if not mine or lead in seen:
+			continue
+		seen.add(lead)
+		open_cards = [c for c in mine if c.get("state") == "To Call"]
+		if open_cards:
+			c = open_cards[0]
+			if (c.get("reason") or "") != reason:
+				out.append((c["name"], False, reason))
+			continue
+		latest = max(mine, key=lambda c: get_datetime(c.get("resolved_at") or "1970-01-01"))
+		out.append((latest["name"], True, reason))
+	return out
 
 
 def last_contact_label(row, today) -> str:
@@ -469,6 +601,13 @@ def _classify(row, today):
 	even when an older task is still overdue: the later appointment is the rep's
 	current plan and must trump the automatic cadence.
 	"""
+	# A seller texted back and nobody has answered: that outranks any booked
+	# appointment and the sequence (which the reply already paused). Dispo
+	# leads are someone else's board.
+	reply = getattr(row, "reply_snippet", None)
+	if reply and row.status not in POST_CONTRACT_STATUSES:
+		return ("task", 1, True, f"Replied by text: \u201c{reply}\u201d \u00b7 {last_contact_label(row, today)}")
+
 	# scheduled after today -> not today's problem
 	if row.next_future_due:
 		return ("scheduled", 0, False,
@@ -597,7 +736,10 @@ def build_setter_queue(today=None):
 		r.days_silent = business_days_between(r.last_call, today) if r.last_call else 9999
 		out.append(r)
 	due_rows = [r for r in out if r.due]
-	due_rows.sort(key=lambda r: (_PHASE_RANK.get(r.phase, 9), -r.days_silent, r.lead_name or ""))
+	due_rows.sort(key=lambda r: (
+		0 if getattr(r, "reply_snippet", None) else 1,
+		_PHASE_RANK.get(r.phase, 9), -r.days_silent, r.lead_name or "",
+	))
 	return {"all": out, "due": due_rows}
 
 
