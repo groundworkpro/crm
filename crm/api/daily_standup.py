@@ -510,7 +510,7 @@ REPLY_WINDOW_DAYS = 30
 OPT_OUT_WORDS = frozenset(
 	{"stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit", "remove", "remove me"}
 )
-#: An iPhone/Android reaction to our text arrives as a text: hair-space +
+#: An iPhone/Android reaction to our text arrives as a text (shown as "reacted 👍"): hair-space +
 #: zero-width space + emoji + " to " + the quoted text, or "Liked <quote>".
 _REACTION = re.compile(
 	r"^\s*(?:[\u200a\u200b\s]*\S{1,8}[\u200a\u200b]+\s*to\s+\u201c"
@@ -542,8 +542,14 @@ def unanswered_reply(last_in, content, handled_at, today):
 		return None
 	# A bare "Ok" / "Thanks" still gets a card: a person decides (Exe, 2026-11-24).
 	word = " ".join((content or "").lower().split()).strip(" .!")
-	if word in OPT_OUT_WORDS or _REACTION.match(content or ""):
+	if word in OPT_OUT_WORDS:
 		return None
+	# A reaction still gets a card (Exe, 2026-11-24), shown as what it is.
+	m = _REACTION.match(content or "")
+	if m:
+		what = m.group(0).replace("\u200a", "").replace("\u200b", "").strip()
+		what = re.sub(r"\s*(?:to\s+)?[\u201c\"]$", "", what).strip()
+		return f"{what} our text" if what.lower().startswith(("liked", "loved", "disliked", "emphasized", "laughed", "questioned", "reacted")) else f"reacted {what} to our text"
 	return reply_snippet(content)
 
 

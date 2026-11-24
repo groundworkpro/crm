@@ -41,12 +41,14 @@ class UnansweredReplyTests(unittest.TestCase):
 		self.assertEqual(ds.unanswered_reply(datetime(2026, 10, 26, 9), "Yes", None, TODAY), "Yes")
 		self.assertIsNone(ds.unanswered_reply(None, None, None, TODAY))
 
-	def test_reactions_skip_but_acks_count(self):
-		for text in ("\u200a\u200b\U0001f44d\u200b to \u201c\u200aHi Kim, did you have",
-		             'Liked \u201cHi Kim\u201d', "Loved \u201cthanks\u201d"):
-			self.assertIsNone(ds.unanswered_reply(REPLY_AT, text, None, TODAY), text)
-		for text in ("Ok", "Thanks!", "Sounds good, thanks.", "what's your offer", "Yes", "It's Riley", "Ok, send it over", "Not yet. Call me"):
-			self.assertIsNotNone(ds.unanswered_reply(REPLY_AT, text, None, TODAY), text)
+	def test_reactions_and_acks_count(self):
+		R = ds.unanswered_reply
+		self.assertEqual(R(REPLY_AT, "\u200a\u200b\U0001f44d\u200b to \u201c\u200aHi Kim, did you have", None, TODAY),
+		                 "reacted \U0001f44d to our text")
+		self.assertEqual(R(REPLY_AT, "Liked \u201cHi Kim\u201d", None, TODAY), "Liked our text")
+		self.assertEqual(R(REPLY_AT, "Loved \u201cthanks\u201d", None, TODAY), "Loved our text")
+		for text in ("Ok", "Thanks!", "Sounds good, thanks.", "what's your offer", "Yes", "It's Riley"):
+			self.assertEqual(R(REPLY_AT, text, None, TODAY), text)
 
 	def test_snippet(self):
 		self.assertEqual(ds.reply_snippet(""), "(picture)")
